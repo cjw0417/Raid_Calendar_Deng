@@ -9,6 +9,99 @@
   box-shadow: none;
 }
 
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at top, rgba(86, 108, 255, 0.18), rgba(8, 12, 25, 0.96) 45%);
+}
+
+.login-card {
+  width: min(100%, 420px);
+  padding: 28px 24px;
+  border-radius: 22px;
+  background: rgba(13, 18, 31, 0.94);
+  border: 1px solid rgba(162, 176, 255, 0.18);
+  box-shadow: 0 18px 45px rgba(5, 9, 18, 0.38);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: clamp(2rem, 3vw, 2.5rem);
+  color: #edf5ff;
+}
+
+.eyebrow.centered {
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.login-subtitle {
+  margin: 10px 0 18px;
+  color: #d0dcff;
+  line-height: 1.6;
+  font-size: 0.92rem;
+}
+
+.login-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #dfe9ff;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.remember-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  color: #dfe9ff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.remember-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: #7fa6ff;
+}
+
+.login-button {
+  margin-top: 14px;
+}
+
+.user-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-badge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 12px;
+  border-radius: 999px;
+  background: rgba(89, 122, 255, 0.15);
+  border: 1px solid rgba(150, 170, 255, 0.22);
+  color: #ebf3ff;
+  font-weight: 700;
+}
+
+.small-logout {
+  min-width: auto;
+  width: auto;
+  padding: 9px 12px;
+  font-size: 0.8rem;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -686,6 +779,26 @@ input::placeholder {
 
 .slot-cell.selected {
   box-shadow: inset 0 0 0 1px rgba(117, 170, 255, 0.28);
+}
+
+.slot-cell.my-schedule-slot {
+  background: linear-gradient(135deg, rgba(94, 224, 170, 0.2), rgba(67, 135, 255, 0.12));
+  border-color: rgba(94, 224, 170, 0.48);
+  box-shadow: inset 0 0 0 1px rgba(94, 224, 170, 0.34);
+}
+
+.my-slot-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  margin-bottom: 4px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(94, 224, 170, 0.18);
+  border: 1px solid rgba(94, 224, 170, 0.32);
+  color: #dffcf2;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .slot-cell strong {

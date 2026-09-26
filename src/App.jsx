@@ -25,6 +25,7 @@ const raidTabOptions = [
 ]
 
 const STORAGE_KEY = 'raid-calendar-members-v1'
+const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const timeSlots = [
   '19:00',
@@ -109,8 +110,8 @@ function buildDefaultMember(overrides = {}) {
   return {
     id: `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nickname: '나의닉네임',
-    days: ['수', '목', '금'],
-    times: ['19:00', '20:00', '21:00'],
+    days: [],
+    times: [],
     attendance: '참',
     className: '수호성',
     power: '600~700k',
@@ -161,6 +162,27 @@ function saveLocalMembers(nextMembers) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(nextMembers))
 }
 
+function readStoredLoginNickname() {
+  try {
+    return localStorage.getItem(LOGIN_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredLoginNickname(nextNickname) {
+  try {
+    if (nextNickname) {
+      localStorage.setItem(LOGIN_STORAGE_KEY, nextNickname)
+      return
+    }
+
+    localStorage.removeItem(LOGIN_STORAGE_KEY)
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 function App() {
   const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -169,7 +191,10 @@ function App() {
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
   const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
-  const [profile, setProfile] = useState(() => buildDefaultMember())
+  const [loggedInNickname, setLoggedInNickname] = useState('')
+  const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
+  const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
+  const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
 
   useEffect(() => {
@@ -271,6 +296,25 @@ function App() {
     )
   }, [profile.days, profile.times])
 
+  const myScheduleSet = useMemo(() => {
+    const scheduleMember =
+      members.find((member) => member.nickname === loggedInNickname) ??
+      {
+        days: profile.days,
+        times: profile.times,
+      }
+
+    const nextSet = new Set()
+
+    scheduleMember.days.forEach((day) => {
+      scheduleMember.times.forEach((time) => {
+        nextSet.add(`${day}-${time}`)
+      })
+    })
+
+    return nextSet
+  }, [loggedInNickname, members, profile.days, profile.times])
+
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = raidTabOptions.find((tab) => tab.label === activeRaidTab) ?? raidTabOptions[0]
 
@@ -317,12 +361,98 @@ function App() {
     return map
   }, [members])
 
-  const saveCurrentProfile = async () => {
-    const trimmedNickname = profile.nickname.trim()
+  const handleLogin = async (event) => {
+    event.preventDefault()
+
+    const trimmedNickname = loginNickname.trim()
 
     if (!trimmedNickname) {
       return
     }
+
+    setLoggedInNickname(trimmedNickname)
+
+    if (rememberMe) {
+      writeStoredLoginNickname(trimmedNickname)
+    } else {
+      writeStoredLoginNickname('')
+    }
+
+    setProfile((prev) => ({ ...prev, nickname: trimmedNickname }))
+    await loadCurrentProfileByNickname(trimmedNickname)
+  }
+
+  const handleLogout = () => {
+    setLoggedInNickname('')
+    setLoginNickname('')
+    setRememberMe(false)
+    writeStoredLoginNickname('')
+    setProfile(buildDefaultMember({ nickname: '' }))
+  }
+
+  const loadCurrentProfileByNickname = async (nickname) => {
+    const trimmedNickname = String(nickname ?? '').trim()
+
+    if (!trimmedNickname) {
+      return
+    }
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('members')
+        .select('*')
+        .eq('nickname', trimmedNickname)
+        .maybeSingle()
+
+      if (!error && data) {
+        const member = normalizeMemberRecord(data)
+        if (member) {
+          setProfile((prev) => ({
+            ...prev,
+            ...member,
+            className: member.className,
+            raidFocus: getRaidLabel(member.raidFocus),
+            nickname: trimmedNickname,
+          }))
+          return
+        }
+      }
+
+      const storedMember = loadLocalMembers().find((member) => member.nickname === trimmedNickname)
+      if (storedMember) {
+        setProfile((prev) => ({
+          ...prev,
+          ...storedMember,
+          className: storedMember.className,
+          raidFocus: getRaidLabel(storedMember.raidFocus),
+          nickname: trimmedNickname,
+        }))
+      }
+      return
+    }
+
+    const existing = loadLocalMembers().find((member) => member.nickname === trimmedNickname)
+
+    if (existing) {
+      setProfile((prev) => ({
+        ...prev,
+        ...existing,
+        className: existing.className,
+        raidFocus: getRaidLabel(existing.raidFocus),
+        nickname: trimmedNickname,
+      }))
+    }
+  }
+
+  const saveCurrentProfile = async () => {
+    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+
+    if (!trimmedNickname) {
+      return
+    }
+
+    setLoggedInNickname(trimmedNickname)
+    writeStoredLoginNickname(trimmedNickname)
 
     const nextMember = {
       ...profile,
@@ -384,43 +514,13 @@ function App() {
   }
 
   const loadCurrentProfile = async () => {
-    const trimmedNickname = profile.nickname.trim()
+    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
     if (!trimmedNickname) {
       return
     }
 
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('members')
-        .select('*')
-        .eq('nickname', trimmedNickname)
-        .maybeSingle()
-
-      if (!error && data) {
-        const member = normalizeMemberRecord(data)
-        if (member) {
-          setProfile((prev) => ({
-            ...prev,
-            ...member,
-            className: member.className,
-            raidFocus: getRaidLabel(member.raidFocus),
-          }))
-        }
-      }
-      return
-    }
-
-    const existing = loadLocalMembers().find((member) => member.nickname === trimmedNickname)
-
-    if (existing) {
-      setProfile((prev) => ({
-        ...prev,
-        ...existing,
-        className: existing.className,
-        raidFocus: getRaidLabel(existing.raidFocus),
-      }))
-    }
+    await loadCurrentProfileByNickname(trimmedNickname)
   }
 
   const deleteMember = async (nickname) => {
@@ -433,6 +533,42 @@ function App() {
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== nickname))
   }
 
+  if (!loggedInNickname) {
+    return (
+      <div className="login-screen">
+        <form className="login-card" onSubmit={handleLogin}>
+          <p className="eyebrow centered">아이온2 · 레이드 파티 조율</p>
+          <h1>닉네임 로그인</h1>
+          <p className="login-subtitle">로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.</p>
+
+          <label htmlFor="loginNickname" className="login-label">닉네임</label>
+          <input
+            id="loginNickname"
+            type="text"
+            value={loginNickname}
+            onChange={(event) => setLoginNickname(event.target.value)}
+            placeholder="본인 닉네임을 입력하세요"
+            autoComplete="nickname"
+          />
+
+          <label className="remember-row" htmlFor="rememberMe">
+            <input
+              id="rememberMe"
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(event) => setRememberMe(event.target.checked)}
+            />
+            <span>기억하기</span>
+          </label>
+
+          <button type="submit" className="primary-button login-button">
+            로그인
+          </button>
+        </form>
+      </div>
+    )
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -440,9 +576,17 @@ function App() {
           <p className="eyebrow">아이온2 · 레이드 파티 조율</p>
           <h1>주간 레이드 캘린더</h1>
         </div>
-        <div className="live-clock">
-          <span>실시간</span>
-          <strong>{currentTime.toLocaleString('ko-KR')}</strong>
+        <div className="user-header-actions">
+          <div className="live-clock">
+            <span>실시간</span>
+            <strong>{currentTime.toLocaleString('ko-KR')}</strong>
+          </div>
+          <div className="user-badge-wrap">
+            <span className="user-badge">{loggedInNickname}</span>
+            <button type="button" className="secondary-button small-logout" onClick={handleLogout}>
+              로그아웃
+            </button>
+          </div>
         </div>
       </header>
 
@@ -665,10 +809,10 @@ function App() {
 
           <div className="member-actions">
             <button type="button" className="primary-button" onClick={saveCurrentProfile}>
-              현재 프로필 저장
+              캘린더에 저장
             </button>
             <button type="button" className="secondary-button" onClick={loadCurrentProfile}>
-              내 스케줄 불러오기
+              내 스케줄 수정
             </button>
           </div>
         </section>
@@ -770,8 +914,11 @@ function App() {
                   return (
                     <div
                       key={`${date.toISOString()}-${time}`}
-                      className={`slot-cell ${slot ? 'occupied' : 'empty'} ${profile.days.includes(weekdayNames[dayIndex]) && profile.times.includes(time) ? 'selected' : ''}`}
+                      className={`slot-cell ${slot ? 'occupied' : 'empty'} ${profile.days.includes(weekdayNames[dayIndex]) && profile.times.includes(time) ? 'selected' : ''} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
                     >
+                      {myScheduleSet.has(`${dayLabel}-${time}`) && (
+                        <span className="my-slot-badge">내 시간</span>
+                      )}
                       {slot ? (
                         <>
                           <strong>{activeTabMeta.raid}</strong>
