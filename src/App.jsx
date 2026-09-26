@@ -28,15 +28,10 @@ const STORAGE_KEY = 'raid-calendar-members-v1'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const timeSlots = [
   '19:00',
-  '19:30',
   '20:00',
-  '20:30',
   '21:00',
-  '21:30',
   '22:00',
-  '22:30',
   '23:00',
-  '23:30',
   '00:00',
 ]
 const classOptions = [
@@ -74,6 +69,11 @@ function getDifficultyForRaid(raidLabel) {
   return '쉬움'
 }
 
+function normalizeLeadReady(value) {
+  const normalized = String(value ?? 'X').toUpperCase()
+  return normalized === 'O' || normalized === 'TRUE' || normalized === 'YES' ? 'O' : 'X'
+}
+
 function getClassIconPath(className) {
   return `/img/${className}.webp`
 }
@@ -108,15 +108,16 @@ const sampleSlotData = []
 function buildDefaultMember(overrides = {}) {
   return {
     id: `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    nickname: '',
-    days: [''],
-    times: [''],
+    nickname: '나의닉네임',
+    days: ['수', '목', '금'],
+    times: ['19:00', '20:00', '21:00'],
     attendance: '참',
-    className: '',
+    className: '수호성',
     power: '600~700k',
     raidFocus: '무스펠',
     difficulty: '쉬움',
     mode: '트라이',
+    leadReady: 'X',
     ...overrides,
   }
 }
@@ -137,6 +138,7 @@ function normalizeMemberRecord(member) {
     raidFocus: member.raid_focus ?? member.raidFocus ?? '무스펠',
     difficulty: member.difficulty ?? getDifficultyForRaid(member.raid_focus ?? member.raidFocus ?? '무스펠'),
     mode: member.mode ?? '트라이',
+    leadReady: normalizeLeadReady(member.lead_ready ?? member.leadReady ?? 'X'),
   }
 }
 
@@ -299,7 +301,11 @@ function App() {
           const key = `${day}-${time}`
           const target = map.get(key) ?? {}
           const existing = target[tabKey] ?? []
-          existing.push({ nickname: member.nickname, className: member.className })
+          existing.push({
+            nickname: member.nickname,
+            className: member.className,
+            leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+          })
           target[tabKey] = existing
           map.set(key, target)
         })
@@ -321,6 +327,7 @@ function App() {
       nickname: trimmedNickname,
       className: profile.className,
       raidFocus: profile.raidFocus,
+      leadReady: normalizeLeadReady(profile.leadReady),
     }
 
     if (supabase) {
@@ -337,6 +344,7 @@ function App() {
             raid_focus: getRaidLabel(nextMember.raidFocus),
             difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
             mode: nextMember.mode ?? '트라이',
+            lead_ready: nextMember.leadReady,
           },
           { onConflict: 'nickname' },
         )
@@ -465,14 +473,31 @@ function App() {
           </div>
 
           <div className="field-group">
-            <label htmlFor="nickname">닉네임</label>
-            <input
-              id="nickname"
-              type="text"
-              value={profile.nickname}
-              onChange={(event) => setProfile((prev) => ({ ...prev, nickname: event.target.value }))}
-              placeholder="본인 닉네임 입력"
-            />
+            <div className="field-label-row">
+              <label htmlFor="nickname">닉네임</label>
+              <span className="lead-label-inline">리딩 여부</span>
+            </div>
+            <div className="nickname-row">
+              <input
+                id="nickname"
+                type="text"
+                value={profile.nickname}
+                onChange={(event) => setProfile((prev) => ({ ...prev, nickname: event.target.value }))}
+                placeholder="본인 닉네임 입력"
+              />
+              <div className="lead-toggle" aria-label="리딩 가능 여부">
+                {['O', 'X'].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={profile.leadReady === value ? 'lead-button active' : 'lead-button'}
+                    onClick={() => setProfile((prev) => ({ ...prev, leadReady: value }))}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="field-group">
@@ -613,6 +638,7 @@ function App() {
               <li>참여 여부: {profile.attendance}</li>
               <li>직업: {profile.className}</li>
               <li>전투력: {profile.power}</li>
+              <li>리딩 가능 여부: {profile.leadReady}</li>
               <li>우선 레이드: {selectedRaidLabel} · {profile.difficulty} · {profile.mode}</li>
             </ul>
           </div>
@@ -630,7 +656,10 @@ function App() {
         <section className="panel calendar-panel">
           <div className="panel-header">
             <h2>주간 레이드 슬롯</h2>
-            <span className="mini-badge">빈 슬롯 기준</span>
+            <div className="slot-legend" aria-label="리딩 여부 범례">
+              <span className="legend-item"><span className="legend-badge lead-yes">O</span> 리딩 가능</span>
+              <span className="legend-item"><span className="legend-badge lead-no">X</span> 리딩 불가</span>
+            </div>
           </div>
 
           <div className="raid-tab-group">
@@ -729,6 +758,7 @@ function App() {
                                       <span className="nickname-with-icon">
                                         <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                         <span>{member.nickname}</span>
+                                        {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
                                     </span>
                                   ))}
@@ -746,6 +776,7 @@ function App() {
                                       <span className="nickname-with-icon">
                                         <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                         <span>{member.nickname}</span>
+                                        {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
                                     </span>
                                   ))}

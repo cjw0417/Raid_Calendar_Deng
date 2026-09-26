@@ -116,12 +116,52 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 14px;
+  gap: 12px;
 }
 
 .panel-header h2 {
   margin: 0;
   font-size: 1.32rem;
   color: #f2f5ff;
+}
+
+.slot-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  color: #dbe7ff;
+}
+
+.legend-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.legend-badge.lead-yes {
+  background: #ff4d4f;
+  color: #fff;
+}
+
+.legend-badge.lead-no {
+  background: rgba(255, 255, 255, 0.1);
+  color: #dbe7ff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .mini-badge {
@@ -186,6 +226,70 @@
   font-weight: 600;
 }
 
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.field-label-row label,
+.lead-label-inline {
+  margin: 0;
+  display: inline-block;
+}
+
+.lead-label-inline {
+  color: #a8bfe8;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.nickname-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.nickname-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+.lead-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  min-width: 96px;
+  padding: 6px 6px;
+  border-radius: 12px;
+  background: rgba(20, 28, 42, 0.9);
+  border: 1px solid rgba(150, 170, 255, 0.18);
+  gap: 4px;
+}
+
+.lead-button {
+  width: 38px;
+  height: 31px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #cfe1ff;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.lead-button.active {
+  background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
+  border: 1px solid rgba(128, 170, 255, 0.55);
+}
+
 .chip-grid {
   display: flex;
   flex-wrap: wrap;
@@ -215,7 +319,7 @@
 }
 
 .time-grid .chip {
-  min-width: 62px;
+  min-width: 74px;
   text-align: center;
 }
 
@@ -361,6 +465,22 @@ input::placeholder {
   height: 14px;
   object-fit: contain;
   flex-shrink: 0;
+}
+
+.lead-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ff4d4f;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .empty-role {
