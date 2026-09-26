@@ -356,6 +356,7 @@ function App() {
         existing.members.push({
           nickname: member.nickname,
           className: member.className,
+          power: member.power ?? '600~700k',
           leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
         })
 
@@ -392,6 +393,7 @@ function App() {
           existing.push({
             nickname: member.nickname,
             className: member.className,
+            power: member.power ?? '600~700k',
             leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
           })
           target[tabKey] = existing
@@ -935,7 +937,10 @@ function App() {
                             {members.map((member) => (
                               <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member">
                                 <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                <span>{member.nickname}</span>
+                                <span className="member-name-wrap">
+                                  <span>{member.nickname}</span>
+                                  <span className="member-power-inline">{member.power}</span>
+                                </span>
                                 {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                               </span>
                             ))}
@@ -1049,7 +1054,10 @@ function App() {
                                     <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill">
                                       <span className="nickname-with-icon">
                                         <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                        <span>{member.nickname}</span>
+                                        <span className="member-name-wrap">
+                                          <span>{member.nickname}</span>
+                                          <span className="member-power-inline">{member.power}</span>
+                                        </span>
                                         {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
                                     </span>
@@ -1067,7 +1075,10 @@ function App() {
                                     <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill">
                                       <span className="nickname-with-icon">
                                         <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                        <span>{member.nickname}</span>
+                                        <span className="member-name-wrap">
+                                          <span>{member.nickname}</span>
+                                          <span className="member-power-inline">{member.power}</span>
+                                        </span>
                                         {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
                                     </span>
