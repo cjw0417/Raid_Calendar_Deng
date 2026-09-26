@@ -560,22 +560,34 @@ function App() {
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
 
+  const hasActiveScheduleSelection = (entry) => {
+    if (!entry || entry.attendance !== '참') {
+      return false
+    }
+
+    const days = Array.isArray(entry.days) ? entry.days : []
+    const times = Array.isArray(entry.times) ? entry.times : []
+    return days.length > 0 && times.length > 0
+  }
+
   const allScheduleEntries = useMemo(() => {
     const merged = [
-      ...raidSchedules.map((entry) => ({
-        nickname: entry.nickname,
-        className: entry.className ?? '수호성',
-        power: entry.power ?? '600~700k',
-        leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
-        raidName: entry.raidName,
-        difficulty: entry.difficulty,
-        mode: entry.mode,
-        days: entry.days,
-        times: entry.times,
-        attendance: entry.attendance,
-      })),
+      ...raidSchedules
+        .filter((entry) => hasActiveScheduleSelection(entry))
+        .map((entry) => ({
+          nickname: entry.nickname,
+          className: entry.className ?? '수호성',
+          power: entry.power ?? '600~700k',
+          leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+          raidName: entry.raidName,
+          difficulty: entry.difficulty,
+          mode: entry.mode,
+          days: entry.days,
+          times: entry.times,
+          attendance: entry.attendance,
+        })),
       ...members
-        .filter((member) => member.attendance === '참')
+        .filter((member) => hasActiveScheduleSelection(member))
         .map((member) => ({
           nickname: member.nickname,
           className: member.className ?? '수호성',
@@ -685,7 +697,7 @@ function App() {
     const map = Object.fromEntries(weekdayNames.map((day) => [day, []]))
 
     allScheduleEntries.forEach((entry) => {
-      if (entry.attendance !== '참') return
+      if (!hasActiveScheduleSelection(entry)) return
 
       entry.days.forEach((day) => {
         if (!map[day]) return
@@ -706,6 +718,56 @@ function App() {
     })
 
     return map
+  }, [allScheduleEntries])
+
+  const memberByRaidDifficulty = useMemo(() => {
+    const map = new Map()
+
+    allScheduleEntries.forEach((entry) => {
+      if (!hasActiveScheduleSelection(entry)) return
+
+      const key = `${entry.raidName} / ${entry.difficulty} / ${entry.mode}`
+      const current = map.get(key) ?? {
+        raidName: entry.raidName,
+        difficulty: entry.difficulty,
+        mode: entry.mode,
+        members: [],
+        days: [],
+        times: [],
+      }
+
+      const memberExists = current.members.some(
+        (member) => member.nickname === entry.nickname && member.className === entry.className,
+      )
+
+      if (!memberExists) {
+        current.members.push({
+          nickname: entry.nickname,
+          className: entry.className,
+          power: entry.power ?? '600~700k',
+          leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+          days: entry.days,
+          times: entry.times,
+        })
+      }
+
+      current.days = [...new Set([...current.days, ...entry.days])]
+      current.times = [...new Set([...current.times, ...entry.times])]
+
+      map.set(key, current)
+    })
+
+    return [...map.values()].sort((a, b) => {
+      const raidOrder = { 무스펠: 0, '비탄의 성역': 1 }
+      const raidDiff = (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
+      if (raidDiff !== 0) return raidDiff
+
+      const difficultyOrder = { 보통: 0, 어려움: 1 }
+      const difficultyDiff = (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
+      if (difficultyDiff !== 0) return difficultyDiff
+
+      return (a.mode ?? '').localeCompare(b.mode ?? '')
+    })
   }, [allScheduleEntries])
 
   const dayRaidSummary = useMemo(() => {
@@ -779,7 +841,7 @@ function App() {
     ]
 
     scheduleEntries.forEach((entry) => {
-      if (entry.attendance !== '참') return
+      if (!hasActiveScheduleSelection(entry)) return
 
       const tabKey = `${entry.raidName} ${entry.difficulty} ${entry.mode}`
 
@@ -1616,27 +1678,31 @@ function App() {
           </div>
 
           <div className="member-day-summary">
-            <h3>요일별 선택 회원</h3>
+            <h3>보스 난이도별 선택 회원</h3>
             <div className="weekday-list">
-              {weekdayNames.map((day) => (
-                <div key={day} className="weekday-card">
-                  <span className="weekday-title">{day}요일</span>
-                  <div className="member-tags">
-                    {memberByDay[day]?.length ? (
-                      memberByDay[day].map(({ nickname, className }) => (
-                        <span key={`${day}-${nickname}`} className="member-tag">
+              {memberByRaidDifficulty.length ? (
+                memberByRaidDifficulty.map(({ raidName, difficulty, mode, members, days, times }) => (
+                  <div key={`${raidName}-${difficulty}-${mode}`} className="weekday-card">
+                    <span className="weekday-title">{raidName} · {difficulty} · {mode}</span>
+                    <div className="member-tags">
+                      {members.map(({ nickname, className, power, leadReady }) => (
+                        <span key={`${raidName}-${difficulty}-${mode}-${nickname}`} className="member-tag">
                           <span className="nickname-with-icon small">
                             <img src={getClassIconPath(className)} alt={className} className="nickname-icon" />
-                            <span>{nickname}</span>
+                            <span className="member-name-wrap">
+                              <span>{nickname}</span>
+                              <span className="member-power-inline">{power}</span>
+                            </span>
+                            {leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                           </span>
                         </span>
-                      ))
-                    ) : (
-                      <span className="empty-role">선택 인원 없음</span>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <span className="empty-role">선택 인원 없음</span>
+              )}
             </div>
           </div>
 
