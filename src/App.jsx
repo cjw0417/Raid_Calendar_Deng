@@ -317,6 +317,7 @@ function App() {
 
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = raidTabOptions.find((tab) => tab.label === activeRaidTab) ?? raidTabOptions[0]
+  const isSharedMode = Boolean(supabase)
 
   const memberByDay = useMemo(
     () =>
@@ -539,6 +540,11 @@ function App() {
         <form className="login-card" onSubmit={handleLogin}>
           <p className="eyebrow centered">아이온2 · 레이드 파티 조율</p>
           <h1>닉네임 로그인</h1>
+          {!isSharedMode && (
+            <p className="login-warning">
+              공유 캘린더 모드가 비활성화되어 있어요. 다른 PC/IP에서 스케줄을 보려면 Supabase 환경 변수를 연결해야 합니다.
+            </p>
+          )}
           <p className="login-subtitle">로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.</p>
 
           <label htmlFor="loginNickname" className="login-label">닉네임</label>
@@ -577,6 +583,11 @@ function App() {
           <h1>주간 레이드 캘린더</h1>
         </div>
         <div className="user-header-actions">
+          {!isSharedMode && (
+            <div className="shared-mode-warning">
+              공유 저장소가 비활성화됨 · 다른 IP에서 보이지 않음
+            </div>
+          )}
           <div className="live-clock">
             <span>실시간</span>
             <strong>{currentTime.toLocaleString('ko-KR')}</strong>
