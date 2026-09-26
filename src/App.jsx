@@ -733,14 +733,32 @@ function App() {
     })
   }
 
-  const loadCurrentProfile = async () => {
+  const clearCurrentSchedule = async () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
     if (!trimmedNickname) {
       return
     }
 
-    await loadCurrentProfileByNickname(trimmedNickname)
+    const confirmed = window.confirm(`${trimmedNickname}님의 스케줄을 삭제하시겠습니까?`)
+
+    if (!confirmed) {
+      return
+    }
+
+    setProfile((prev) => ({ ...prev, days: [], times: [] }))
+    setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
+
+    if (supabase) {
+      await supabase
+        .from('members')
+        .update({
+          days: [],
+          times: [],
+          updated_at: new Date().toISOString(),
+        })
+        .eq('nickname', trimmedNickname)
+    }
   }
 
   const deleteMember = async (nickname) => {
@@ -1052,8 +1070,8 @@ function App() {
             <button type="button" className="primary-button" onClick={saveCurrentProfile}>
               캘린더에 저장
             </button>
-            <button type="button" className="secondary-button" onClick={loadCurrentProfile}>
-              내 스케줄 수정
+            <button type="button" className="secondary-button" onClick={clearCurrentSchedule}>
+              내 스케줄 삭제
             </button>
           </div>
         </section>
