@@ -168,6 +168,7 @@ function App() {
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 쉬움')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
+  const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
   const [profile, setProfile] = useState(() => buildDefaultMember())
   const [members, setMembers] = useState(() => loadLocalMembers())
 
@@ -674,12 +675,31 @@ function App() {
 
         <section className="panel calendar-panel">
           <div className="panel-header">
-            <h2>주간 레이드 슬롯</h2>
+            <div className="panel-header-title-wrap">
+              <h2>주간 레이드 슬롯</h2>
+              <button
+                type="button"
+                className="help-toggle small"
+                onClick={() => setCalendarHelpOpen((prev) => !prev)}
+                aria-label="캘린더 사용 방법 보기"
+                aria-expanded={calendarHelpOpen}
+              >
+                ?
+              </button>
+            </div>
             <div className="slot-legend" aria-label="리딩 여부 범례">
               <span className="legend-item"><span className="legend-badge lead-yes">O</span> 리딩 가능</span>
               <span className="legend-item"><span className="legend-badge lead-no">X</span> 리딩 불가</span>
             </div>
           </div>
+
+          {calendarHelpOpen && (
+            <div className="help-panel compact">
+              <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
+              <p>• 각 시간칸에는 해당 조건의 파티 인원이 A/B 파티로 나뉘어 보여요.</p>
+              <p>• O는 리딩 가능, X는 리딩 불가를 의미해요.</p>
+            </div>
+          )}
 
           <div className="raid-tab-group">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">

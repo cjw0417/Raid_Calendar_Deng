@@ -139,6 +139,12 @@
   cursor: pointer;
 }
 
+.help-toggle.small {
+  width: 22px;
+  height: 22px;
+  font-size: 0.7rem;
+}
+
 .help-panel {
   margin: -8px 0 14px;
   padding: 12px 14px;
@@ -150,8 +156,19 @@
   line-height: 1.6;
 }
 
+.help-panel.compact {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
 .help-panel p {
   margin: 0;
+}
+
+.panel-header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .slot-legend {
