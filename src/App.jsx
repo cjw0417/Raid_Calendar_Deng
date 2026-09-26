@@ -10,21 +10,27 @@ const raidOptions = [
   },
   {
     id: 'snow',
-    label: '비탄의 설원',
+    label: '비탄의 성역',
     modes: ['보통(트라이)', '어려움(트라이)', '보통(반숙이상)', '어려움(반숙이상)'],
   },
 ]
 
-const difficultyOptions = ['쉬움', '보통', '어려움']
+const difficultyOptions = ['보통', '어려움']
 const modeOptions = ['트라이', '반숙이상']
 const raidTabOptions = [
-  { id: 'muspel-easy', label: '무스펠 쉬움', raid: '무스펠', difficulty: '쉬움' },
+  { id: 'muspel-normal', label: '무스펠 보통', raid: '무스펠', difficulty: '보통' },
   { id: 'muspel-hard', label: '무스펠 어려움', raid: '무스펠', difficulty: '어려움' },
-  { id: 'snow-normal', label: '비탄의 설원 보통', raid: '비탄의 설원', difficulty: '보통' },
-  { id: 'snow-hard', label: '비탄의 설원 어려움', raid: '비탄의 설원', difficulty: '어려움' },
+  { id: 'snow-normal', label: '비탄의 성역 보통', raid: '비탄의 성역', difficulty: '보통' },
+  { id: 'snow-hard', label: '비탄의 성역 어려움', raid: '비탄의 성역', difficulty: '어려움' },
 ]
 
+const raidDifficultyAvailability = {
+  무스펠: ['보통', '어려움'],
+  '비탄의 성역': ['보통', '어려움'],
+}
+
 const STORAGE_KEY = 'raid-calendar-members-v1'
+const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
@@ -130,13 +136,21 @@ const powerOptions = [
 ]
 
 function getRaidLabel(raidValue) {
-  const normalized = String(raidValue ?? '').replace('비탄의 설원', '비탄의설원').replace('비탄의설원', '비탄의설원')
-  return raidOptions.find((raid) => raid.id === raidValue || raid.label === raidValue || raid.label.replace(' ', '') === normalized)?.label ?? '무스펠'
+  const normalized = String(raidValue ?? '')
+    .replace(/비탄의\s*설원/g, '비탄의 성역')
+    .replace(/비탄의\s*성역/g, '비탄의 성역')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return raidOptions.find((raid) => {
+    const label = raid.label
+    return raid.id === raidValue || label === raidValue || label.replace(/\s+/g, ' ') === normalized
+  })?.label ?? '무스펠'
 }
 
 function getDifficultyForRaid(raidLabel) {
-  if (raidLabel === '비탄의 설원') return '보통'
-  return '쉬움'
+  if (raidLabel === '비탄의 성역' || raidLabel === '비탄의 설원') return '보통'
+  return '보통'
 }
 
 function normalizeLeadReady(value) {
@@ -190,7 +204,7 @@ function buildDefaultMember(overrides = {}) {
     className: '수호성',
     power: '600~700k',
     raidFocus: '무스펠',
-    difficulty: '쉬움',
+    difficulty: '보통',
     mode: '트라이',
     leadReady: 'X',
     ...overrides,
@@ -217,6 +231,32 @@ function normalizeMemberRecord(member) {
   }
 }
 
+function normalizeRaidScheduleEntry(entry) {
+  if (!entry) {
+    return null
+  }
+
+  const nickname = entry.nickname ?? '닉네임'
+  const raidName = entry.raid_name ?? entry.raidName ?? '무스펠'
+  const difficulty = entry.difficulty ?? '쉬움'
+  const mode = entry.mode ?? '트라이'
+
+  return {
+    id: entry.id ?? `schedule-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    nickname,
+    raidName,
+    difficulty,
+    mode,
+    days: Array.isArray(entry.days) ? entry.days : [],
+    times: Array.isArray(entry.times) ? entry.times : [],
+    attendance: entry.attendance ?? '참',
+    className: entry.class_name ?? entry.className ?? '수호성',
+    power: entry.power ?? '600~700k',
+    leadReady: normalizeLeadReady(entry.lead_ready ?? entry.leadReady ?? 'X'),
+    updatedAt: entry.updated_at ?? entry.updatedAt ?? new Date().toISOString(),
+  }
+}
+
 function loadLocalMembers() {
   const saved = localStorage.getItem(STORAGE_KEY)
 
@@ -234,6 +274,25 @@ function loadLocalMembers() {
 
 function saveLocalMembers(nextMembers) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(nextMembers))
+}
+
+function loadLocalRaidSchedules() {
+  const saved = localStorage.getItem(RAID_SCHEDULES_STORAGE_KEY)
+
+  if (!saved) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(saved)
+    return Array.isArray(parsed) ? parsed.map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+function saveLocalRaidSchedules(nextSchedules) {
+  localStorage.setItem(RAID_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
 }
 
 function readStoredLoginNickname() {
@@ -262,7 +321,7 @@ function App() {
   const [currentTime, setCurrentTime] = useState(new Date())
   const [nextReset, setNextReset] = useState(() => getNextResetDate())
   const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
-  const [activeRaidTab, setActiveRaidTab] = useState('무스펠 쉬움')
+  const [activeRaidTab, setActiveRaidTab] = useState('무스펠 보통')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
   const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
@@ -271,6 +330,7 @@ function App() {
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
+  const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
 
   useEffect(() => {
@@ -298,6 +358,7 @@ function App() {
   useEffect(() => {
     if (!supabase) {
       saveLocalMembers(members)
+      saveLocalRaidSchedules(raidSchedules)
       return
     }
 
@@ -313,9 +374,22 @@ function App() {
       }
     }
 
-    loadRemoteMembers()
+    const loadRemoteRaidSchedules = async () => {
+      const { data, error } = await supabase.from('raid_schedules').select('*').order('updated_at', { ascending: false })
 
-    const channel = supabase
+      if (!error && Array.isArray(data)) {
+        const normalized = data
+          .map((entry) => normalizeRaidScheduleEntry(entry))
+          .filter(Boolean)
+
+        setRaidSchedules(normalized)
+      }
+    }
+
+    loadRemoteMembers()
+    loadRemoteRaidSchedules()
+
+    const memberChannel = supabase
       .channel('members-live')
       .on(
         'postgres_changes',
@@ -343,16 +417,46 @@ function App() {
       )
       .subscribe()
 
+    const raidScheduleChannel = supabase
+      .channel('raid-schedules-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'raid_schedules' },
+        (payload) => {
+          const nextEntry = normalizeRaidScheduleEntry(payload.new ?? payload.old)
+
+          if (!nextEntry) {
+            setRaidSchedules((prev) => prev.filter((entry) => !(entry.nickname === (payload.old?.nickname ?? '') && entry.raidName === (payload.old?.raid_name ?? '') && entry.difficulty === (payload.old?.difficulty ?? '') && entry.mode === (payload.old?.mode ?? ''))))
+            return
+          }
+
+          setRaidSchedules((prev) => {
+            const exists = prev.findIndex((entry) => entry.nickname === nextEntry.nickname && entry.raidName === nextEntry.raidName && entry.difficulty === nextEntry.difficulty && entry.mode === nextEntry.mode)
+
+            if (exists >= 0) {
+              const updated = [...prev]
+              updated[exists] = nextEntry
+              return updated
+            }
+
+            return [nextEntry, ...prev]
+          })
+        },
+      )
+      .subscribe()
+
     return () => {
-      supabase.removeChannel(channel)
+      supabase.removeChannel(memberChannel)
+      supabase.removeChannel(raidScheduleChannel)
     }
   }, [])
 
   useEffect(() => {
     if (!supabase) {
       saveLocalMembers(members)
+      saveLocalRaidSchedules(raidSchedules)
     }
-  }, [members])
+  }, [members, raidSchedules])
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -362,6 +466,21 @@ function App() {
 
     return () => clearInterval(timer)
   }, [])
+
+  const visibleRaidTabs = useMemo(
+    () =>
+      raidTabOptions.filter((tab) => {
+        const availableDifficulties = raidDifficultyAvailability[tab.raid] ?? [tab.difficulty]
+        return availableDifficulties.includes(tab.difficulty)
+      }),
+    [],
+  )
+
+  useEffect(() => {
+    if (!visibleRaidTabs.some((tab) => tab.label === activeRaidTab)) {
+      setActiveRaidTab(visibleRaidTabs[0]?.label ?? '무스펠 보통')
+    }
+  }, [activeRaidTab, visibleRaidTabs])
 
   const countdown = useMemo(() => {
     const diff = nextReset.getTime() - currentTime.getTime()
@@ -438,24 +557,91 @@ function App() {
     )
   }, [profile.days, profile.times])
 
-  const myScheduleSet = useMemo(() => {
-    const scheduleMember =
-      members.find((member) => member.nickname === loggedInNickname) ??
-      {
-        days: profile.days,
-        times: profile.times,
+  const allScheduleEntries = useMemo(() => {
+    const merged = [
+      ...raidSchedules.map((entry) => ({
+        nickname: entry.nickname,
+        className: entry.className ?? '수호성',
+        power: entry.power ?? '600~700k',
+        leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+        raidName: entry.raidName,
+        difficulty: entry.difficulty,
+        mode: entry.mode,
+        days: entry.days,
+        times: entry.times,
+        attendance: entry.attendance,
+      })),
+      ...members
+        .filter((member) => member.attendance === '참')
+        .map((member) => ({
+          nickname: member.nickname,
+          className: member.className ?? '수호성',
+          power: member.power ?? '600~700k',
+          leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+          raidName: getRaidLabel(member.raidFocus),
+          difficulty: member.difficulty ?? getDifficultyForRaid(getRaidLabel(member.raidFocus)),
+          mode: member.mode ?? '트라이',
+          days: member.days,
+          times: member.times,
+          attendance: member.attendance,
+        })),
+    ]
+
+    const uniqueEntries = new Map()
+
+    merged.forEach((entry) => {
+      const key = `${entry.nickname}|${entry.raidName}|${entry.difficulty}|${entry.mode}`
+      const existingEntry = uniqueEntries.get(key)
+
+      if (!existingEntry) {
+        uniqueEntries.set(key, entry)
+        return
       }
+
+      uniqueEntries.set(key, {
+        ...existingEntry,
+        ...entry,
+        className: entry.className || existingEntry.className,
+        power: entry.power || existingEntry.power,
+        leadReady: normalizeLeadReady(entry.leadReady || existingEntry.leadReady),
+        days: entry.days.length > 0 ? entry.days : existingEntry.days,
+        times: entry.times.length > 0 ? entry.times : existingEntry.times,
+      })
+    })
+
+    return [...uniqueEntries.values()]
+  }, [members, raidSchedules])
+
+  const myScheduleSet = useMemo(() => {
+    const scheduleEntries = allScheduleEntries.filter(
+      (entry) => entry.nickname === loggedInNickname || entry.nickname === profile.nickname,
+    )
 
     const nextSet = new Set()
 
-    scheduleMember.days.forEach((day) => {
-      scheduleMember.times.forEach((time) => {
+    if (scheduleEntries.length > 0) {
+      scheduleEntries.forEach((entry) => {
+        entry.days.forEach((day) => {
+          entry.times.forEach((time) => {
+            nextSet.add(`${day}-${time}`)
+          })
+        })
+      })
+
+      return nextSet
+    }
+
+    const fallbackDays = profile.days ?? []
+    const fallbackTimes = profile.times ?? []
+
+    fallbackDays.forEach((day) => {
+      fallbackTimes.forEach((time) => {
         nextSet.add(`${day}-${time}`)
       })
     })
 
     return nextSet
-  }, [loggedInNickname, members, profile.days, profile.times])
+  }, [allScheduleEntries, loggedInNickname, profile.days, profile.nickname, profile.times])
 
   const getDayTimeSlots = (date) => {
     const day = date.getDay()
@@ -481,35 +667,46 @@ function App() {
   }
 
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
-  const activeTabMeta = raidTabOptions.find((tab) => tab.label === activeRaidTab) ?? raidTabOptions[0]
+  const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
   const isSharedMode = Boolean(supabase)
 
-  const memberByDay = useMemo(
-    () =>
-      Object.fromEntries(
-        weekdayNames.map((day) => [
-          day,
-          members
-            .filter((member) => member.days.includes(day) && member.attendance === '참')
-            .map((member) => ({ nickname: member.nickname, className: member.className })),
-        ]),
-      ),
-    [members],
-  )
+  const memberByDay = useMemo(() => {
+    const map = Object.fromEntries(weekdayNames.map((day) => [day, []]))
+
+    allScheduleEntries.forEach((entry) => {
+      if (entry.attendance !== '참') return
+
+      entry.days.forEach((day) => {
+        if (!map[day]) return
+
+        const exists = map[day].some(
+          (member) => member.nickname === entry.nickname && member.className === entry.className,
+        )
+
+        if (!exists) {
+          map[day].push({
+            nickname: entry.nickname,
+            className: entry.className,
+            power: entry.power,
+            leadReady: entry.leadReady,
+          })
+        }
+      })
+    })
+
+    return map
+  }, [allScheduleEntries])
 
   const dayRaidSummary = useMemo(() => {
     return weekdayNames.map((day) => {
-      const dayMembers = members.filter(
-        (member) => member.days.includes(day) && member.attendance === '참',
+      const dayMembers = allScheduleEntries.filter(
+        (entry) => entry.attendance === '참' && entry.days.includes(day),
       )
 
       const raidGroups = new Map()
 
-      dayMembers.forEach((member) => {
-        const raidLabel = getRaidLabel(member.raidFocus)
-        const difficulty = member.difficulty ?? getDifficultyForRaid(raidLabel)
-        const mode = member.mode ?? '트라이'
-        const key = `${raidLabel} / ${difficulty} / ${mode}`
+      dayMembers.forEach((entry) => {
+        const key = `${entry.raidName} / ${entry.difficulty} / ${entry.mode}`
 
         const existing = raidGroups.get(key) ?? {
           label: key,
@@ -517,12 +714,12 @@ function App() {
           members: [],
         }
 
-        member.times.forEach((time) => existing.times.add(time))
+        entry.times.forEach((time) => existing.times.add(time))
         existing.members.push({
-          nickname: member.nickname,
-          className: member.className,
-          power: member.power ?? '600~700k',
-          leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+          nickname: entry.nickname,
+          className: entry.className,
+          power: entry.power ?? '600~700k',
+          leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
         })
 
         raidGroups.set(key, existing)
@@ -537,29 +734,54 @@ function App() {
         })),
       }
     })
-  }, [members])
+  }, [allScheduleEntries])
 
   const memberByRaidDateTime = useMemo(() => {
     const map = new Map()
+    const scheduleEntries = [
+      ...raidSchedules.map((entry) => ({
+        nickname: entry.nickname,
+        className: entry.className,
+        power: entry.power,
+        leadReady: entry.leadReady,
+        raidName: entry.raidName,
+        difficulty: entry.difficulty,
+        mode: entry.mode,
+        days: entry.days,
+        times: entry.times,
+        attendance: entry.attendance,
+      })),
+      ...members
+        .filter((member) => member.attendance === '참' && (member.days.length > 0 || member.times.length > 0))
+        .map((member) => ({
+          nickname: member.nickname,
+          className: member.className,
+          power: member.power ?? '600~700k',
+          leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+          raidName: getRaidLabel(member.raidFocus),
+          difficulty: member.difficulty ?? getDifficultyForRaid(getRaidLabel(member.raidFocus)),
+          mode: member.mode ?? '트라이',
+          days: member.days,
+          times: member.times,
+          attendance: member.attendance,
+        })),
+    ]
 
-    members.forEach((member) => {
-      if (member.attendance !== '참') return
+    scheduleEntries.forEach((entry) => {
+      if (entry.attendance !== '참') return
 
-      const raidLabel = getRaidLabel(member.raidFocus)
-      const difficulty = member.difficulty ?? getDifficultyForRaid(raidLabel)
-      const mode = member.mode ?? '트라이'
-      const tabKey = `${raidLabel} ${difficulty} ${mode}`
+      const tabKey = `${entry.raidName} ${entry.difficulty} ${entry.mode}`
 
-      member.days.forEach((day) => {
-        member.times.forEach((time) => {
+      entry.days.forEach((day) => {
+        entry.times.forEach((time) => {
           const key = `${day}-${time}`
           const target = map.get(key) ?? {}
           const existing = target[tabKey] ?? []
           existing.push({
-            nickname: member.nickname,
-            className: member.className,
-            power: member.power ?? '600~700k',
-            leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+            nickname: entry.nickname,
+            className: entry.className,
+            power: entry.power ?? '600~700k',
+            leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
           })
           target[tabKey] = existing
           map.set(key, target)
@@ -568,7 +790,7 @@ function App() {
     })
 
     return map
-  }, [members])
+  }, [members, raidSchedules])
 
   const activeRaidScheduleEntries = useMemo(() => {
     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
@@ -682,23 +904,42 @@ function App() {
       leadReady: normalizeLeadReady(profile.leadReady),
     }
 
+    const scheduleEntry = {
+      nickname: trimmedNickname,
+      raid_name: getRaidLabel(nextMember.raidFocus),
+      difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
+      mode: nextMember.mode ?? '트라이',
+      days: nextMember.days,
+      times: nextMember.times,
+      attendance: nextMember.attendance,
+      class_name: nextMember.className,
+      power: nextMember.power,
+      lead_ready: nextMember.leadReady,
+    }
+
     if (supabase) {
       const { data, error } = await supabase
         .from('members')
         .upsert(
           {
             nickname: nextMember.nickname,
-            days: nextMember.days,
-            times: nextMember.times,
             attendance: nextMember.attendance,
             class_name: nextMember.className,
             power: nextMember.power,
-            raid_focus: getRaidLabel(nextMember.raidFocus),
-            difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
-            mode: nextMember.mode ?? '트라이',
             lead_ready: nextMember.leadReady,
           },
           { onConflict: 'nickname' },
+        )
+        .select()
+
+      const scheduleResult = await supabase
+        .from('raid_schedules')
+        .upsert(
+          {
+            ...scheduleEntry,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'nickname,raid_name,difficulty,mode' },
         )
         .select()
 
@@ -717,19 +958,67 @@ function App() {
         })
       }
 
+      if (!scheduleResult.error && Array.isArray(scheduleResult.data)) {
+        setRaidSchedules((prevSchedules) => {
+          const normalized = scheduleResult.data.map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean)
+          const nextSchedules = [...prevSchedules]
+
+          normalized.forEach((entry) => {
+            const index = nextSchedules.findIndex((item) => item.nickname === entry.nickname && item.raidName === entry.raidName && item.difficulty === entry.difficulty && item.mode === entry.mode)
+
+            if (index >= 0) {
+              nextSchedules[index] = entry
+            } else {
+              nextSchedules.push(entry)
+            }
+          })
+
+          return nextSchedules
+        })
+      }
+
       return
     }
 
+    const nextLocalMember = {
+      ...nextMember,
+      id: `member-${Date.now()}`,
+      days: nextMember.days,
+      times: nextMember.times,
+      raidFocus: getRaidLabel(nextMember.raidFocus),
+      difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
+      mode: nextMember.mode ?? '트라이',
+    }
     setMembers((prevMembers) => {
       const targetIndex = prevMembers.findIndex((member) => member.nickname === trimmedNickname)
 
       if (targetIndex >= 0) {
         const nextMembers = [...prevMembers]
-        nextMembers[targetIndex] = { ...nextMembers[targetIndex], ...nextMember, nickname: trimmedNickname }
+        nextMembers[targetIndex] = { ...nextMembers[targetIndex], ...nextLocalMember, nickname: trimmedNickname }
         return nextMembers
       }
 
-      return [...prevMembers, { ...nextMember, id: `member-${Date.now()}`, nickname: trimmedNickname }]
+      return [...prevMembers, { ...nextLocalMember, nickname: trimmedNickname }]
+    })
+
+    const localEntry = normalizeRaidScheduleEntry({
+      ...scheduleEntry,
+      className: scheduleEntry.class_name,
+      leadReady: scheduleEntry.lead_ready,
+      raidName: scheduleEntry.raid_name,
+      updatedAt: new Date().toISOString(),
+    })
+
+    setRaidSchedules((prevSchedules) => {
+      const nextSchedules = [...prevSchedules]
+      const index = nextSchedules.findIndex((entry) => entry.nickname === trimmedNickname && entry.raidName === localEntry.raidName && entry.difficulty === localEntry.difficulty && entry.mode === localEntry.mode)
+
+      if (index >= 0) {
+        nextSchedules[index] = localEntry
+        return nextSchedules
+      }
+
+      return [...nextSchedules, localEntry]
     })
   }
 
@@ -748,8 +1037,14 @@ function App() {
 
     setProfile((prev) => ({ ...prev, days: [], times: [] }))
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
+    setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
 
     if (supabase) {
+      await supabase
+        .from('raid_schedules')
+        .delete()
+        .eq('nickname', trimmedNickname)
+
       await supabase
         .from('members')
         .update({
@@ -759,6 +1054,10 @@ function App() {
         })
         .eq('nickname', trimmedNickname)
     }
+
+    saveLocalRaidSchedules(
+      loadLocalRaidSchedules().filter((entry) => entry.nickname !== trimmedNickname),
+    )
   }
 
   const deleteMember = async (nickname) => {
@@ -1001,22 +1300,23 @@ function App() {
             </div>
 
             <div className="field-group">
-              <label htmlFor="raidFocus">주요 레이드</label>
-              <select
-                id="raidFocus"
-                value={profile.raidFocus}
-                onChange={(event) => {
-                  const nextRaid = event.target.value
-                  const nextDifficulty = getDifficultyForRaid(getRaidLabel(nextRaid))
-                  setProfile((prev) => ({ ...prev, raidFocus: nextRaid, difficulty: nextDifficulty }))
-                }}
-              >
+              <label>주요 레이드</label>
+              <div className="chip-grid raid-option-grid">
                 {raidOptions.map((raid) => (
-                  <option key={raid.id} value={raid.id}>
-                    {raid.label}
-                  </option>
+                  <button
+                    key={raid.id}
+                    type="button"
+                    className={profile.raidFocus === raid.id ? 'chip active' : 'chip'}
+                    onClick={() => {
+                      const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
+                      setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
+                    }}
+                  >
+                    <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
+                    <span>{raid.label}</span>
+                  </button>
                 ))}
-              </select>
+              </div>
             </div>
           </div>
 
@@ -1156,7 +1456,7 @@ function App() {
 
           <div className="raid-tab-group">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">
-              {raidTabOptions.map((tab) => (
+              {visibleRaidTabs.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"

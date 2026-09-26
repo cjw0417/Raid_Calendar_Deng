@@ -14,6 +14,22 @@ create table if not exists public.members (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.raid_schedules (
+  id uuid primary key default gen_random_uuid(),
+  nickname text not null,
+  raid_name text not null,
+  difficulty text not null default '쉬움',
+  mode text not null default '트라이',
+  days text[] not null default '{}',
+  times text[] not null default '{}',
+  attendance text not null default '참',
+  class_name text not null default '수호성',
+  power text not null default '600~700k',
+  lead_ready text not null default 'X',
+  updated_at timestamptz not null default now(),
+  unique (nickname, raid_name, difficulty, mode)
+);
+
 alter table public.members add column if not exists difficulty text not null default '쉬움';
 alter table public.members add column if not exists mode text not null default '트라이';
 alter table public.members add column if not exists lead_ready text not null default 'X';
@@ -34,7 +50,14 @@ before update on public.members
 for each row
 execute procedure public.handle_updated_at();
 
+drop trigger if exists raid_schedules_updated_at on public.raid_schedules;
+create trigger raid_schedules_updated_at
+before update on public.raid_schedules
+for each row
+execute procedure public.handle_updated_at();
+
 alter table public.members enable row level security;
+alter table public.raid_schedules enable row level security;
 
 create policy "Anyone can read members"
 on public.members
@@ -54,5 +77,26 @@ with check (true);
 
 create policy "Anyone can delete members"
 on public.members
+for delete
+using (true);
+
+create policy "Anyone can read raid schedules"
+on public.raid_schedules
+for select
+using (true);
+
+create policy "Anyone can insert raid schedules"
+on public.raid_schedules
+for insert
+with check (true);
+
+create policy "Anyone can update raid schedules"
+on public.raid_schedules
+for update
+using (true)
+with check (true);
+
+create policy "Anyone can delete raid schedules"
+on public.raid_schedules
 for delete
 using (true);

@@ -828,7 +828,9 @@ input::placeholder {
 .nickname-with-icon {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  max-width: 100%;
 }
 
 .nickname-with-icon.small {
@@ -846,9 +848,10 @@ input::placeholder {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 14px;
+  width: 14px;
   height: 14px;
-  padding: 0 3px;
+  min-width: 14px;
+  padding: 0;
   margin-left: 2px;
   border-radius: 999px;
   background: #ff4d4f;
@@ -858,6 +861,7 @@ input::placeholder {
   line-height: 1;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
   flex-shrink: 0;
+  transform: translateY(-1px);
 }
 
 .empty-role {
@@ -1026,6 +1030,9 @@ input::placeholder {
   overflow: hidden;
   flex: 1;
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .time-member-pill .member-name-wrap > span:first-child {
