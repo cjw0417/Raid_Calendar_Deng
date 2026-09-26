@@ -167,6 +167,7 @@ function App() {
   const [nextReset, setNextReset] = useState(() => getNextResetDate())
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 쉬움')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
+  const [helpOpen, setHelpOpen] = useState(false)
   const [profile, setProfile] = useState(() => buildDefaultMember())
   const [members, setMembers] = useState(() => loadLocalMembers())
 
@@ -470,7 +471,25 @@ function App() {
         <section className="panel form-panel">
           <div className="panel-header">
             <h2>나의 레이드 가능 시간</h2>
+            <button
+              type="button"
+              className="help-toggle"
+              onClick={() => setHelpOpen((prev) => !prev)}
+              aria-label="사용 방법 보기"
+              aria-expanded={helpOpen}
+            >
+              ?
+            </button>
           </div>
+
+          {helpOpen && (
+            <div className="help-panel">
+              <p>1. 닉네임과 리딩 여부를 입력해요.</p>
+              <p>2. 가능한 요일과 시간대를 선택해요.</p>
+              <p>3. 저장하면 주간 캘린더에서 해당 시간대에 자동으로 집계돼요.</p>
+              <p>4. 레이드 탭과 난이도/공략 방식을 선택하면 파티 인원을 확인할 수 있어요.</p>
+            </div>
+          )}
 
           <div className="field-group">
             <div className="field-label-row">

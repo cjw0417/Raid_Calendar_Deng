@@ -125,6 +125,35 @@
   color: #f2f5ff;
 }
 
+.help-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(150, 170, 255, 0.25);
+  background: rgba(23, 31, 45, 0.9);
+  color: #dfe9ff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.help-panel {
+  margin: -8px 0 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(18, 26, 40, 0.95);
+  border: 1px solid rgba(150, 170, 255, 0.12);
+  color: #dfe8ff;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.help-panel p {
+  margin: 0;
+}
+
 .slot-legend {
   display: flex;
   align-items: center;
