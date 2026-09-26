@@ -915,17 +915,7 @@ function App() {
           </div>
 
           <div className="field-group">
-            <div className="field-label-row">
-              <label>시간대 선택</label>
-              <button
-                type="button"
-                className="secondary-button small-toggle"
-                onClick={() => setShowDaytimeSlots((prev) => !prev)}
-                title={showDaytimeSlots ? '주말/공휴일 낮시간을 숨깁니다.' : '주말/공휴일 낮시간을 보여줍니다.'}
-              >
-                낮시간 설정
-              </button>
-            </div>
+            <label>시간대 선택</label>
             <div className="chip-grid time-grid">
               {visibleTimeSlots.map((time) => {
                 const selectableTimes = getSelectableTimesForDays(profile.days)
