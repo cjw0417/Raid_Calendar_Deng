@@ -557,6 +557,9 @@ function App() {
     )
   }, [profile.days, profile.times])
 
+  const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
+  const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
+
   const allScheduleEntries = useMemo(() => {
     const merged = [
       ...raidSchedules.map((entry) => ({
@@ -613,9 +616,17 @@ function App() {
   }, [members, raidSchedules])
 
   const myScheduleSet = useMemo(() => {
-    const scheduleEntries = allScheduleEntries.filter(
-      (entry) => entry.nickname === loggedInNickname || entry.nickname === profile.nickname,
-    )
+    const tabRaidName = activeTabMeta?.raid ?? '무스펠'
+    const tabDifficulty = activeTabMeta?.difficulty ?? '보통'
+    const tabMode = activeModeTab ?? '트라이'
+
+    const scheduleEntries = allScheduleEntries.filter((entry) => {
+      const isCurrentUser = entry.nickname === loggedInNickname || entry.nickname === profile.nickname
+      const sameRaid = entry.raidName === tabRaidName
+      const sameDifficulty = entry.difficulty === tabDifficulty
+      const sameMode = entry.mode === tabMode
+      return isCurrentUser && sameRaid && sameDifficulty && sameMode
+    })
 
     const nextSet = new Set()
 
@@ -636,12 +647,14 @@ function App() {
 
     fallbackDays.forEach((day) => {
       fallbackTimes.forEach((time) => {
-        nextSet.add(`${day}-${time}`)
+        if (tabRaidName === getRaidLabel(profile.raidFocus) && tabDifficulty === (profile.difficulty ?? getDifficultyForRaid(getRaidLabel(profile.raidFocus))) && tabMode === (profile.mode ?? '트라이')) {
+          nextSet.add(`${day}-${time}`)
+        }
       })
     })
 
     return nextSet
-  }, [allScheduleEntries, loggedInNickname, profile.days, profile.nickname, profile.times])
+  }, [activeModeTab, activeTabMeta, allScheduleEntries, loggedInNickname, profile.days, profile.difficulty, profile.mode, profile.nickname, profile.raidFocus, profile.times])
 
   const getDayTimeSlots = (date) => {
     const day = date.getDay()
@@ -666,8 +679,6 @@ function App() {
     return day === 0 || day === 6 || holidaySet.has(isoKey)
   }
 
-  const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
-  const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
   const isSharedMode = Boolean(supabase)
 
   const memberByDay = useMemo(() => {
@@ -1530,7 +1541,7 @@ function App() {
                     return (
                       <div
                         key={`${date.toISOString()}-${time}`}
-                        className={`slot-cell ${slot ? 'occupied' : 'empty'} ${profile.days.includes(weekdayNames[dayIndex]) && profile.times.includes(time) ? 'selected' : ''} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
+                        className={`slot-cell ${slot ? 'occupied' : 'empty'} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
                       >
                         {myScheduleSet.has(`${dayLabel}-${time}`) && (
                           <span className="my-slot-badge">내 시간</span>
