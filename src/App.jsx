@@ -332,6 +332,47 @@ function App() {
     [members],
   )
 
+  const dayRaidSummary = useMemo(() => {
+    return weekdayNames.map((day) => {
+      const dayMembers = members.filter(
+        (member) => member.days.includes(day) && member.attendance === '참',
+      )
+
+      const raidGroups = new Map()
+
+      dayMembers.forEach((member) => {
+        const raidLabel = getRaidLabel(member.raidFocus)
+        const difficulty = member.difficulty ?? getDifficultyForRaid(raidLabel)
+        const mode = member.mode ?? '트라이'
+        const key = `${raidLabel} / ${difficulty} / ${mode}`
+
+        const existing = raidGroups.get(key) ?? {
+          label: key,
+          times: new Set(),
+          members: [],
+        }
+
+        member.times.forEach((time) => existing.times.add(time))
+        existing.members.push({
+          nickname: member.nickname,
+          className: member.className,
+          leadReady: normalizeLeadReady(member.leadReady ?? 'X'),
+        })
+
+        raidGroups.set(key, existing)
+      })
+
+      return {
+        day,
+        raidGroups: [...raidGroups.values()].map((group) => ({
+          label: group.label,
+          times: [...group.times].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)),
+          members: group.members,
+        })),
+      }
+    })
+  }, [members])
+
   const memberByRaidDateTime = useMemo(() => {
     const map = new Map()
 
@@ -361,6 +402,17 @@ function App() {
 
     return map
   }, [members])
+
+  const activeRaidScheduleEntries = useMemo(() => {
+    const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
+
+    return weekdayNames.flatMap((day) =>
+      timeSlots.map((time) => {
+        const people = memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []
+        return people.length > 0 ? { day, time, people } : null
+      }).filter(Boolean),
+    )
+  }, [activeModeTab, activeTabMeta, memberByRaidDateTime])
 
   const handleLogin = async (event) => {
     event.preventDefault()
@@ -538,14 +590,18 @@ function App() {
     return (
       <div className="login-screen">
         <form className="login-card" onSubmit={handleLogin}>
-          <p className="eyebrow centered">아이온2 · 레이드 파티 조율</p>
+          <p className="eyebrow centered">그루 레기온의 성역 스케줄</p>
           <h1>닉네임 로그인</h1>
+
           {!isSharedMode && (
             <p className="login-warning">
               공유 캘린더 모드가 비활성화되어 있어요. 다른 PC/IP에서 스케줄을 보려면 Supabase 환경 변수를 연결해야 합니다.
             </p>
           )}
-          <p className="login-subtitle">로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.</p>
+
+          <p className="login-subtitle">
+            로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.
+          </p>
 
           <label htmlFor="loginNickname" className="login-label">닉네임</label>
           <input
@@ -579,8 +635,8 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">아이온2 · 레이드 파티 조율</p>
-          <h1>주간 레이드 캘린더</h1>
+          <p className="eyebrow">그루 레기온의 성역</p>
+          <h1>스케줄</h1>
         </div>
         <div className="user-header-actions">
           {!isSharedMode && (
@@ -851,10 +907,49 @@ function App() {
           {calendarHelpOpen && (
             <div className="help-panel compact">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
-              <p>• 각 시간칸에는 해당 조건의 파티 인원이 A/B 파티로 나뉘어 보여요.</p>
-              <p>• O는 리딩 가능, X는 리딩 불가를 의미해요.</p>
+              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여주고, A/B 파티로 나뉘어 집계됩니다.</p>
+              <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
+              <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
             </div>
           )}
+
+          <div className="day-raid-summary-panel">
+            <h3>요일별 레이드 신청 현황</h3>
+            <div className="day-raid-summary-grid">
+              {dayRaidSummary.map(({ day, raidGroups }) => (
+                <div key={day} className="day-raid-card">
+                  <div className="day-raid-header">
+                    <span>{day}요일</span>
+                  </div>
+                  {raidGroups.length > 0 ? (
+                    <div className="day-raid-list">
+                      {raidGroups.map(({ label, times, members }) => (
+                        <div key={`${day}-${label}`} className="day-raid-bundle">
+                          <strong>{label}</strong>
+                          <div className="day-raid-times">
+                            {times.length > 0 ? times.map((time) => (
+                              <span key={`${day}-${label}-${time}`} className="day-raid-time-tag">{time}</span>
+                            )) : <span className="empty-role">시간 없음</span>}
+                          </div>
+                          <div className="day-raid-members">
+                            {members.map((member) => (
+                              <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member">
+                                <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                                <span>{member.nickname}</span>
+                                {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-role">신청 인원 없음</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
 
           <div className="raid-tab-group">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">

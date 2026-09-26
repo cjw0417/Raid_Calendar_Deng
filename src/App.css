@@ -14,46 +14,43 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, rgba(86, 108, 255, 0.18), rgba(8, 12, 25, 0.96) 45%);
+  background: rgba(9, 13, 22, 0.95);
 }
 
 .login-card {
-  width: min(100%, 420px);
-  padding: 28px 24px;
-  border-radius: 22px;
-  background: rgba(13, 18, 31, 0.94);
-  border: 1px solid rgba(162, 176, 255, 0.18);
-  box-shadow: 0 18px 45px rgba(5, 9, 18, 0.38);
+  width: min(100%, 560px);
+  padding: 28px 28px 24px;
+  border-radius: 18px;
+  background: rgba(16, 22, 32, 0.94);
+  border: 1px solid rgba(156, 178, 218, 0.14);
+  box-shadow: 0 20px 48px rgba(1, 6, 15, 0.42);
 }
 
 .login-card h1 {
   margin: 0;
-  font-size: clamp(2rem, 3vw, 2.5rem);
+  font-size: clamp(1.9rem, 2.3vw, 2.5rem);
+  line-height: 1.16;
+  letter-spacing: -0.04em;
   color: #edf5ff;
 }
 
 .eyebrow.centered {
-  text-align: center;
-  margin-bottom: 14px;
-}
-
-.login-subtitle {
-  margin: 10px 0 18px;
-  color: #d0dcff;
-  line-height: 1.6;
-  font-size: 0.92rem;
+  text-align: left;
+  margin: 0 0 8px;
+  letter-spacing: normal;
+  font-size: 13px;
 }
 
 .login-warning,
 .shared-mode-warning {
-  margin: 8px 0 14px;
-  padding: 10px 12px;
+  margin: 12px 0 18px;
+  padding: 12px 14px;
   border-radius: 10px;
-  background: rgba(255, 170, 70, 0.12);
-  border: 1px solid rgba(255, 184, 92, 0.32);
-  color: #ffd9a1;
-  font-size: 0.8rem;
-  line-height: 1.5;
+  background: rgba(255, 180, 83, 0.14);
+  border: 1px solid rgba(255, 180, 83, 0.2);
+  color: #f6d7a7;
+  font-size: 0.82rem;
+  line-height: 1.7;
 }
 
 .shared-mode-warning {
@@ -61,32 +58,62 @@
   white-space: nowrap;
 }
 
+.login-subtitle {
+  margin: 0 0 22px;
+  color: #dfe8ff;
+  line-height: 1.8;
+  font-size: 0.92rem;
+}
+
 .login-label {
   display: block;
   margin-bottom: 8px;
-  color: #dfe9ff;
-  font-size: 0.9rem;
-  font-weight: 600;
+  color: #edf3ff;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+#loginNickname {
+  width: 100%;
+  height: 46px;
+  margin: 0 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(151, 168, 214, 0.2);
+  background: rgba(15, 24, 38, 0.8);
+  color: #edf5ff;
+  font-size: 0.98rem;
+  padding: 0 14px;
+  box-sizing: border-box;
+}
+
+#loginNickname::placeholder {
+  color: rgba(210, 220, 244, 0.45);
 }
 
 .remember-row {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-top: 12px;
-  color: #dfe9ff;
-  font-size: 0.9rem;
+  margin: 2px 0 18px;
+  color: #edf5ff;
+  font-size: 0.92rem;
   cursor: pointer;
 }
 
 .remember-row input {
   width: 16px;
   height: 16px;
-  accent-color: #7fa6ff;
+  accent-color: #7ea6ff;
 }
 
 .login-button {
-  margin-top: 14px;
+  width: 100%;
+  margin-top: 0;
+  border-radius: 12px;
+  height: 50px;
+  font-size: 1.02rem;
+  background: linear-gradient(135deg, rgba(99, 118, 255, 0.92), rgba(113, 176, 255, 0.8));
+  color: #f2f7ff;
 }
 
 .user-header-actions {
@@ -555,6 +582,161 @@ input::placeholder {
 .primary-button:hover,
 .secondary-button:hover {
   transform: translateY(-1px);
+}
+
+.day-raid-summary-panel {
+  margin-bottom: 18px;
+  padding: 14px 14px 12px;
+  border-radius: 16px;
+  background: rgba(18, 25, 38, 0.92);
+  border: 1px solid rgba(163, 182, 255, 0.12);
+}
+
+.day-raid-summary-panel h3 {
+  margin: 0 0 12px;
+  color: #edf4ff;
+  font-size: 1rem;
+}
+
+.day-raid-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.day-raid-card {
+  padding: 10px 10px 8px;
+  border-radius: 12px;
+  background: rgba(12, 18, 28, 0.85);
+  border: 1px solid rgba(163, 182, 255, 0.1);
+}
+
+.day-raid-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: #bcd3ff;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+}
+
+.day-raid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.day-raid-bundle {
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(104, 122, 255, 0.09);
+  border: 1px solid rgba(136, 170, 255, 0.12);
+}
+
+.day-raid-bundle strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #dfeaff;
+  font-size: 0.7rem;
+}
+
+.day-raid-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 7px;
+}
+
+.day-raid-time-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(94, 224, 170, 0.12);
+  border: 1px solid rgba(94, 224, 170, 0.26);
+  color: #dffcf2;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.day-raid-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.day-raid-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(104, 122, 255, 0.14);
+  border: 1px solid rgba(136, 170, 255, 0.24);
+  color: #edf5ff;
+  font-size: 0.66rem;
+}
+
+.raid-detail-panel {
+  margin-top: 22px;
+  padding: 14px 14px 12px;
+  border-radius: 16px;
+  background: rgba(18, 25, 38, 0.92);
+  border: 1px solid rgba(163, 182, 255, 0.12);
+}
+
+.raid-detail-panel h3 {
+  margin: 0 0 12px;
+  color: #edf4ff;
+  font-size: 1rem;
+}
+
+.raid-detail-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.raid-detail-item {
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: rgba(12, 18, 28, 0.85);
+  border: 1px solid rgba(163, 182, 255, 0.1);
+}
+
+.raid-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #dfeaff;
+  font-size: 0.78rem;
+}
+
+.raid-detail-header strong {
+  font-size: 0.8rem;
+  color: #b9d4ff;
+}
+
+.raid-detail-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.raid-detail-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(104, 122, 255, 0.14);
+  border: 1px solid rgba(136, 170, 255, 0.24);
+  color: #edf5ff;
+  font-size: 0.7rem;
 }
 
 .member-day-summary,
