@@ -495,6 +495,12 @@
   border-color: rgba(138, 170, 255, 0.38);
 }
 
+.chip.disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  filter: grayscale(0.3);
+}
+
 .chip.active {
   background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
   border-color: rgba(128, 170, 255, 0.55);
@@ -875,6 +881,7 @@ input::placeholder {
 .slot-cell {
   border-radius: 12px;
   min-height: 72px;
+  transition: min-height 0.22s ease, padding 0.22s ease, opacity 0.22s ease, transform 0.22s ease, border-width 0.22s ease, margin 0.22s ease;
 }
 
 .calendar-corner,
@@ -910,6 +917,21 @@ input::placeholder {
   justify-content: center;
   font-size: 0.78rem;
   color: #dfeaff;
+}
+
+.time-label.accordion-collapsed,
+.slot-cell.accordion-collapsed {
+  min-height: 0;
+  height: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+  border-width: 0;
+  pointer-events: none;
 }
 
 .slot-cell {
@@ -1032,6 +1054,12 @@ input::placeholder {
 .slot-cell.empty {
   background: rgba(12, 18, 28, 0.8);
   color: rgba(191, 208, 245, 0.7);
+}
+
+.slot-cell.muted-slot {
+  background: rgba(12, 18, 28, 0.45);
+  border-style: dashed;
+  border-color: rgba(158, 180, 255, 0.08);
 }
 
 .slot-cell.selected {

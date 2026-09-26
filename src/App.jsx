@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
 import './App.css'
 
@@ -27,7 +27,7 @@ const raidTabOptions = [
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
-const timeSlots = [
+const weekdayTimeSlots = [
   '19:00',
   '20:00',
   '21:00',
@@ -35,6 +35,75 @@ const timeSlots = [
   '23:00',
   '00:00',
 ]
+const weekendTimeSlots = [
+  '12:00',
+  '13:00',
+  '14:00',
+  '15:00',
+  '16:00',
+  '17:00',
+  '18:00',
+  '19:00',
+  '20:00',
+  '21:00',
+  '22:00',
+  '23:00',
+  '00:00',
+]
+const hiddenWeekdayTimeSlots = ['12:00', '13:00', '14:00', '15:00', '16:00']
+const timeSlots = Array.from(new Set([...weekdayTimeSlots, ...weekendTimeSlots, ...hiddenWeekdayTimeSlots])).sort((a, b) => {
+  const aMinutes = a === '00:00' ? 24 * 60 : timeToMinutes(a)
+  const bMinutes = b === '00:00' ? 24 * 60 : timeToMinutes(b)
+  return aMinutes - bMinutes
+})
+
+function formatIsoDate(date) {
+  const offset = date.getTimezoneOffset() * 60000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10)
+}
+
+function buildFallbackHolidaySet(year) {
+  const set = new Set()
+  const fixedHolidayDates = [
+    `${year}-01-01`,
+    `${year}-03-01`,
+    `${year}-05-05`,
+    `${year}-06-06`,
+    `${year}-08-15`,
+    `${year}-10-03`,
+    `${year}-10-09`,
+    `${year}-12-25`,
+  ]
+
+  fixedHolidayDates.forEach((date) => set.add(date))
+
+  const lunarHolidayMap = {
+    2025: ['2025-01-29', '2025-01-30', '2025-01-31', '2025-10-06', '2025-10-07', '2025-10-08'],
+    2026: ['2026-02-17', '2026-02-18', '2026-02-19', '2026-10-25', '2026-10-26', '2026-10-27'],
+    2027: ['2027-02-06', '2027-02-07', '2027-02-08', '2027-10-15', '2027-10-16', '2027-10-17'],
+    2028: ['2028-02-24', '2028-02-25', '2028-02-26', '2028-11-02', '2028-11-03', '2028-11-04'],
+    2029: ['2029-02-12', '2029-02-13', '2029-02-14', '2029-10-22', '2029-10-23', '2029-10-24'],
+    2030: ['2030-02-02', '2030-02-03', '2030-02-04', '2030-10-12', '2030-10-13', '2030-10-14'],
+  }
+
+  ;(lunarHolidayMap[year] ?? []).forEach((date) => set.add(date))
+
+  return set
+}
+
+function getHolidaySetForYear(year) {
+  return fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/KR`)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Holiday API failed: ${response.status}`)
+      }
+
+      return response.json()
+    })
+    .then((holidays) => new Set(holidays.map((holiday) => holiday.date)))
+    .catch(() => buildFallbackHolidaySet(year))
+}
+
 const classOptions = [
   '수호성',
   '검성',
@@ -102,6 +171,11 @@ function getNextResetDate() {
   nextReset.setDate(nextReset.getDate() + (daysToWednesday === 0 ? 7 : daysToWednesday))
 
   return nextReset
+}
+
+function timeToMinutes(time) {
+  const [hours, minutes] = time.split(':').map(Number)
+  return hours * 60 + minutes
 }
 
 const sampleSlotData = []
@@ -187,6 +261,7 @@ function App() {
   const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
   const [nextReset, setNextReset] = useState(() => getNextResetDate())
+  const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 쉬움')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
@@ -196,6 +271,29 @@ function App() {
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
+  const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
+
+  useEffect(() => {
+    let isMounted = true
+
+    const year = new Date().getFullYear()
+
+    getHolidaySetForYear(year)
+      .then((nextHolidaySet) => {
+        if (isMounted) {
+          setHolidaySet(nextHolidaySet)
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setHolidaySet(buildFallbackHolidaySet(year))
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!supabase) {
@@ -276,8 +374,52 @@ function App() {
     return { days, hours, minutes, seconds }
   }, [currentTime, nextReset])
 
+  const visibleTimeSlots = profile.days.some((day) => day === '토' || day === '일')
+    ? (showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time)))
+    : weekdayTimeSlots
+
+  const getSelectableTimesForDays = (days) => {
+    if (!days.length) {
+      return weekdayTimeSlots
+    }
+
+    const hasWeekendSelection = days.some((day) => day === '토' || day === '일')
+
+    if (!hasWeekendSelection) {
+      return weekdayTimeSlots
+    }
+
+    return showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
+  }
+
   const toggleMultiSelect = (key, value) => {
     setProfile((prev) => {
+      if (key === 'days') {
+        const nextDays = prev.days.includes(value)
+          ? prev.days.filter((item) => item !== value)
+          : [...prev.days, value]
+
+        return {
+          ...prev,
+          days: nextDays,
+          times: prev.times.filter((time) => getSelectableTimesForDays(nextDays).includes(time)),
+        }
+      }
+
+      if (key === 'times') {
+        const allowedTimes = getSelectableTimesForDays(prev.days)
+        if (!allowedTimes.includes(value)) {
+          return prev
+        }
+
+        const existing = prev.times
+        const nextValues = existing.includes(value)
+          ? existing.filter((item) => item !== value)
+          : [...existing, value]
+
+        return { ...prev, [key]: nextValues }
+      }
+
       const existing = prev[key]
       const nextValues = existing.includes(value)
         ? existing.filter((item) => item !== value)
@@ -314,6 +456,29 @@ function App() {
 
     return nextSet
   }, [loggedInNickname, members, profile.days, profile.times])
+
+  const getDayTimeSlots = (date) => {
+    const day = date.getDay()
+    const isoKey = formatIsoDate(date)
+    const isHoliday = holidaySet.has(isoKey)
+    const isWeekendOrHoliday = day === 0 || day === 6 || isHoliday
+
+    if (!isWeekendOrHoliday) {
+      return weekdayTimeSlots
+    }
+
+    if (!showDaytimeSlots) {
+      return weekendTimeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
+    }
+
+    return weekendTimeSlots
+  }
+
+  const isWeekendOrHoliday = (date) => {
+    const day = date.getDay()
+    const isoKey = formatIsoDate(date)
+    return day === 0 || day === 6 || holidaySet.has(isoKey)
+  }
 
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = raidTabOptions.find((tab) => tab.label === activeRaidTab) ?? raidTabOptions[0]
@@ -750,18 +915,35 @@ function App() {
           </div>
 
           <div className="field-group">
-            <label>시간대 선택</label>
+            <div className="field-label-row">
+              <label>시간대 선택</label>
+              <button
+                type="button"
+                className="secondary-button small-toggle"
+                onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                title={showDaytimeSlots ? '주말/공휴일 낮시간을 숨깁니다.' : '주말/공휴일 낮시간을 보여줍니다.'}
+              >
+                낮시간 설정
+              </button>
+            </div>
             <div className="chip-grid time-grid">
-              {timeSlots.map((time) => (
-                <button
-                  key={time}
-                  type="button"
-                  className={profile.times.includes(time) ? 'chip active' : 'chip'}
-                  onClick={() => toggleMultiSelect('times', time)}
-                >
-                  {time}
-                </button>
-              ))}
+              {visibleTimeSlots.map((time) => {
+                const selectableTimes = getSelectableTimesForDays(profile.days)
+                const isDisabled = !selectableTimes.includes(time)
+
+                return (
+                  <button
+                    key={time}
+                    type="button"
+                    className={`${profile.times.includes(time) ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''}`}
+                    onClick={() => toggleMultiSelect('times', time)}
+                    disabled={isDisabled}
+                    title={isDisabled ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
+                  >
+                    {time}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -901,6 +1083,14 @@ function App() {
               </button>
             </div>
             <div className="slot-legend" aria-label="리딩 여부 범례">
+              <button
+                type="button"
+                className="secondary-button small-toggle"
+                onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                title={showDaytimeSlots ? '주말/공휴일 낮시간을 숨깁니다.' : '주말/공휴일 낮시간을 보여줍니다.'}
+              >
+                낮시간 설정
+              </button>
               <span className="legend-item"><span className="legend-badge lead-yes">O</span> 리딩 가능</span>
               <span className="legend-item"><span className="legend-badge lead-no">X</span> 리딩 불가</span>
             </div>
@@ -1006,96 +1196,104 @@ function App() {
               )
             })}
 
-            {timeSlots.map((time) => (
-              <>
-                <div key={`${time}-label`} className="time-label">
-                  {time}
-                </div>
-                {weekDates.map((date, dayIndex) => {
-                  const slot = sampleSlotData.find(
-                    (entry) => entry.dayIndex === dayIndex && entry.time === time,
-                  )
-                  const dayLabel = date.toLocaleDateString('ko-KR', { weekday: 'short' })
-                  const raidPeople = memberByRaidDateTime.get(`${dayLabel}-${time}`) ?? {}
-                  const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
-                  const people = raidPeople[tabKey] ?? []
-                  const partyA = people.slice(0, 5)
-                  const partyB = people.slice(5, 10)
+            {timeSlots.map((time) => {
+              const shouldCollapseRow = !showDaytimeSlots && hiddenWeekdayTimeSlots.includes(time)
 
-                  return (
-                    <div
-                      key={`${date.toISOString()}-${time}`}
-                      className={`slot-cell ${slot ? 'occupied' : 'empty'} ${profile.days.includes(weekdayNames[dayIndex]) && profile.times.includes(time) ? 'selected' : ''} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
-                    >
-                      {myScheduleSet.has(`${dayLabel}-${time}`) && (
-                        <span className="my-slot-badge">내 시간</span>
-                      )}
-                      {slot ? (
-                        <>
-                          <strong>{activeTabMeta.raid}</strong>
-                          <span>{activeTabMeta.difficulty} · {activeModeTab}</span>
-                          <small>
-                            A {partyA.length}/5 · B {partyB.length}/5
-                          </small>
-                        </>
-                      ) : (
-                        <span className="empty-text">비어 있음</span>
-                      )}
+              return (
+                <Fragment key={time}>
+                  <div className={`time-label ${shouldCollapseRow ? 'accordion-collapsed' : ''}`}>{time}</div>
+                  {weekDates.map((date, dayIndex) => {
+                    const currentDaySlots = getDayTimeSlots(date)
+                    const isVisibleTime = currentDaySlots.includes(time)
+                    const dayLabel = date.toLocaleDateString('ko-KR', { weekday: 'short' })
+                    const slot = sampleSlotData.find(
+                      (entry) => entry.dayIndex === dayIndex && entry.time === time,
+                    )
+                    const raidPeople = memberByRaidDateTime.get(`${dayLabel}-${time}`) ?? {}
+                    const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
+                    const people = raidPeople[tabKey] ?? []
+                    const partyA = people.slice(0, 5)
+                    const partyB = people.slice(5, 10)
 
-                      <div className="raid-group-list">
-                        <div className="raid-group-item selected-raid-item">
-                          <span className="raid-group-label">{activeTabMeta.label}</span>
-                          <div className="party-split">
-                            <div className="party-column">
-                              <span className="party-label">A</span>
-                              {partyA.length > 0 ? (
-                                <div className="time-member-list vertical">
-                                  {partyA.map((member) => (
-                                    <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill">
-                                      <span className="nickname-with-icon">
-                                        <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                        <span className="member-name-wrap">
-                                          <span>{member.nickname}</span>
-                                          <span className="member-power-inline">{member.power}</span>
+                    if (!isVisibleTime || shouldCollapseRow) {
+                      return <div key={`${date.toISOString()}-${time}-empty`} className={`slot-cell empty muted-slot ${shouldCollapseRow ? 'accordion-collapsed' : ''}`} />
+                    }
+
+                    return (
+                      <div
+                        key={`${date.toISOString()}-${time}`}
+                        className={`slot-cell ${slot ? 'occupied' : 'empty'} ${profile.days.includes(weekdayNames[dayIndex]) && profile.times.includes(time) ? 'selected' : ''} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
+                      >
+                        {myScheduleSet.has(`${dayLabel}-${time}`) && (
+                          <span className="my-slot-badge">내 시간</span>
+                        )}
+                        {slot ? (
+                          <>
+                            <strong>{activeTabMeta.raid}</strong>
+                            <span>{activeTabMeta.difficulty} · {activeModeTab}</span>
+                            <small>
+                              A {partyA.length}/5 · B {partyB.length}/5
+                            </small>
+                          </>
+                        ) : (
+                          <span className="empty-text">비어 있음</span>
+                        )}
+
+                        <div className="raid-group-list">
+                          <div className="raid-group-item selected-raid-item">
+                            <span className="raid-group-label">{activeTabMeta.label}</span>
+                            <div className="party-split">
+                              <div className="party-column">
+                                <span className="party-label">A</span>
+                                {partyA.length > 0 ? (
+                                  <div className="time-member-list vertical">
+                                    {partyA.map((member) => (
+                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill">
+                                        <span className="nickname-with-icon">
+                                          <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                                          <span className="member-name-wrap">
+                                            <span>{member.nickname}</span>
+                                            <span className="member-power-inline">{member.power}</span>
+                                          </span>
+                                          {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                         </span>
-                                        {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="empty-raid-text">-</span>
-                              )}
-                            </div>
-                            <div className="party-column">
-                              <span className="party-label">B</span>
-                              {partyB.length > 0 ? (
-                                <div className="time-member-list vertical">
-                                  {partyB.map((member) => (
-                                    <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill">
-                                      <span className="nickname-with-icon">
-                                        <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                        <span className="member-name-wrap">
-                                          <span>{member.nickname}</span>
-                                          <span className="member-power-inline">{member.power}</span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="empty-raid-text">-</span>
+                                )}
+                              </div>
+                              <div className="party-column">
+                                <span className="party-label">B</span>
+                                {partyB.length > 0 ? (
+                                  <div className="time-member-list vertical">
+                                    {partyB.map((member) => (
+                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill">
+                                        <span className="nickname-with-icon">
+                                          <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                                          <span className="member-name-wrap">
+                                            <span>{member.nickname}</span>
+                                            <span className="member-power-inline">{member.power}</span>
+                                          </span>
+                                          {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                         </span>
-                                        {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
                                       </span>
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="empty-raid-text">-</span>
-                              )}
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="empty-raid-text">-</span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  )
-                })}
-              </>
-            ))}
+                    )
+                  })}
+                </Fragment>
+              )
+            })}
           </div>
 
           <div className="member-day-summary">
