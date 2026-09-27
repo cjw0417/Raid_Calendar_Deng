@@ -32,6 +32,8 @@ const raidDifficultyAvailability = {
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
+// 로그인 공용 비밀번호. 바꾸려면 이 값만 수정하면 된다.
+const LOGIN_PASSWORD = '0801'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
   '19:00',
@@ -447,6 +449,8 @@ function App() {
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
   const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
@@ -1007,9 +1011,17 @@ function App() {
     const trimmedNickname = loginNickname.trim()
 
     if (!trimmedNickname) {
+      setLoginError('닉네임을 입력해 주세요.')
       return
     }
 
+    if (loginPassword !== LOGIN_PASSWORD) {
+      setLoginError('비밀번호가 맞지 않아요.')
+      return
+    }
+
+    setLoginError('')
+    setLoginPassword('')
     setLoggedInNickname(trimmedNickname)
 
     if (rememberMe) {
@@ -1390,6 +1402,22 @@ function App() {
             placeholder="본인 닉네임을 입력하세요"
             autoComplete="nickname"
           />
+
+          <label htmlFor="loginPassword" className="login-label">비밀번호</label>
+          <input
+            id="loginPassword"
+            type="password"
+            inputMode="numeric"
+            value={loginPassword}
+            onChange={(event) => {
+              setLoginPassword(event.target.value)
+              setLoginError('')
+            }}
+            placeholder="비밀번호를 입력하세요"
+            autoComplete="current-password"
+          />
+
+          {loginError && <p className="login-error" role="alert">{loginError}</p>}
 
           <label className="remember-row" htmlFor="rememberMe">
             <input

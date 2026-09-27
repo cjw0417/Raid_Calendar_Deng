@@ -73,7 +73,8 @@
   font-weight: 700;
 }
 
-#loginNickname {
+#loginNickname,
+#loginPassword {
   width: 100%;
   height: 46px;
   margin: 0 0 12px;
@@ -86,8 +87,16 @@
   box-sizing: border-box;
 }
 
-#loginNickname::placeholder {
+#loginNickname::placeholder,
+#loginPassword::placeholder {
   color: rgba(210, 220, 244, 0.45);
+}
+
+.login-error {
+  margin: -4px 0 12px;
+  color: #ff9b9b;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .remember-row {
