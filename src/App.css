@@ -600,6 +600,51 @@ input::placeholder {
   transform: translateY(-1px);
 }
 
+.save-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(3, 7, 15, 0.68);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+}
+
+.save-confirm-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: rgba(14, 20, 31, 0.98);
+  border: 1px solid rgba(156, 178, 255, 0.22);
+  border-radius: 18px;
+  box-shadow: 0 24px 48px rgba(2, 6, 14, 0.52);
+  padding: 20px 18px 16px;
+  color: #edf4ff;
+}
+
+.save-confirm-modal h3 {
+  margin: 0 0 10px;
+  font-size: 1.2rem;
+  color: #f4f8ff;
+}
+
+.save-confirm-modal p {
+  margin: 0 0 18px;
+  color: #dce8ff;
+  line-height: 1.6;
+  font-size: 0.92rem;
+}
+
+.save-confirm-nickname {
+  color: #7cc3ff;
+  font-weight: 800;
+}
+
+.save-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 .day-raid-summary-panel {
   margin-bottom: 18px;
   padding: 14px 14px 12px;

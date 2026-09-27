@@ -357,6 +357,7 @@ function App() {
   const [members, setMembers] = useState(() => loadLocalMembers())
   const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
+  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
 
   useEffect(() => {
     let isMounted = true
@@ -1131,6 +1132,11 @@ function App() {
     })
   }
 
+  const confirmSaveCurrentProfile = async () => {
+    setSaveConfirmOpen(false)
+    await saveCurrentProfile()
+  }
+
   const clearCurrentSchedule = async () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
@@ -1249,6 +1255,26 @@ function App() {
           </div>
         </div>
       </header>
+
+      {saveConfirmOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setSaveConfirmOpen(false)}>
+          <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>캘린더에 저장할까요?</h3>
+            <p>
+              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
+              의 레이드 시간 정보를 저장하시겠습니까
+            </p>
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setSaveConfirmOpen(false)}>
+                취소
+              </button>
+              <button type="button" className="primary-button" onClick={confirmSaveCurrentProfile}>
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="summary-grid">
         <article className="summary-card accent">
@@ -1474,7 +1500,7 @@ function App() {
           </div>
 
           <div className="member-actions">
-            <button type="button" className="primary-button" onClick={saveCurrentProfile}>
+            <button type="button" className="primary-button" onClick={() => setSaveConfirmOpen(true)}>
               캘린더에 저장
             </button>
             <button type="button" className="secondary-button" onClick={clearCurrentSchedule}>
