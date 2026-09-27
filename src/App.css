@@ -94,6 +94,28 @@
   margin-top: 10px;
 }
 
+select.login-input {
+  cursor: pointer;
+}
+
+.text-link-button {
+  display: block;
+  margin: 12px auto 0;
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  color: #9fb8ff;
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.text-link-button:hover {
+  color: #c4d4ff;
+}
+
 .password-change-modal .login-input {
   height: 42px;
 }

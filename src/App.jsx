@@ -1,12 +1,17 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
 import {
+  HINT_QUESTIONS,
   PASSWORD_RULE,
   deleteAllMemberSchedules,
   deleteMemberSchedule,
   describeAuthResult,
+  memberGetHintQuestion,
   memberLogin,
+  memberResetPassword,
   memberSetPassword,
+  memberSetupPassword,
+  normalizeHintAnswer,
   saveMemberSchedule,
 } from './lib/memberApi'
 import './App.css'
@@ -435,6 +440,10 @@ function writeStoredLoginNickname(nextNickname) {
   }
 }
 
+function buildEmptyPasswordForm() {
+  return { current: '', next: '', confirm: '', hintQuestion: '', hintAnswer: '', error: '', message: '' }
+}
+
 // 리딩 O/X 표시. 글꼴·화면 배율에 따라 글자가 틀어지지 않도록 SVG로 그린다.
 function LeadMark({ value }) {
   return (
@@ -463,8 +472,10 @@ function App() {
   const [sessionPassword, setSessionPassword] = useState('')
   // 초기 비밀번호로 들어온 경우의 개인 비밀번호 설정 단계: { nickname, currentPassword }
   const [passwordSetup, setPasswordSetup] = useState(null)
-  // 개인 비밀번호 설정 · 변경 폼 (설정 화면과 변경 팝업이 같이 쓴다)
-  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '', error: '', message: '' })
+  // 비밀번호 찾기 단계: { nickname, question } (question이 null이면 닉네임 입력 단계)
+  const [passwordReset, setPasswordReset] = useState(null)
+  // 개인 비밀번호 설정 · 변경 · 찾기 폼 (세 화면이 같이 쓴다)
+  const [passwordForm, setPasswordForm] = useState(() => buildEmptyPasswordForm())
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
@@ -1081,7 +1092,7 @@ function App() {
   }
 
   const resetPasswordForm = () => {
-    setPasswordForm({ current: '', next: '', confirm: '', error: '', message: '' })
+    setPasswordForm(buildEmptyPasswordForm())
   }
 
   const updatePasswordForm = (field, value) => {
@@ -1110,6 +1121,7 @@ function App() {
     event.preventDefault()
 
     const validationError = validateNewPassword(passwordSetup.currentPassword)
+      || (!passwordForm.hintQuestion || normalizeHintAnswer(passwordForm.hintAnswer).length < 2 ? describeAuthResult('hint_required') : '')
 
     if (validationError) {
       setPasswordForm((prev) => ({ ...prev, error: validationError }))
@@ -1117,7 +1129,13 @@ function App() {
     }
 
     try {
-      const result = await memberSetPassword(passwordSetup.nickname, passwordSetup.currentPassword, passwordForm.next)
+      const result = await memberSetupPassword(
+        passwordSetup.nickname,
+        passwordSetup.currentPassword,
+        passwordForm.next,
+        passwordForm.hintQuestion,
+        passwordForm.hintAnswer,
+      )
 
       if (result !== 'ok') {
         setPasswordForm((prev) => ({ ...prev, error: describeAuthResult(result) }))
@@ -1155,9 +1173,78 @@ function App() {
       }
 
       setSessionPassword(passwordForm.next)
-      setPasswordForm({ current: '', next: '', confirm: '', error: '', message: '비밀번호를 바꿨어요.' })
+      setPasswordForm({ ...buildEmptyPasswordForm(), message: '비밀번호를 바꿨어요.' })
     } catch (error) {
       setPasswordForm((prev) => ({ ...prev, error: `비밀번호 변경 중 오류가 났어요. (${error.message})` }))
+    }
+  }
+
+  const openPasswordReset = () => {
+    resetPasswordForm()
+    setLoginError('')
+    setPasswordReset({ nickname: loginNickname.trim(), question: null })
+  }
+
+  const cancelPasswordReset = () => {
+    setPasswordReset(null)
+    resetPasswordForm()
+  }
+
+  // 비밀번호 찾기 1단계: 닉네임으로 찾기 질문을 불러온다.
+  const handlePasswordResetLookup = async (event) => {
+    event.preventDefault()
+
+    const nickname = passwordReset.nickname.trim()
+
+    if (!nickname) {
+      setPasswordForm((prev) => ({ ...prev, error: '닉네임을 입력해 주세요.' }))
+      return
+    }
+
+    try {
+      const { status, question } = await memberGetHintQuestion(nickname)
+
+      if (status !== 'ok') {
+        setPasswordForm((prev) => ({ ...prev, error: describeAuthResult(status) }))
+        return
+      }
+
+      setPasswordReset({ nickname, question })
+      setPasswordForm((prev) => ({ ...prev, error: '' }))
+    } catch (error) {
+      setPasswordForm((prev) => ({ ...prev, error: `질문을 불러오지 못했어요. (${error.message})` }))
+    }
+  }
+
+  // 비밀번호 찾기 2단계: 답을 맞히면 새 비밀번호로 바꾸고 바로 로그인한다.
+  const handlePasswordReset = async (event) => {
+    event.preventDefault()
+
+    const validationError = !passwordForm.hintAnswer.trim() ? '답을 입력해 주세요.' : validateNewPassword('')
+
+    if (validationError) {
+      setPasswordForm((prev) => ({ ...prev, error: validationError }))
+      return
+    }
+
+    try {
+      const result = await memberResetPassword(passwordReset.nickname, passwordForm.hintAnswer, passwordForm.next)
+
+      if (result !== 'ok') {
+        setPasswordForm((prev) => ({
+          ...prev,
+          error: result === 'invalid' ? '답이 맞지 않아요.' : describeAuthResult(result),
+        }))
+        return
+      }
+
+      const { nickname } = passwordReset
+      const nextPassword = passwordForm.next
+      setPasswordReset(null)
+      resetPasswordForm()
+      await completeLogin(nickname, nextPassword)
+    } catch (error) {
+      setPasswordForm((prev) => ({ ...prev, error: `비밀번호 찾기 중 오류가 났어요. (${error.message})` }))
     }
   }
 
@@ -1177,6 +1264,7 @@ function App() {
     setLoginPassword('')
     setSessionPassword('')
     setPasswordSetup(null)
+    setPasswordReset(null)
     setPasswordChangeOpen(false)
     resetPasswordForm()
     setRememberMe(false)
@@ -1517,12 +1605,121 @@ function App() {
             autoComplete="new-password"
           />
 
+          <label htmlFor="setupHintQuestion" className="login-label">비밀번호 찾기 질문</label>
+          <select
+            id="setupHintQuestion"
+            className="login-input"
+            value={passwordForm.hintQuestion}
+            onChange={(event) => updatePasswordForm('hintQuestion', event.target.value)}
+          >
+            <option value="" disabled>질문을 골라 주세요</option>
+            {HINT_QUESTIONS.map((question) => (
+              <option key={question} value={question}>
+                {question}
+              </option>
+            ))}
+          </select>
+
+          <label htmlFor="setupHintAnswer" className="login-label">답</label>
+          <input
+            id="setupHintAnswer"
+            className="login-input"
+            type="text"
+            value={passwordForm.hintAnswer}
+            onChange={(event) => updatePasswordForm('hintAnswer', event.target.value)}
+            placeholder="비밀번호를 잊었을 때 입력할 답 (띄어쓰기 무시)"
+            autoComplete="off"
+          />
+
           {passwordForm.error && <p className="login-error" role="alert">{passwordForm.error}</p>}
 
           <button type="submit" className="primary-button login-button">
             비밀번호 정하고 시작하기
           </button>
           <button type="button" className="secondary-button login-back-button" onClick={cancelPasswordSetup}>
+            처음으로
+          </button>
+        </form>
+      </div>
+    )
+  }
+
+  if (!loggedInNickname && passwordReset) {
+    return (
+      <div className="login-screen">
+        <form className="login-card" onSubmit={passwordReset.question ? handlePasswordReset : handlePasswordResetLookup}>
+          <p className="eyebrow centered">그루 레기온의 설원 스케줄</p>
+          <h1>비밀번호 찾기</h1>
+
+          {!passwordReset.question ? (
+            <>
+              <p className="login-subtitle">닉네임을 입력하면 비밀번호를 정할 때 고른 질문을 보여 드려요.</p>
+
+              <label htmlFor="resetNickname" className="login-label">닉네임</label>
+              <input
+                id="resetNickname"
+                className="login-input"
+                type="text"
+                value={passwordReset.nickname}
+                onChange={(event) => {
+                  const nickname = event.target.value
+                  setPasswordReset((prev) => ({ ...prev, nickname }))
+                  updatePasswordForm('error', '')
+                }}
+                placeholder="본인 닉네임을 입력하세요"
+                autoComplete="nickname"
+              />
+            </>
+          ) : (
+            <>
+              <p className="login-subtitle">
+                <strong className="save-confirm-nickname">{passwordReset.nickname}</strong>님의 질문에 답하고 새 비밀번호를 정해 주세요.
+              </p>
+
+              <p className="login-label">{passwordReset.question}</p>
+              <input
+                id="resetHintAnswer"
+                className="login-input"
+                type="text"
+                aria-label={passwordReset.question}
+                value={passwordForm.hintAnswer}
+                onChange={(event) => updatePasswordForm('hintAnswer', event.target.value)}
+                placeholder="답 (띄어쓰기 무시)"
+                autoComplete="off"
+              />
+
+              <label htmlFor="resetNewPassword" className="login-label">새 비밀번호</label>
+              <input
+                id="resetNewPassword"
+                className="login-input"
+                type="password"
+                inputMode="numeric"
+                value={passwordForm.next}
+                onChange={(event) => updatePasswordForm('next', event.target.value)}
+                placeholder="숫자 4자리 이상"
+                autoComplete="new-password"
+              />
+
+              <label htmlFor="resetConfirmPassword" className="login-label">새 비밀번호 확인</label>
+              <input
+                id="resetConfirmPassword"
+                className="login-input"
+                type="password"
+                inputMode="numeric"
+                value={passwordForm.confirm}
+                onChange={(event) => updatePasswordForm('confirm', event.target.value)}
+                placeholder="한 번 더 입력하세요"
+                autoComplete="new-password"
+              />
+            </>
+          )}
+
+          {passwordForm.error && <p className="login-error" role="alert">{passwordForm.error}</p>}
+
+          <button type="submit" className="primary-button login-button">
+            {passwordReset.question ? '새 비밀번호로 바꾸고 시작하기' : '질문 확인'}
+          </button>
+          <button type="button" className="secondary-button login-back-button" onClick={cancelPasswordReset}>
             처음으로
           </button>
         </form>
@@ -1588,6 +1785,9 @@ function App() {
 
           <button type="submit" className="primary-button login-button" disabled={isLoginPending}>
             {isLoginPending ? '확인 중...' : '로그인'}
+          </button>
+          <button type="button" className="text-link-button" onClick={openPasswordReset}>
+            비밀번호를 잊으셨나요?
           </button>
         </form>
       </div>
