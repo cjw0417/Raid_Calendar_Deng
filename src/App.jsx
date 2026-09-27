@@ -788,12 +788,19 @@ function App() {
         }
 
         entry.times.forEach((time) => existing.times.add(time))
-        existing.members.push({
-          nickname: entry.nickname,
-          className: entry.className,
-          power: entry.power ?? '600~700k',
-          leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
-        })
+
+        const memberExists = existing.members.some(
+          (member) => member.nickname === entry.nickname && member.className === entry.className,
+        )
+
+        if (!memberExists) {
+          existing.members.push({
+            nickname: entry.nickname,
+            className: entry.className,
+            power: entry.power ?? '600~700k',
+            leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+          })
+        }
 
         raidGroups.set(key, existing)
       })
@@ -850,12 +857,16 @@ function App() {
           const key = `${day}-${time}`
           const target = map.get(key) ?? {}
           const existing = target[tabKey] ?? []
-          existing.push({
-            nickname: entry.nickname,
-            className: entry.className,
-            power: entry.power ?? '600~700k',
-            leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
-          })
+
+          if (!existing.some((person) => person.nickname === entry.nickname && person.className === entry.className)) {
+            existing.push({
+              nickname: entry.nickname,
+              className: entry.className,
+              power: entry.power ?? '600~700k',
+              leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+            })
+          }
+
           target[tabKey] = existing
           map.set(key, target)
         })
