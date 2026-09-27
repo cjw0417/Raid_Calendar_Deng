@@ -217,6 +217,7 @@ function timeToMinutes(time) {
 
 const sampleSlotData = []
 
+// 기본 프로필 구조.
 function buildDefaultMember(overrides = {}) {
   return {
     id: `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -341,6 +342,7 @@ function writeStoredLoginNickname(nextNickname) {
   }
 }
 
+// 앱 메인 로직.
 function App() {
   const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -359,6 +361,7 @@ function App() {
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
 
+  // 공휴일, 리셋, 저장 동기화.
   useEffect(() => {
     let isMounted = true
 
@@ -519,6 +522,7 @@ function App() {
     return { days, hours, minutes, seconds }
   }, [currentTime, nextReset])
 
+  // 시간대 노출 조건.
   const visibleTimeSlots = profile.days.some((day) => day === '토' || day === '일')
     ? (showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time)))
     : weekdayTimeSlots
@@ -574,6 +578,7 @@ function App() {
     })
   }
 
+  // 선택 슬롯 매칭.
   const selectedSlots = useMemo(() => {
     const daySet = new Set(profile.days)
     const timeSet = new Set(profile.times)
@@ -586,6 +591,7 @@ function App() {
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
 
+  // 집계용 조건.
   const hasActiveScheduleSelection = (entry) => {
     if (!entry || entry.attendance !== '참') {
       return false
@@ -596,6 +602,7 @@ function App() {
     return days.length > 0 && times.length > 0
   }
 
+  // 전체 스케줄 합치기.
   const allScheduleEntries = useMemo(() => {
     const merged = [
       ...raidSchedules
@@ -653,6 +660,7 @@ function App() {
     return [...uniqueEntries.values()]
   }, [members, raidSchedules])
 
+  // 내 시간대 표시.
   const myScheduleSet = useMemo(() => {
     const tabRaidName = activeTabMeta?.raid ?? '무스펠'
     const tabDifficulty = activeTabMeta?.difficulty ?? '보통'
@@ -746,6 +754,7 @@ function App() {
     return map
   }, [allScheduleEntries])
 
+  // 보스별 / 요일별 집계.
   const memberByRaidDifficulty = useMemo(() => {
     const map = new Map()
 
@@ -996,6 +1005,7 @@ function App() {
     }
   }
 
+  // 저장 로직.
   const saveCurrentProfile = async () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
