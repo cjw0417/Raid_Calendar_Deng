@@ -181,6 +181,10 @@ function getClassIconPath(className) {
   return `/img/${className}.webp`
 }
 
+function getNicknameClassName(nickname) {
+  return nickname && nickname.length >= 4 ? 'nickname-truncate' : ''
+}
+
 function getCurrentWeekDates() {
   const today = new Date()
   const start = new Date(today)
@@ -1538,7 +1542,7 @@ function App() {
                             {members.map((member) => (
                               <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member has-hover-tooltip">
                                 <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                <span className="member-name-wrap">
+                                <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
                                   <span>{member.nickname}</span>
                                   <span className="member-power-inline">{member.power}</span>
                                 </span>
@@ -1669,7 +1673,7 @@ function App() {
                                       <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill has-hover-tooltip">
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                          <span className="member-name-wrap">
+                                          <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
                                             <span>{member.nickname}</span>
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
@@ -1697,7 +1701,7 @@ function App() {
                                       <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill has-hover-tooltip">
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                          <span className="member-name-wrap">
+                                          <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
                                             <span>{member.nickname}</span>
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
@@ -1740,7 +1744,7 @@ function App() {
                         <span key={`${raidName}-${difficulty}-${mode}-${nickname}`} className="member-tag has-hover-tooltip">
                           <span className="nickname-with-icon small">
                             <img src={getClassIconPath(className)} alt={className} className="nickname-icon" />
-                            <span className="member-name-wrap">
+                            <span className={`member-name-wrap ${getNicknameClassName(nickname)}`}>
                               <span>{nickname}</span>
                               <span className="member-power-inline">{power}</span>
                             </span>

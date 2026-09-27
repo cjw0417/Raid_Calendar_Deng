@@ -689,6 +689,7 @@ input::placeholder {
   align-items: center;
   gap: 5px;
   max-width: 100%;
+  min-width: 0;
   padding: 4px 6px;
   border-radius: 999px;
   background: rgba(104, 122, 255, 0.14);
@@ -698,6 +699,16 @@ input::placeholder {
   overflow: visible;
 }
 
+.day-raid-member .member-name-wrap,
+.member-tag .member-name-wrap {
+  max-width: 100%;
+}
+
+.day-raid-member .member-name-wrap > span:first-child,
+.member-tag .member-name-wrap > span:first-child {
+  max-width: 100%;
+}
+
 .day-raid-member .nickname-with-icon,
 .day-raid-member .member-name-wrap,
 .member-tag .nickname-with-icon,
@@ -705,6 +716,30 @@ input::placeholder {
   min-width: 0;
   flex: 1 1 auto;
   max-width: 100%;
+}
+
+.member-name-wrap.nickname-truncate {
+  width: 84px;
+  max-width: 84px;
+  flex: 0 0 84px;
+}
+
+.member-name-wrap.nickname-truncate > span:first-child {
+  width: 84px;
+  max-width: 84px;
+}
+
+.day-raid-member .member-name-wrap.nickname-truncate,
+.member-tag .member-name-wrap.nickname-truncate {
+  width: 84px;
+  max-width: 84px;
+  flex: 0 0 84px;
+}
+
+.day-raid-member .member-name-wrap.nickname-truncate > span:first-child,
+.member-tag .member-name-wrap.nickname-truncate > span:first-child {
+  width: 84px;
+  max-width: 84px;
 }
 
 .raid-detail-panel {
@@ -825,6 +860,7 @@ input::placeholder {
   position: relative;
   display: inline-flex;
   max-width: 100%;
+  min-width: 0;
   padding: 5px 8px;
   background: rgba(104, 122, 255, 0.14);
   border: 1px solid rgba(136, 170, 255, 0.24);
@@ -851,6 +887,7 @@ input::placeholder {
   display: block;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   font-size: 0.82rem;
   font-weight: 700;
   color: #edf5ff;
@@ -879,6 +916,7 @@ input::placeholder {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
+  flex: 1 1 auto;
 }
 
 .nickname-with-icon.small {
