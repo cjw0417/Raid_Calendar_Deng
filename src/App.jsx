@@ -270,6 +270,14 @@ function resolveDayTimeSelection(record) {
   return normalizeDayTimeSelection(Object.fromEntries(legacyDays.map((day) => [day, legacyTimes])))
 }
 
+// 요일별 시간 선택을 "목 19:00 / 금 20:00, 21:00" 형태로 표시한다.
+function formatDayTimeSelection(dayTimeSelection) {
+  return weekdayNames
+    .filter((day) => (dayTimeSelection?.[day] ?? []).length > 0)
+    .map((day) => `${day} ${[...dayTimeSelection[day]].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)).join(', ')}`)
+    .join(' / ')
+}
+
 // 요일별 시간 선택을 [요일, 시간] 쌍 목록으로 펼친다.
 function getDayTimePairs(dayTimeSelection) {
   return Object.entries(dayTimeSelection ?? {}).flatMap(([day, times]) =>
@@ -430,6 +438,8 @@ function App() {
   const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
+  // 삭제 확인 팝업 대상: 'all'(전체 삭제) 또는 삭제할 스케줄 한 건
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   useEffect(() => {
     let isMounted = true
@@ -962,6 +972,21 @@ function App() {
     return map
   }, [members, raidSchedules])
 
+  // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
+  const mySavedSchedules = useMemo(() => {
+    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+    const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
+    const difficultyOrder = { 보통: 0, 어려움: 1 }
+
+    return raidSchedules
+      .filter((entry) => entry.nickname === trimmedNickname && entry.days.length > 0)
+      .sort((a, b) =>
+        (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
+        || (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
+        || (a.mode ?? '').localeCompare(b.mode ?? ''),
+      )
+  }, [loggedInNickname, profile.nickname, raidSchedules])
+
   const activeRaidScheduleEntries = useMemo(() => {
     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
 
@@ -1205,12 +1230,6 @@ function App() {
       return
     }
 
-    const confirmed = window.confirm(`${trimmedNickname}님의 스케줄을 삭제하시겠습니까?`)
-
-    if (!confirmed) {
-      return
-    }
-
     setProfile((prev) => ({ ...prev, days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }))
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
@@ -1234,6 +1253,70 @@ function App() {
     saveLocalRaidSchedules(
       loadLocalRaidSchedules().filter((entry) => entry.nickname !== trimmedNickname),
     )
+  }
+
+  // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다.
+  const deleteSchedule = async (target) => {
+    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+
+    if (!trimmedNickname) {
+      return
+    }
+
+    const isTargetSchedule = (entry) =>
+      entry.nickname === trimmedNickname
+      && entry.raidName === target.raidName
+      && entry.difficulty === target.difficulty
+      && entry.mode === target.mode
+
+    // members 쪽에 남은 같은 스케줄도 비워야 캘린더에서 사라진다.
+    const isTargetMember = (member) =>
+      member.nickname === trimmedNickname
+      && getRaidLabel(member.raidFocus) === target.raidName
+      && (member.difficulty ?? getDifficultyForRaid(target.raidName)) === target.difficulty
+      && (member.mode ?? '트라이') === target.mode
+
+    const clearedSelection = { days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }
+    const hasMemberSchedule = members.some((member) => isTargetMember(member) && member.days.length > 0)
+
+    setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => !isTargetSchedule(entry)))
+    setMembers((prevMembers) => prevMembers.map((member) => (isTargetMember(member) ? { ...member, ...clearedSelection } : member)))
+    setProfile((prev) => (isTargetMember({ ...prev, nickname: trimmedNickname }) ? { ...prev, ...clearedSelection } : prev))
+
+    if (supabase) {
+      await supabase
+        .from('raid_schedules')
+        .delete()
+        .eq('nickname', trimmedNickname)
+        .eq('raid_name', target.raidName)
+        .eq('difficulty', target.difficulty)
+        .eq('mode', target.mode)
+
+      if (hasMemberSchedule) {
+        await supabase
+          .from('members')
+          .update({
+            days: [],
+            times: [],
+            updated_at: new Date().toISOString(),
+          })
+          .eq('nickname', trimmedNickname)
+      }
+    }
+  }
+
+  const confirmPendingDelete = async () => {
+    const target = pendingDelete
+    setPendingDelete(null)
+
+    if (target === 'all') {
+      await clearCurrentSchedule()
+      return
+    }
+
+    if (target) {
+      await deleteSchedule(target)
+    }
   }
 
   const deleteMember = async (nickname) => {
@@ -1331,6 +1414,28 @@ function App() {
               </button>
               <button type="button" className="primary-button" onClick={confirmSaveCurrentProfile}>
                 저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div className="save-confirm-backdrop" onClick={() => setPendingDelete(null)}>
+          <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>{pendingDelete === 'all' ? '내 스케줄을 전부 삭제할까요?' : '이 스케줄을 삭제할까요?'}</h3>
+            <p>
+              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
+              {pendingDelete === 'all'
+                ? '의 모든 레이드 시간 정보를 삭제하시겠습니까'
+                : `의 ${pendingDelete.raidName} · ${pendingDelete.difficulty} · ${pendingDelete.mode} 레이드 시간 정보를 삭제하시겠습니까`}
+            </p>
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setPendingDelete(null)}>
+                취소
+              </button>
+              <button type="button" className="primary-button" onClick={confirmPendingDelete}>
+                삭제
               </button>
             </div>
           </div>
@@ -1561,13 +1666,7 @@ function App() {
             <h3>내 선택 요약</h3>
             <ul>
               <li>닉네임: {profile.nickname || '미입력'}</li>
-              <li>
-                가능 시간:{' '}
-                {weekdayNames
-                  .filter((day) => (profile.dayTimeSelection?.[day] ?? []).length > 0)
-                  .map((day) => `${day} ${[...profile.dayTimeSelection[day]].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)).join(', ')}`)
-                  .join(' / ') || '선택 없음'}
-              </li>
+              <li>가능 시간: {formatDayTimeSelection(profile.dayTimeSelection) || '선택 없음'}</li>
               <li>참여 여부: {profile.attendance}</li>
               <li>직업: {profile.className}</li>
               <li>전투력: {profile.power}</li>
@@ -1576,12 +1675,36 @@ function App() {
             </ul>
           </div>
 
+          <div className="selected-summary saved-schedule-list">
+            <h3>내 저장된 스케줄</h3>
+            {mySavedSchedules.length > 0 ? (
+              <ul>
+                {mySavedSchedules.map((entry) => (
+                  <li key={`${entry.raidName}-${entry.difficulty}-${entry.mode}`} className="saved-schedule-item">
+                    <div className="saved-schedule-info">
+                      <strong>
+                        {entry.raidName} · {entry.difficulty} · {entry.mode}
+                        {entry.attendance !== '참' && ' (불참)'}
+                      </strong>
+                      <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
+                    </div>
+                    <button type="button" className="saved-schedule-delete" onClick={() => setPendingDelete(entry)}>
+                      삭제
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="saved-schedule-empty">저장된 스케줄이 없어요.</p>
+            )}
+          </div>
+
           <div className="member-actions">
             <button type="button" className="primary-button" onClick={() => setSaveConfirmOpen(true)}>
               캘린더에 저장
             </button>
-            <button type="button" className="secondary-button" onClick={clearCurrentSchedule}>
-              내 스케줄 삭제
+            <button type="button" className="secondary-button" onClick={() => setPendingDelete('all')}>
+              내 스케줄 전체 삭제
             </button>
           </div>
         </section>

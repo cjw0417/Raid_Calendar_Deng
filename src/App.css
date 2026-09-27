@@ -572,6 +572,65 @@ input::placeholder {
   font-size: 0.92rem;
 }
 
+.saved-schedule-list ul {
+  list-style: none;
+  padding-left: 0;
+  gap: 8px;
+}
+
+.saved-schedule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(17, 23, 36, 0.95);
+  border: 1px solid rgba(148, 167, 255, 0.14);
+}
+
+.saved-schedule-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.saved-schedule-info strong {
+  color: #edf5ff;
+  font-size: 0.88rem;
+}
+
+.saved-schedule-info span {
+  color: #a9b8dc;
+  font-size: 0.8rem;
+  word-break: keep-all;
+}
+
+.saved-schedule-delete {
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 128, 128, 0.35);
+  background: rgba(255, 96, 96, 0.1);
+  color: #ffb4b4;
+  border-radius: 10px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.saved-schedule-delete:hover {
+  background: rgba(255, 96, 96, 0.2);
+  border-color: rgba(255, 128, 128, 0.6);
+}
+
+.saved-schedule-empty {
+  margin: 0;
+  color: #a9b8dc;
+  font-size: 0.88rem;
+}
+
 .member-actions {
   margin-top: 18px;
   display: grid;
@@ -1010,9 +1069,15 @@ input::placeholder {
   grid-template-columns: 72px repeat(7, minmax(126px, 1fr));
   gap: 8px;
   overflow-x: auto;
+  scrollbar-width: none;
   min-width: 100%;
   width: 100%;
   flex: 1;
+}
+
+/* 스크롤은 유지하고 스크롤바만 숨김 (Chrome, Edge, Safari) */
+.calendar-grid::-webkit-scrollbar {
+  display: none;
 }
 
 .calendar-corner,
