@@ -426,6 +426,15 @@ function writeStoredLoginNickname(nextNickname) {
   }
 }
 
+// 리딩 O/X 표시. 글꼴·화면 배율에 따라 글자가 틀어지지 않도록 SVG로 그린다.
+function LeadMark({ value }) {
+  return (
+    <svg className="lead-mark" viewBox="0 0 10 10" aria-hidden="true">
+      {value === 'O' ? <circle cx="5" cy="5" r="3.1" /> : <path d="M2.5 2.5 7.5 7.5 M7.5 2.5 2.5 7.5" />}
+    </svg>
+  )
+}
+
 function App() {
   const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -1767,8 +1776,8 @@ function App() {
               >
                 낮시간 설정
               </button>
-              <span className="legend-item"><span className="legend-badge lead-yes">O</span> 리딩 가능</span>
-              <span className="legend-item"><span className="legend-badge lead-no">X</span> 리딩 불가</span>
+              <span className="legend-item"><span className="legend-badge lead-yes"><LeadMark value="O" /></span> 리딩 가능</span>
+              <span className="legend-item"><span className="legend-badge lead-no"><LeadMark value="X" /></span> 리딩 불가</span>
             </div>
           </div>
 
@@ -1807,7 +1816,7 @@ function App() {
                                   <span>{member.nickname}</span>
                                   <span className="member-power-inline">{member.power}</span>
                                 </span>
-                                {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                 <span className="member-hover-tooltip" aria-hidden="true">
                                   <span className="tooltip-header-row">
                                     <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
@@ -1938,7 +1947,7 @@ function App() {
                                             <span>{member.nickname}</span>
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
-                                          {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                          {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                         </span>
                                         <span className="member-hover-tooltip" aria-hidden="true">
                                           <span className="tooltip-header-row">
@@ -1966,7 +1975,7 @@ function App() {
                                             <span>{member.nickname}</span>
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
-                                          {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                          {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                         </span>
                                         <span className="member-hover-tooltip" aria-hidden="true">
                                           <span className="tooltip-header-row">
@@ -2009,7 +2018,7 @@ function App() {
                               <span>{nickname}</span>
                               <span className="member-power-inline">{power}</span>
                             </span>
-                            {leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                            {leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                           </span>
                           <span className="member-hover-tooltip" aria-hidden="true">
                             <span className="tooltip-header-row">
