@@ -22,6 +22,7 @@ create table if not exists public.raid_schedules (
   mode text not null default '트라이',
   days text[] not null default '{}',
   times text[] not null default '{}',
+  day_time_selection jsonb not null default '{}',
   attendance text not null default '참',
   class_name text not null default '수호성',
   power text not null default '600~700k',
@@ -33,6 +34,7 @@ create table if not exists public.raid_schedules (
 alter table public.members add column if not exists difficulty text not null default '쉬움';
 alter table public.members add column if not exists mode text not null default '트라이';
 alter table public.members add column if not exists lead_ready text not null default 'X';
+alter table public.raid_schedules add column if not exists day_time_selection jsonb not null default '{}';
 
 create or replace function public.handle_updated_at()
 returns trigger

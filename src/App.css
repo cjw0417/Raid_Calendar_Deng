@@ -517,6 +517,11 @@
   box-shadow: inset 0 0 0 1px rgba(147, 183, 255, 0.18);
 }
 
+.chip.editing {
+  border-color: rgba(147, 183, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(147, 183, 255, 0.6);
+}
+
 .time-grid .chip {
   min-width: 74px;
   text-align: center;

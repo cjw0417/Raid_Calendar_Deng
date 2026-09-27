@@ -217,13 +217,75 @@ function timeToMinutes(time) {
 
 const sampleSlotData = []
 
-// 기본 프로필 구조.
+function buildEmptyDayTimeSelection() {
+  return Object.fromEntries(weekdayNames.map((day) => [day, []]))
+}
+
+function normalizeDayTimeSelection(rawSelection) {
+  const nextSelection = buildEmptyDayTimeSelection()
+
+  if (!rawSelection || typeof rawSelection !== 'object') {
+    return nextSelection
+  }
+
+  Object.entries(rawSelection).forEach(([day, times]) => {
+    if (!weekdayNames.includes(day)) {
+      return
+    }
+
+    const normalizedTimes = Array.isArray(times)
+      ? [...new Set(times.filter((time) => typeof time === 'string' && timeSlots.includes(time)))]
+      : []
+
+    nextSelection[day] = normalizedTimes
+  })
+
+  return nextSelection
+}
+
+function getSelectedDayList(dayTimeSelection) {
+  return Object.entries(dayTimeSelection ?? {})
+    .filter(([day, times]) => weekdayNames.includes(day) && Array.isArray(times) && times.length > 0)
+    .map(([day]) => day)
+}
+
+function getCombinedTimes(dayTimeSelection) {
+  return [...new Set(Object.values(dayTimeSelection ?? {}).flat().filter((time) => timeSlots.includes(time)))].sort(
+    (a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b),
+  )
+}
+
+// 저장된 레코드에서 요일별 시간 선택을 복원한다.
+// 요일별 데이터가 없는 이전 레코드는 days × times 조합으로 복원한다.
+function resolveDayTimeSelection(record) {
+  const selection = normalizeDayTimeSelection(record.day_time_selection ?? record.dayTimeSelection)
+
+  if (getSelectedDayList(selection).length > 0) {
+    return selection
+  }
+
+  const legacyDays = Array.isArray(record.days) ? record.days : []
+  const legacyTimes = Array.isArray(record.times) ? record.times : []
+
+  return normalizeDayTimeSelection(Object.fromEntries(legacyDays.map((day) => [day, legacyTimes])))
+}
+
+// 요일별 시간 선택을 [요일, 시간] 쌍 목록으로 펼친다.
+function getDayTimePairs(dayTimeSelection) {
+  return Object.entries(dayTimeSelection ?? {}).flatMap(([day, times]) =>
+    Array.isArray(times) ? times.map((time) => [day, time]) : [],
+  )
+}
+
 function buildDefaultMember(overrides = {}) {
+  const initialSelection = buildEmptyDayTimeSelection()
+
   return {
     id: `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nickname: '나의닉네임',
     days: [],
     times: [],
+    dayTimeSelection: initialSelection,
     attendance: '참',
     className: '수호성',
     power: '600~700k',
@@ -241,12 +303,16 @@ function normalizeMemberRecord(member) {
   }
 
   const raidFocus = normalizeRaidName(member.raid_focus ?? member.raidFocus ?? '무스펠')
+  const dayTimeSelection = resolveDayTimeSelection(member)
+  const normalizedDays = getSelectedDayList(dayTimeSelection)
+  const normalizedTimes = getCombinedTimes(dayTimeSelection)
 
   return {
     id: member.id ?? `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nickname: member.nickname ?? '닉네임',
-    days: Array.isArray(member.days) ? member.days : [],
-    times: Array.isArray(member.times) ? member.times : [],
+    days: normalizedDays,
+    times: normalizedTimes,
+    dayTimeSelection,
     attendance: member.attendance ?? '참',
     className: member.class_name ?? member.className ?? '수호성',
     power: member.power ?? '600~700k',
@@ -266,6 +332,9 @@ function normalizeRaidScheduleEntry(entry) {
   const raidName = normalizeRaidName(entry.raid_name ?? entry.raidName ?? '무스펠')
   const difficulty = entry.difficulty ?? '쉬움'
   const mode = entry.mode ?? '트라이'
+  const dayTimeSelection = resolveDayTimeSelection(entry)
+  const normalizedDays = getSelectedDayList(dayTimeSelection)
+  const normalizedTimes = getCombinedTimes(dayTimeSelection)
 
   return {
     id: entry.id ?? `schedule-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -273,8 +342,9 @@ function normalizeRaidScheduleEntry(entry) {
     raidName,
     difficulty,
     mode,
-    days: Array.isArray(entry.days) ? entry.days : [],
-    times: Array.isArray(entry.times) ? entry.times : [],
+    days: normalizedDays,
+    times: normalizedTimes,
+    dayTimeSelection,
     attendance: entry.attendance ?? '참',
     className: entry.class_name ?? entry.className ?? '수호성',
     power: entry.power ?? '600~700k',
@@ -342,7 +412,6 @@ function writeStoredLoginNickname(nextNickname) {
   }
 }
 
-// 앱 메인 로직.
 function App() {
   const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -355,14 +424,13 @@ function App() {
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
+  const [selectedDayForTimes, setSelectedDayForTimes] = useState(weekdayNames[0])
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
   const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
-  // 공휴일, 리셋, 저장 동기화.
   useEffect(() => {
     let isMounted = true
 
@@ -523,63 +591,52 @@ function App() {
     return { days, hours, minutes, seconds }
   }, [currentTime, nextReset])
 
-  // 시간대 노출 조건.
-  const visibleTimeSlots = profile.days.some((day) => day === '토' || day === '일')
-    ? (showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time)))
-    : weekdayTimeSlots
-
-  const getSelectableTimesForDays = (days) => {
-    if (!days.length) {
+  const getSelectableTimesForSelectedDay = (day) => {
+    if (!day || !weekdayNames.includes(day)) {
       return weekdayTimeSlots
     }
 
-    const hasWeekendSelection = days.some((day) => day === '토' || day === '일')
-
-    if (!hasWeekendSelection) {
-      return weekdayTimeSlots
+    if (day === '토' || day === '일') {
+      return showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
     }
 
-    return showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
+    return weekdayTimeSlots
   }
+
+  const visibleTimeSlots = getSelectableTimesForSelectedDay(selectedDayForTimes)
 
   const toggleMultiSelect = (key, value) => {
     setProfile((prev) => {
-      if (key === 'days') {
-        const nextDays = prev.days.includes(value)
-          ? prev.days.filter((item) => item !== value)
-          : [...prev.days, value]
-
-        return {
-          ...prev,
-          days: nextDays,
-          times: prev.times.filter((time) => getSelectableTimesForDays(nextDays).includes(time)),
-        }
-      }
+      const nextSelection = normalizeDayTimeSelection(prev.dayTimeSelection)
 
       if (key === 'times') {
-        const allowedTimes = getSelectableTimesForDays(prev.days)
+        const targetDay = selectedDayForTimes || weekdayNames[0]
+        const allowedTimes = getSelectableTimesForSelectedDay(targetDay)
+
         if (!allowedTimes.includes(value)) {
           return prev
         }
 
-        const existing = prev.times
-        const nextValues = existing.includes(value)
-          ? existing.filter((item) => item !== value)
-          : [...existing, value]
+        const currentTimes = nextSelection[targetDay] ?? []
+        nextSelection[targetDay] = currentTimes.includes(value)
+          ? currentTimes.filter((item) => item !== value)
+          : [...currentTimes, value]
 
-        return { ...prev, [key]: nextValues }
+        const nextDays = getSelectedDayList(nextSelection)
+        const nextTimes = getCombinedTimes(nextSelection)
+
+        return {
+          ...prev,
+          dayTimeSelection: nextSelection,
+          days: nextDays,
+          times: nextTimes,
+        }
       }
 
-      const existing = prev[key]
-      const nextValues = existing.includes(value)
-        ? existing.filter((item) => item !== value)
-        : [...existing, value]
-
-      return { ...prev, [key]: nextValues }
+      return prev
     })
   }
 
-  // 선택 슬롯 매칭.
   const selectedSlots = useMemo(() => {
     const daySet = new Set(profile.days)
     const timeSet = new Set(profile.times)
@@ -592,7 +649,6 @@ function App() {
   const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
   const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
 
-  // 집계용 조건.
   const hasActiveScheduleSelection = (entry) => {
     if (!entry || entry.attendance !== '참') {
       return false
@@ -603,7 +659,6 @@ function App() {
     return days.length > 0 && times.length > 0
   }
 
-  // 전체 스케줄 합치기.
   const allScheduleEntries = useMemo(() => {
     const merged = [
       ...raidSchedules
@@ -618,6 +673,7 @@ function App() {
           mode: entry.mode,
           days: entry.days,
           times: entry.times,
+          dayTimeSelection: entry.dayTimeSelection,
           attendance: entry.attendance,
         })),
       ...members
@@ -632,6 +688,7 @@ function App() {
           mode: member.mode ?? '트라이',
           days: member.days,
           times: member.times,
+          dayTimeSelection: member.dayTimeSelection,
           attendance: member.attendance,
         })),
     ]
@@ -655,13 +712,13 @@ function App() {
         leadReady: normalizeLeadReady(entry.leadReady || existingEntry.leadReady),
         days: entry.days.length > 0 ? entry.days : existingEntry.days,
         times: entry.times.length > 0 ? entry.times : existingEntry.times,
+        dayTimeSelection: entry.days.length > 0 ? entry.dayTimeSelection : existingEntry.dayTimeSelection,
       })
     })
 
     return [...uniqueEntries.values()]
   }, [members, raidSchedules])
 
-  // 내 시간대 표시.
   const myScheduleSet = useMemo(() => {
     const tabRaidName = activeTabMeta?.raid ?? '무스펠'
     const tabDifficulty = activeTabMeta?.difficulty ?? '보통'
@@ -679,29 +736,22 @@ function App() {
 
     if (scheduleEntries.length > 0) {
       scheduleEntries.forEach((entry) => {
-        entry.days.forEach((day) => {
-          entry.times.forEach((time) => {
-            nextSet.add(`${day}-${time}`)
-          })
+        getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
+          nextSet.add(`${day}-${time}`)
         })
       })
 
       return nextSet
     }
 
-    const fallbackDays = profile.days ?? []
-    const fallbackTimes = profile.times ?? []
-
-    fallbackDays.forEach((day) => {
-      fallbackTimes.forEach((time) => {
-        if (tabRaidName === getRaidLabel(profile.raidFocus) && tabDifficulty === (profile.difficulty ?? getDifficultyForRaid(getRaidLabel(profile.raidFocus))) && tabMode === (profile.mode ?? '트라이')) {
-          nextSet.add(`${day}-${time}`)
-        }
+    if (tabRaidName === getRaidLabel(profile.raidFocus) && tabDifficulty === (profile.difficulty ?? getDifficultyForRaid(getRaidLabel(profile.raidFocus))) && tabMode === (profile.mode ?? '트라이')) {
+      getDayTimePairs(profile.dayTimeSelection).forEach(([day, time]) => {
+        nextSet.add(`${day}-${time}`)
       })
-    })
+    }
 
     return nextSet
-  }, [activeModeTab, activeTabMeta, allScheduleEntries, loggedInNickname, profile.days, profile.difficulty, profile.mode, profile.nickname, profile.raidFocus, profile.times])
+  }, [activeModeTab, activeTabMeta, allScheduleEntries, loggedInNickname, profile.dayTimeSelection, profile.difficulty, profile.mode, profile.nickname, profile.raidFocus])
 
   const getDayTimeSlots = (date) => {
     const day = date.getDay()
@@ -755,7 +805,6 @@ function App() {
     return map
   }, [allScheduleEntries])
 
-  // 보스별 / 요일별 집계.
   const memberByRaidDifficulty = useMemo(() => {
     const map = new Map()
 
@@ -823,7 +872,8 @@ function App() {
           members: [],
         }
 
-        entry.times.forEach((time) => existing.times.add(time))
+        const dayTimes = entry.dayTimeSelection?.[day] ?? []
+        dayTimes.forEach((time) => existing.times.add(time))
 
         const memberExists = existing.members.some(
           (member) => member.nickname === entry.nickname && member.className === entry.className,
@@ -865,6 +915,7 @@ function App() {
         mode: entry.mode,
         days: entry.days,
         times: entry.times,
+        dayTimeSelection: entry.dayTimeSelection,
         attendance: entry.attendance,
       })),
       ...members
@@ -879,6 +930,7 @@ function App() {
           mode: member.mode ?? '트라이',
           days: member.days,
           times: member.times,
+          dayTimeSelection: member.dayTimeSelection,
           attendance: member.attendance,
         })),
     ]
@@ -888,24 +940,22 @@ function App() {
 
       const tabKey = `${entry.raidName} ${entry.difficulty} ${entry.mode}`
 
-      entry.days.forEach((day) => {
-        entry.times.forEach((time) => {
-          const key = `${day}-${time}`
-          const target = map.get(key) ?? {}
-          const existing = target[tabKey] ?? []
+      getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
+        const key = `${day}-${time}`
+        const target = map.get(key) ?? {}
+        const existing = target[tabKey] ?? []
 
-          if (!existing.some((person) => person.nickname === entry.nickname && person.className === entry.className)) {
-            existing.push({
-              nickname: entry.nickname,
-              className: entry.className,
-              power: entry.power ?? '600~700k',
-              leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
-            })
-          }
+        if (!existing.some((person) => person.nickname === entry.nickname && person.className === entry.className)) {
+          existing.push({
+            nickname: entry.nickname,
+            className: entry.className,
+            power: entry.power ?? '600~700k',
+            leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+          })
+        }
 
-          target[tabKey] = existing
-          map.set(key, target)
-        })
+        target[tabKey] = existing
+        map.set(key, target)
       })
     })
 
@@ -1006,7 +1056,6 @@ function App() {
     }
   }
 
-  // 저장 로직.
   const saveCurrentProfile = async () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
@@ -1032,6 +1081,7 @@ function App() {
       mode: nextMember.mode ?? '트라이',
       days: nextMember.days,
       times: nextMember.times,
+      day_time_selection: normalizeDayTimeSelection(nextMember.dayTimeSelection),
       attendance: nextMember.attendance,
       class_name: nextMember.className,
       power: nextMember.power,
@@ -1148,26 +1198,20 @@ function App() {
     await saveCurrentProfile()
   }
 
-  const clearCurrentSchedule = () => {
+  const clearCurrentSchedule = async () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
     if (!trimmedNickname) {
       return
     }
 
-    setDeleteConfirmOpen(true)
-  }
+    const confirmed = window.confirm(`${trimmedNickname}님의 스케줄을 삭제하시겠습니까?`)
 
-  const confirmDeleteCurrentSchedule = async () => {
-    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
-
-    if (!trimmedNickname) {
-      setDeleteConfirmOpen(false)
+    if (!confirmed) {
       return
     }
 
-    setDeleteConfirmOpen(false)
-    setProfile((prev) => ({ ...prev, days: [], times: [] }))
+    setProfile((prev) => ({ ...prev, days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }))
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
 
@@ -1293,26 +1337,6 @@ function App() {
         </div>
       )}
 
-      {deleteConfirmOpen && (
-        <div className="save-confirm-backdrop" onClick={() => setDeleteConfirmOpen(false)}>
-          <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>내 스케줄을 삭제할까요?</h3>
-            <p>
-              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
-              의 레이드 시간 정보를 삭제하시겠습니까
-            </p>
-            <div className="save-confirm-actions">
-              <button type="button" className="secondary-button" onClick={() => setDeleteConfirmOpen(false)}>
-                취소
-              </button>
-              <button type="button" className="primary-button" onClick={confirmDeleteCurrentSchedule}>
-                삭제
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <section className="summary-grid">
         <article className="summary-card accent">
           <span className="label">다음 리셋</span>
@@ -1390,32 +1414,43 @@ function App() {
           <div className="field-group">
             <label>요일 선택</label>
             <div className="chip-grid">
-              {weekdayNames.map((day) => (
-                <button
-                  key={day}
-                  type="button"
-                  className={profile.days.includes(day) ? 'chip active' : 'chip'}
-                  onClick={() => toggleMultiSelect('days', day)}
-                >
-                  {day}
-                </button>
-              ))}
+              {weekdayNames.map((day) => {
+                // active: 시간이 선택된 요일, editing: 지금 시간을 고르고 있는 요일
+                const hasTimes = (profile.dayTimeSelection?.[day] ?? []).length > 0
+                const isEditing = selectedDayForTimes === day
+
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    className={`chip ${hasTimes ? 'active' : ''} ${isEditing ? 'editing' : ''}`}
+                    onClick={() => setSelectedDayForTimes(day)}
+                  >
+                    {day}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
           <div className="field-group">
-            <label>시간대 선택</label>
+            <label>{selectedDayForTimes}요일 시간대 선택</label>
             <div className="chip-grid time-grid">
               {visibleTimeSlots.map((time) => {
-                const selectableTimes = getSelectableTimesForDays(profile.days)
-                const isDisabled = !selectableTimes.includes(time)
+                const isSelected = (profile.dayTimeSelection?.[selectedDayForTimes] ?? []).includes(time)
+                const isDisabled = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
 
                 return (
                   <button
                     key={time}
                     type="button"
-                    className={`${profile.times.includes(time) ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''}`}
-                    onClick={() => toggleMultiSelect('times', time)}
+                    className={`${isSelected ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''}`}
+                    onClick={() => {
+                      if (!selectedDayForTimes) {
+                        return
+                      }
+                      toggleMultiSelect('times', time)
+                    }}
                     disabled={isDisabled}
                     title={isDisabled ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
                   >
@@ -1526,8 +1561,13 @@ function App() {
             <h3>내 선택 요약</h3>
             <ul>
               <li>닉네임: {profile.nickname || '미입력'}</li>
-              <li>가능 요일: {profile.days.join(', ') || '선택 없음'}</li>
-              <li>가능 시간: {profile.times.join(', ') || '선택 없음'}</li>
+              <li>
+                가능 시간:{' '}
+                {weekdayNames
+                  .filter((day) => (profile.dayTimeSelection?.[day] ?? []).length > 0)
+                  .map((day) => `${day} ${[...profile.dayTimeSelection[day]].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)).join(', ')}`)
+                  .join(' / ') || '선택 없음'}
+              </li>
               <li>참여 여부: {profile.attendance}</li>
               <li>직업: {profile.className}</li>
               <li>전투력: {profile.power}</li>
