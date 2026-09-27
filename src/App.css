@@ -73,8 +73,7 @@
   font-weight: 700;
 }
 
-#loginNickname,
-#loginPassword {
+.login-input {
   width: 100%;
   height: 46px;
   margin: 0 0 12px;
@@ -87,9 +86,39 @@
   box-sizing: border-box;
 }
 
-#loginNickname::placeholder,
-#loginPassword::placeholder {
+.login-input::placeholder {
   color: rgba(210, 220, 244, 0.45);
+}
+
+.login-back-button {
+  margin-top: 10px;
+}
+
+.password-change-modal .login-input {
+  height: 42px;
+}
+
+/* 팝업 안의 문구는 .save-confirm-modal p 색보다 우선한다 */
+.password-change-modal .login-error {
+  margin: -4px 0 12px;
+  color: #ff9b9b;
+}
+
+.password-change-modal .password-success {
+  margin: -4px 0 12px;
+  color: #8ee6b0;
+}
+
+.password-success {
+  margin: -4px 0 12px;
+  color: #8ee6b0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+#nickname[readonly] {
+  opacity: 0.75;
+  cursor: default;
 }
 
 .login-error {

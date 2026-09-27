@@ -1,5 +1,14 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
+import {
+  PASSWORD_RULE,
+  deleteAllMemberSchedules,
+  deleteMemberSchedule,
+  describeAuthResult,
+  memberLogin,
+  memberSetPassword,
+  saveMemberSchedule,
+} from './lib/memberApi'
 import './App.css'
 
 const raidOptions = [
@@ -32,8 +41,6 @@ const raidDifficultyAvailability = {
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
-// 로그인 공용 비밀번호. 바꾸려면 이 값만 수정하면 된다.
-const LOGIN_PASSWORD = '0801'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
   '19:00',
@@ -451,6 +458,14 @@ function App() {
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
+  const [isLoginPending, setIsLoginPending] = useState(false)
+  // 로그인한 사람의 비밀번호. 저장·삭제할 때 DB가 다시 확인하므로 메모리에만 들고 있는다.
+  const [sessionPassword, setSessionPassword] = useState('')
+  // 초기 비밀번호로 들어온 경우의 개인 비밀번호 설정 단계: { nickname, currentPassword }
+  const [passwordSetup, setPasswordSetup] = useState(null)
+  // 개인 비밀번호 설정 · 변경 폼 (설정 화면과 변경 팝업이 같이 쓴다)
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '', error: '', message: '' })
+  const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
@@ -1015,29 +1030,155 @@ function App() {
       return
     }
 
-    if (loginPassword !== LOGIN_PASSWORD) {
-      setLoginError('비밀번호가 맞지 않아요.')
+    if (!loginPassword) {
+      setLoginError('비밀번호를 입력해 주세요.')
       return
     }
 
+    setIsLoginPending(true)
+
+    try {
+      const result = await memberLogin(trimmedNickname, loginPassword)
+
+      if (result === 'must_change') {
+        // 초기 비밀번호로 들어왔으면 개인 비밀번호부터 정한다.
+        setPasswordSetup({ nickname: trimmedNickname, currentPassword: loginPassword })
+        resetPasswordForm()
+        setLoginPassword('')
+        setLoginError('')
+        return
+      }
+
+      if (result !== 'ok') {
+        setLoginError(describeAuthResult(result))
+        return
+      }
+
+      await completeLogin(trimmedNickname, loginPassword)
+    } catch (error) {
+      setLoginError(`로그인 중 오류가 났어요. (${error.message})`)
+    } finally {
+      setIsLoginPending(false)
+    }
+  }
+
+  const completeLogin = async (nickname, password) => {
     setLoginError('')
     setLoginPassword('')
-    setLoggedInNickname(trimmedNickname)
+    setPasswordSetup(null)
+    setSessionPassword(password)
+    setLoggedInNickname(nickname)
 
     if (rememberMe) {
-      writeStoredLoginNickname(trimmedNickname)
+      writeStoredLoginNickname(nickname)
     } else {
       writeStoredLoginNickname('')
     }
 
-    setProfile(buildDefaultMember({ nickname: trimmedNickname }))
+    setProfile(buildDefaultMember({ nickname }))
     setSelectedDayForTimes('')
-    await loadCurrentProfileByNickname(trimmedNickname)
+    await loadCurrentProfileByNickname(nickname)
+  }
+
+  const resetPasswordForm = () => {
+    setPasswordForm({ current: '', next: '', confirm: '', error: '', message: '' })
+  }
+
+  const updatePasswordForm = (field, value) => {
+    setPasswordForm((prev) => ({ ...prev, [field]: value, error: '', message: '' }))
+  }
+
+  // 새 비밀번호 입력값 확인. 문제가 있으면 안내 문구를, 없으면 ''를 돌려준다.
+  const validateNewPassword = (currentPassword) => {
+    if (!PASSWORD_RULE.test(passwordForm.next)) {
+      return describeAuthResult('weak')
+    }
+
+    if (passwordForm.next !== passwordForm.confirm) {
+      return '새 비밀번호가 서로 달라요.'
+    }
+
+    if (passwordForm.next === currentPassword) {
+      return '지금 비밀번호와 다른 비밀번호를 정해 주세요.'
+    }
+
+    return ''
+  }
+
+  // 초기 비밀번호로 로그인한 뒤 개인 비밀번호를 정한다.
+  const handlePasswordSetup = async (event) => {
+    event.preventDefault()
+
+    const validationError = validateNewPassword(passwordSetup.currentPassword)
+
+    if (validationError) {
+      setPasswordForm((prev) => ({ ...prev, error: validationError }))
+      return
+    }
+
+    try {
+      const result = await memberSetPassword(passwordSetup.nickname, passwordSetup.currentPassword, passwordForm.next)
+
+      if (result !== 'ok') {
+        setPasswordForm((prev) => ({ ...prev, error: describeAuthResult(result) }))
+        return
+      }
+
+      const nextPassword = passwordForm.next
+      resetPasswordForm()
+      await completeLogin(passwordSetup.nickname, nextPassword)
+    } catch (error) {
+      setPasswordForm((prev) => ({ ...prev, error: `비밀번호 설정 중 오류가 났어요. (${error.message})` }))
+    }
+  }
+
+  // 로그인한 상태에서 비밀번호를 바꾼다.
+  const handlePasswordChange = async (event) => {
+    event.preventDefault()
+
+    const validationError = validateNewPassword(passwordForm.current)
+
+    if (validationError) {
+      setPasswordForm((prev) => ({ ...prev, error: validationError }))
+      return
+    }
+
+    try {
+      const result = await memberSetPassword(loggedInNickname, passwordForm.current, passwordForm.next)
+
+      if (result !== 'ok') {
+        setPasswordForm((prev) => ({
+          ...prev,
+          error: result === 'invalid' ? '지금 비밀번호가 맞지 않아요.' : describeAuthResult(result),
+        }))
+        return
+      }
+
+      setSessionPassword(passwordForm.next)
+      setPasswordForm({ current: '', next: '', confirm: '', error: '', message: '비밀번호를 바꿨어요.' })
+    } catch (error) {
+      setPasswordForm((prev) => ({ ...prev, error: `비밀번호 변경 중 오류가 났어요. (${error.message})` }))
+    }
+  }
+
+  const openPasswordChange = () => {
+    resetPasswordForm()
+    setPasswordChangeOpen(true)
+  }
+
+  const cancelPasswordSetup = () => {
+    setPasswordSetup(null)
+    resetPasswordForm()
   }
 
   const handleLogout = () => {
     setLoggedInNickname('')
     setLoginNickname('')
+    setLoginPassword('')
+    setSessionPassword('')
+    setPasswordSetup(null)
+    setPasswordChangeOpen(false)
+    resetPasswordForm()
     setRememberMe(false)
     writeStoredLoginNickname('')
     setProfile(buildDefaultMember({ nickname: '' }))
@@ -1131,70 +1272,57 @@ function App() {
     }
 
     if (supabase) {
-      const { data, error } = await supabase
-        .from('members')
-        .upsert(
+      let result
+
+      try {
+        result = await saveMemberSchedule(
+          trimmedNickname,
+          sessionPassword,
           {
-            nickname: nextMember.nickname,
             attendance: nextMember.attendance,
             class_name: nextMember.className,
             power: nextMember.power,
             lead_ready: nextMember.leadReady,
           },
-          { onConflict: 'nickname' },
+          scheduleEntry,
         )
-        .select()
+      } catch (error) {
+        window.alert(`스케줄 저장에 실패했어요. (${error.message})`)
+        return
+      }
 
-      const scheduleResult = await supabase
-        .from('raid_schedules')
-        .upsert(
-          {
-            ...scheduleEntry,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'nickname,raid_name,difficulty,mode' },
-        )
-        .select()
+      if (result?.error) {
+        window.alert(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}`)
+        return
+      }
 
-      if (!error && Array.isArray(data)) {
-        const normalized = data.map((member) => normalizeMemberRecord(member))
-        setMembers((prevMembers) => {
+      const savedMember = normalizeMemberRecord(result.member)
+      const savedEntry = normalizeRaidScheduleEntry(result.schedule)
+
+      setMembers((prevMembers) => {
+        const index = prevMembers.findIndex((member) => member.nickname === trimmedNickname)
+
+        if (index >= 0) {
           const nextMembers = [...prevMembers]
-          const index = nextMembers.findIndex((member) => member.nickname === trimmedNickname)
+          nextMembers[index] = savedMember
+          return nextMembers
+        }
 
-          if (index >= 0) {
-            nextMembers[index] = normalized[0]
-            return nextMembers
-          }
+        return [...prevMembers, savedMember]
+      })
 
-          return [...nextMembers, ...normalized]
-        })
-      }
+      setRaidSchedules((prevSchedules) => {
+        const index = prevSchedules.findIndex((entry) => entry.nickname === trimmedNickname && getScheduleKey(entry) === getScheduleKey(savedEntry))
 
-      if (!scheduleResult.error && Array.isArray(scheduleResult.data)) {
-        setRaidSchedules((prevSchedules) => {
-          const normalized = scheduleResult.data.map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean)
+        if (index >= 0) {
           const nextSchedules = [...prevSchedules]
-
-          normalized.forEach((entry) => {
-            const index = nextSchedules.findIndex((item) => item.nickname === entry.nickname && item.raidName === entry.raidName && item.difficulty === entry.difficulty && item.mode === entry.mode)
-
-            if (index >= 0) {
-              nextSchedules[index] = entry
-            } else {
-              nextSchedules.push(entry)
-            }
-          })
-
+          nextSchedules[index] = savedEntry
           return nextSchedules
-        })
-        clearSavedDraft()
-      }
+        }
 
-      if (scheduleResult.error) {
-        window.alert(`스케줄 저장에 실패했어요. (${scheduleResult.error.message})`)
-      }
-
+        return [...prevSchedules, savedEntry]
+      })
+      clearSavedDraft()
       return
     }
 
@@ -1276,25 +1404,13 @@ function App() {
       return
     }
 
+    if (supabase && !(await runRemoteDelete(() => deleteAllMemberSchedules(trimmedNickname, sessionPassword)))) {
+      return
+    }
+
     setDayTimeDrafts({})
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
-
-    if (supabase) {
-      await supabase
-        .from('raid_schedules')
-        .delete()
-        .eq('nickname', trimmedNickname)
-
-      await supabase
-        .from('members')
-        .update({
-          days: [],
-          times: [],
-          updated_at: new Date().toISOString(),
-        })
-        .eq('nickname', trimmedNickname)
-    }
 
     saveLocalRaidSchedules(
       loadLocalRaidSchedules().filter((entry) => entry.nickname !== trimmedNickname),
@@ -1320,7 +1436,10 @@ function App() {
       && (member.mode ?? '트라이') === target.mode
 
     const clearedSelection = { days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }
-    const hasMemberSchedule = members.some((member) => isTargetMember(member) && member.days.length > 0)
+
+    if (supabase && !(await runRemoteDelete(() => deleteMemberSchedule(trimmedNickname, sessionPassword, target)))) {
+      return
+    }
 
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => !isTargetSchedule(entry)))
     setMembers((prevMembers) => prevMembers.map((member) => (isTargetMember(member) ? { ...member, ...clearedSelection } : member)))
@@ -1329,26 +1448,22 @@ function App() {
       delete nextDrafts[targetKey]
       return nextDrafts
     })
+  }
 
-    if (supabase) {
-      await supabase
-        .from('raid_schedules')
-        .delete()
-        .eq('nickname', trimmedNickname)
-        .eq('raid_name', target.raidName)
-        .eq('difficulty', target.difficulty)
-        .eq('mode', target.mode)
+  // DB 삭제 요청. 성공하면 true, 실패하면 알림을 띄우고 false.
+  const runRemoteDelete = async (request) => {
+    try {
+      const result = await request()
 
-      if (hasMemberSchedule) {
-        await supabase
-          .from('members')
-          .update({
-            days: [],
-            times: [],
-            updated_at: new Date().toISOString(),
-          })
-          .eq('nickname', trimmedNickname)
+      if (result?.error) {
+        window.alert(`삭제에 실패했어요. ${describeAuthResult(result.error)}`)
+        return false
       }
+
+      return true
+    } catch (error) {
+      window.alert(`삭제에 실패했어요. (${error.message})`)
+      return false
     }
   }
 
@@ -1366,14 +1481,53 @@ function App() {
     }
   }
 
-  const deleteMember = async (nickname) => {
-    if (supabase) {
-      await supabase.from('members').delete().eq('nickname', nickname)
-      setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== nickname))
-      return
-    }
+  if (!loggedInNickname && passwordSetup) {
+    return (
+      <div className="login-screen">
+        <form className="login-card" onSubmit={handlePasswordSetup}>
+          <p className="eyebrow centered">그루 레기온의 설원 스케줄</p>
+          <h1>비밀번호 설정</h1>
 
-    setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== nickname))
+          <p className="login-subtitle">
+            <strong className="save-confirm-nickname">{passwordSetup.nickname}</strong>님, 처음 로그인하셨어요.
+            앞으로 사용할 본인 비밀번호를 정해 주세요. (숫자 4자리 이상)
+          </p>
+
+          <label htmlFor="setupNewPassword" className="login-label">새 비밀번호</label>
+          <input
+            id="setupNewPassword"
+            className="login-input"
+            type="password"
+            inputMode="numeric"
+            value={passwordForm.next}
+            onChange={(event) => updatePasswordForm('next', event.target.value)}
+            placeholder="숫자 4자리 이상"
+            autoComplete="new-password"
+          />
+
+          <label htmlFor="setupConfirmPassword" className="login-label">새 비밀번호 확인</label>
+          <input
+            id="setupConfirmPassword"
+            className="login-input"
+            type="password"
+            inputMode="numeric"
+            value={passwordForm.confirm}
+            onChange={(event) => updatePasswordForm('confirm', event.target.value)}
+            placeholder="한 번 더 입력하세요"
+            autoComplete="new-password"
+          />
+
+          {passwordForm.error && <p className="login-error" role="alert">{passwordForm.error}</p>}
+
+          <button type="submit" className="primary-button login-button">
+            비밀번호 정하고 시작하기
+          </button>
+          <button type="button" className="secondary-button login-back-button" onClick={cancelPasswordSetup}>
+            처음으로
+          </button>
+        </form>
+      </div>
+    )
   }
 
   if (!loggedInNickname) {
@@ -1391,11 +1545,13 @@ function App() {
 
           <p className="login-subtitle">
             로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.
+            처음 로그인할 때는 안내받은 초기 비밀번호를 입력한 뒤 본인 비밀번호를 정해요.
           </p>
 
           <label htmlFor="loginNickname" className="login-label">닉네임</label>
           <input
             id="loginNickname"
+            className="login-input"
             type="text"
             value={loginNickname}
             onChange={(event) => setLoginNickname(event.target.value)}
@@ -1406,6 +1562,7 @@ function App() {
           <label htmlFor="loginPassword" className="login-label">비밀번호</label>
           <input
             id="loginPassword"
+            className="login-input"
             type="password"
             inputMode="numeric"
             value={loginPassword}
@@ -1429,8 +1586,8 @@ function App() {
             <span>기억하기</span>
           </label>
 
-          <button type="submit" className="primary-button login-button">
-            로그인
+          <button type="submit" className="primary-button login-button" disabled={isLoginPending}>
+            {isLoginPending ? '확인 중...' : '로그인'}
           </button>
         </form>
       </div>
@@ -1456,12 +1613,69 @@ function App() {
           </div>
           <div className="user-badge-wrap">
             <span className="user-badge">{loggedInNickname}</span>
+            <button type="button" className="secondary-button small-logout" onClick={openPasswordChange}>
+              비밀번호 변경
+            </button>
             <button type="button" className="secondary-button small-logout" onClick={handleLogout}>
               로그아웃
             </button>
           </div>
         </div>
       </header>
+
+      {passwordChangeOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setPasswordChangeOpen(false)}>
+          <form className="save-confirm-modal password-change-modal" onClick={(event) => event.stopPropagation()} onSubmit={handlePasswordChange}>
+            <h3>비밀번호 변경</h3>
+
+            <label htmlFor="currentPassword" className="login-label">지금 비밀번호</label>
+            <input
+              id="currentPassword"
+              className="login-input"
+              type="password"
+              inputMode="numeric"
+              value={passwordForm.current}
+              onChange={(event) => updatePasswordForm('current', event.target.value)}
+              autoComplete="current-password"
+            />
+
+            <label htmlFor="changeNewPassword" className="login-label">새 비밀번호</label>
+            <input
+              id="changeNewPassword"
+              className="login-input"
+              type="password"
+              inputMode="numeric"
+              value={passwordForm.next}
+              onChange={(event) => updatePasswordForm('next', event.target.value)}
+              placeholder="숫자 4자리 이상"
+              autoComplete="new-password"
+            />
+
+            <label htmlFor="changeConfirmPassword" className="login-label">새 비밀번호 확인</label>
+            <input
+              id="changeConfirmPassword"
+              className="login-input"
+              type="password"
+              inputMode="numeric"
+              value={passwordForm.confirm}
+              onChange={(event) => updatePasswordForm('confirm', event.target.value)}
+              autoComplete="new-password"
+            />
+
+            {passwordForm.error && <p className="login-error" role="alert">{passwordForm.error}</p>}
+            {passwordForm.message && <p className="password-success" role="status">{passwordForm.message}</p>}
+
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setPasswordChangeOpen(false)}>
+                닫기
+              </button>
+              <button type="submit" className="primary-button">
+                변경
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {saveConfirmOpen && (
         <div className="save-confirm-backdrop" onClick={() => setSaveConfirmOpen(false)}>
@@ -1613,8 +1827,8 @@ function App() {
                 id="nickname"
                 type="text"
                 value={profile.nickname}
-                onChange={(event) => setProfile((prev) => ({ ...prev, nickname: event.target.value }))}
-                placeholder="본인 닉네임 입력"
+                readOnly
+                title="닉네임은 로그인한 닉네임으로 고정돼요."
               />
               <div className="lead-toggle" aria-label="리딩 가능 여부">
                 {['O', 'X'].map((value) => (
