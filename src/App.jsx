@@ -360,6 +360,7 @@ function App() {
   const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
   // 공휴일, 리셋, 저장 동기화.
   useEffect(() => {
@@ -1147,19 +1148,25 @@ function App() {
     await saveCurrentProfile()
   }
 
-  const clearCurrentSchedule = async () => {
+  const clearCurrentSchedule = () => {
     const trimmedNickname = (loggedInNickname || profile.nickname).trim()
 
     if (!trimmedNickname) {
       return
     }
 
-    const confirmed = window.confirm(`${trimmedNickname}님의 스케줄을 삭제하시겠습니까?`)
+    setDeleteConfirmOpen(true)
+  }
 
-    if (!confirmed) {
+  const confirmDeleteCurrentSchedule = async () => {
+    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+
+    if (!trimmedNickname) {
+      setDeleteConfirmOpen(false)
       return
     }
 
+    setDeleteConfirmOpen(false)
     setProfile((prev) => ({ ...prev, days: [], times: [] }))
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
@@ -1280,6 +1287,26 @@ function App() {
               </button>
               <button type="button" className="primary-button" onClick={confirmSaveCurrentProfile}>
                 저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirmOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setDeleteConfirmOpen(false)}>
+          <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>내 스케줄을 삭제할까요?</h3>
+            <p>
+              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
+              의 레이드 시간 정보를 삭제하시겠습니까
+            </p>
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setDeleteConfirmOpen(false)}>
+                취소
+              </button>
+              <button type="button" className="primary-button" onClick={confirmDeleteCurrentSchedule}>
+                삭제
               </button>
             </div>
           </div>
