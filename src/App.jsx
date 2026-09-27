@@ -270,6 +270,11 @@ function resolveDayTimeSelection(record) {
   return normalizeDayTimeSelection(Object.fromEntries(legacyDays.map((day) => [day, legacyTimes])))
 }
 
+// 스케줄을 구분하는 키 (레이드 · 난이도 · 공략 방식).
+function getScheduleKey(entry) {
+  return `${entry.raidName}|${entry.difficulty}|${entry.mode}`
+}
+
 // 요일별 시간 선택을 "목 19:00 / 금 20:00, 21:00" 형태로 표시한다.
 function formatDayTimeSelection(dayTimeSelection) {
   return weekdayNames
@@ -440,6 +445,8 @@ function App() {
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
   // 삭제 확인 팝업 대상: 'all'(전체 삭제) 또는 삭제할 스케줄 한 건
   const [pendingDelete, setPendingDelete] = useState(null)
+  // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
+  const [dayTimeDrafts, setDayTimeDrafts] = useState({})
 
   useEffect(() => {
     let isMounted = true
@@ -615,48 +622,39 @@ function App() {
 
   const visibleTimeSlots = getSelectableTimesForSelectedDay(selectedDayForTimes)
 
-  const toggleMultiSelect = (key, value) => {
-    setProfile((prev) => {
-      const nextSelection = normalizeDayTimeSelection(prev.dayTimeSelection)
-
-      if (key === 'times') {
-        const targetDay = selectedDayForTimes || weekdayNames[0]
-        const allowedTimes = getSelectableTimesForSelectedDay(targetDay)
-
-        if (!allowedTimes.includes(value)) {
-          return prev
-        }
-
-        const currentTimes = nextSelection[targetDay] ?? []
-        nextSelection[targetDay] = currentTimes.includes(value)
-          ? currentTimes.filter((item) => item !== value)
-          : [...currentTimes, value]
-
-        const nextDays = getSelectedDayList(nextSelection)
-        const nextTimes = getCombinedTimes(nextSelection)
-
-        return {
-          ...prev,
-          dayTimeSelection: nextSelection,
-          days: nextDays,
-          times: nextTimes,
-        }
-      }
-
-      return prev
-    })
+  // 폼에서 고른 레이드 · 난이도 · 공략 방식. 요일/시간 선택은 이 조합마다 따로 관리한다.
+  const currentNickname = (loggedInNickname || profile.nickname).trim()
+  const selectedRaidLabel = getRaidLabel(profile.raidFocus)
+  const currentScheduleTarget = {
+    raidName: selectedRaidLabel,
+    difficulty: profile.difficulty ?? getDifficultyForRaid(selectedRaidLabel),
+    mode: profile.mode ?? '트라이',
   }
+  const currentScheduleKey = getScheduleKey(currentScheduleTarget)
+  const savedCurrentSchedule = raidSchedules.find(
+    (entry) => entry.nickname === currentNickname && getScheduleKey(entry) === currentScheduleKey,
+  )
+  // 저장 전 수정 중인 선택 > 저장된 선택 > 빈 선택 순으로 보여준다.
+  const currentDayTimeSelection = dayTimeDrafts[currentScheduleKey]
+    ?? savedCurrentSchedule?.dayTimeSelection
+    ?? buildEmptyDayTimeSelection()
+  const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
 
-  const selectedSlots = useMemo(() => {
-    const daySet = new Set(profile.days)
-    const timeSet = new Set(profile.times)
+  const toggleTimeSelection = (time) => {
+    const targetDay = selectedDayForTimes || weekdayNames[0]
 
-    return sampleSlotData.filter(
-      (slot) => daySet.has(weekdayNames[slot.dayIndex]) && timeSet.has(slot.time),
-    )
-  }, [profile.days, profile.times])
+    if (!getSelectableTimesForSelectedDay(targetDay).includes(time)) {
+      return
+    }
 
-  const selectedRaidLabel = raidOptions.find((raid) => raid.id === profile.raidFocus)?.label ?? '무스펠'
+    const nextSelection = normalizeDayTimeSelection(currentDayTimeSelection)
+    const currentTimes = nextSelection[targetDay] ?? []
+    nextSelection[targetDay] = currentTimes.includes(time)
+      ? currentTimes.filter((item) => item !== time)
+      : [...currentTimes, time]
+
+    setDayTimeDrafts((prev) => ({ ...prev, [currentScheduleKey]: nextSelection }))
+  }
   const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
 
   const hasActiveScheduleSelection = (entry) => {
@@ -733,35 +731,28 @@ function App() {
     const tabRaidName = activeTabMeta?.raid ?? '무스펠'
     const tabDifficulty = activeTabMeta?.difficulty ?? '보통'
     const tabMode = activeModeTab ?? '트라이'
-
-    const scheduleEntries = allScheduleEntries.filter((entry) => {
-      const isCurrentUser = entry.nickname === loggedInNickname || entry.nickname === profile.nickname
-      const sameRaid = entry.raidName === tabRaidName
-      const sameDifficulty = entry.difficulty === tabDifficulty
-      const sameMode = entry.mode === tabMode
-      return isCurrentUser && sameRaid && sameDifficulty && sameMode
-    })
-
+    const tabKey = getScheduleKey({ raidName: tabRaidName, difficulty: tabDifficulty, mode: tabMode })
     const nextSet = new Set()
 
-    if (scheduleEntries.length > 0) {
-      scheduleEntries.forEach((entry) => {
-        getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
-          nextSet.add(`${day}-${time}`)
-        })
+    // 폼에서 수정 중인 레이드 탭이면 저장 전 선택을 바로 보여준다.
+    if (tabKey === currentScheduleKey) {
+      getDayTimePairs(currentDayTimeSelection).forEach(([day, time]) => {
+        nextSet.add(`${day}-${time}`)
       })
 
       return nextSet
     }
 
-    if (tabRaidName === getRaidLabel(profile.raidFocus) && tabDifficulty === (profile.difficulty ?? getDifficultyForRaid(getRaidLabel(profile.raidFocus))) && tabMode === (profile.mode ?? '트라이')) {
-      getDayTimePairs(profile.dayTimeSelection).forEach(([day, time]) => {
-        nextSet.add(`${day}-${time}`)
+    allScheduleEntries
+      .filter((entry) => entry.nickname === currentNickname && getScheduleKey(entry) === tabKey)
+      .forEach((entry) => {
+        getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
+          nextSet.add(`${day}-${time}`)
+        })
       })
-    }
 
     return nextSet
-  }, [activeModeTab, activeTabMeta, allScheduleEntries, loggedInNickname, profile.dayTimeSelection, profile.difficulty, profile.mode, profile.nickname, profile.raidFocus])
+  }, [activeModeTab, activeTabMeta, allScheduleEntries, currentDayTimeSelection, currentNickname, currentScheduleKey])
 
   const getDayTimeSlots = (date) => {
     const day = date.getDay()
@@ -1025,6 +1016,7 @@ function App() {
     setRememberMe(false)
     writeStoredLoginNickname('')
     setProfile(buildDefaultMember({ nickname: '' }))
+    setDayTimeDrafts({})
   }
 
   const loadCurrentProfileByNickname = async (nickname) => {
@@ -1091,19 +1083,34 @@ function App() {
     setLoggedInNickname(trimmedNickname)
     writeStoredLoginNickname(trimmedNickname)
 
+    const savedScheduleKey = currentScheduleKey
+    const savedSelection = normalizeDayTimeSelection(currentDayTimeSelection)
+
     const nextMember = {
       ...profile,
       nickname: trimmedNickname,
       className: profile.className,
       raidFocus: profile.raidFocus,
       leadReady: normalizeLeadReady(profile.leadReady),
+      days: getSelectedDayList(savedSelection),
+      times: getCombinedTimes(savedSelection),
+      dayTimeSelection: savedSelection,
+    }
+
+    // 저장이 끝나면 이 레이드의 수정 중 선택을 비운다 (이후엔 저장된 선택이 보인다).
+    const clearSavedDraft = () => {
+      setDayTimeDrafts((prev) => {
+        const nextDrafts = { ...prev }
+        delete nextDrafts[savedScheduleKey]
+        return nextDrafts
+      })
     }
 
     const scheduleEntry = {
       nickname: trimmedNickname,
-      raid_name: getRaidLabel(nextMember.raidFocus),
-      difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
-      mode: nextMember.mode ?? '트라이',
+      raid_name: currentScheduleTarget.raidName,
+      difficulty: currentScheduleTarget.difficulty,
+      mode: currentScheduleTarget.mode,
       days: nextMember.days,
       times: nextMember.times,
       day_time_selection: normalizeDayTimeSelection(nextMember.dayTimeSelection),
@@ -1171,6 +1178,11 @@ function App() {
 
           return nextSchedules
         })
+        clearSavedDraft()
+      }
+
+      if (scheduleResult.error) {
+        window.alert(`스케줄 저장에 실패했어요. (${scheduleResult.error.message})`)
       }
 
       return
@@ -1216,6 +1228,7 @@ function App() {
 
       return [...nextSchedules, localEntry]
     })
+    clearSavedDraft()
   }
 
   const confirmSaveCurrentProfile = async () => {
@@ -1230,7 +1243,7 @@ function App() {
       return
     }
 
-    setProfile((prev) => ({ ...prev, days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }))
+    setDayTimeDrafts({})
     setMembers((prevMembers) => prevMembers.filter((member) => member.nickname !== trimmedNickname))
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => entry.nickname !== trimmedNickname))
 
@@ -1263,11 +1276,8 @@ function App() {
       return
     }
 
-    const isTargetSchedule = (entry) =>
-      entry.nickname === trimmedNickname
-      && entry.raidName === target.raidName
-      && entry.difficulty === target.difficulty
-      && entry.mode === target.mode
+    const targetKey = getScheduleKey(target)
+    const isTargetSchedule = (entry) => entry.nickname === trimmedNickname && getScheduleKey(entry) === targetKey
 
     // members 쪽에 남은 같은 스케줄도 비워야 캘린더에서 사라진다.
     const isTargetMember = (member) =>
@@ -1281,7 +1291,11 @@ function App() {
 
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => !isTargetSchedule(entry)))
     setMembers((prevMembers) => prevMembers.map((member) => (isTargetMember(member) ? { ...member, ...clearedSelection } : member)))
-    setProfile((prev) => (isTargetMember({ ...prev, nickname: trimmedNickname }) ? { ...prev, ...clearedSelection } : prev))
+    setDayTimeDrafts((prev) => {
+      const nextDrafts = { ...prev }
+      delete nextDrafts[targetKey]
+      return nextDrafts
+    })
 
     if (supabase) {
       await supabase
@@ -1454,7 +1468,7 @@ function App() {
         <article className="summary-card">
           <span className="label">현재 집계</span>
           <strong>{members.filter((member) => member.attendance === '참').length}명 참여</strong>
-          <small>{selectedSlots.length}개 타임 선택 · {profile.days.length}개 요일</small>
+          <small>{getDayTimePairs(currentDayTimeSelection).length}개 타임 선택 · {currentSelectedDays.length}개 요일</small>
         </article>
 
         <article className="summary-card">
@@ -1481,12 +1495,65 @@ function App() {
 
           {helpOpen && (
             <div className="help-panel">
-              <p>1. 닉네임과 리딩 여부를 입력해요.</p>
-              <p>2. 가능한 요일과 시간대를 선택해요.</p>
-              <p>3. 저장하면 주간 캘린더에서 해당 시간대에 자동으로 집계돼요.</p>
-              <p>4. 레이드 탭과 난이도/공략 방식을 선택하면 파티 인원을 확인할 수 있어요.</p>
+              <p>1. 레이드와 난이도/공략 방식을 먼저 선택해요. 요일·시간은 레이드마다 따로 저장돼요.</p>
+              <p>2. 닉네임과 리딩 여부를 입력해요.</p>
+              <p>3. 가능한 요일과 시간대를 선택해요.</p>
+              <p>4. 저장하면 주간 캘린더에서 해당 시간대에 자동으로 집계돼요.</p>
+              <p>5. 레이드 탭과 난이도/공략 방식을 선택하면 파티 인원을 확인할 수 있어요.</p>
             </div>
           )}
+
+          <div className="field-group">
+            <label>주요 레이드</label>
+            <div className="chip-grid raid-option-grid">
+              {raidOptions.map((raid) => (
+                <button
+                  key={raid.id}
+                  type="button"
+                  className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
+                  onClick={() => {
+                    const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
+                    setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
+                  }}
+                >
+                  <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
+                  <span>{raid.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="two-column">
+            <div className="field-group">
+              <label htmlFor="difficulty">난이도</label>
+              <select
+                id="difficulty"
+                value={profile.difficulty}
+                onChange={(event) => setProfile((prev) => ({ ...prev, difficulty: event.target.value }))}
+              >
+                {difficultyOptions.map((difficulty) => (
+                  <option key={difficulty} value={difficulty}>
+                    {difficulty}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field-group">
+              <label htmlFor="mode">공략 방식</label>
+              <select
+                id="mode"
+                value={profile.mode}
+                onChange={(event) => setProfile((prev) => ({ ...prev, mode: event.target.value }))}
+              >
+                {modeOptions.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {mode}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <div className="field-group">
             <div className="field-label-row">
@@ -1521,7 +1588,7 @@ function App() {
             <div className="chip-grid">
               {weekdayNames.map((day) => {
                 // active: 시간이 선택된 요일, editing: 지금 시간을 고르고 있는 요일
-                const hasTimes = (profile.dayTimeSelection?.[day] ?? []).length > 0
+                const hasTimes = (currentDayTimeSelection[day] ?? []).length > 0
                 const isEditing = selectedDayForTimes === day
 
                 return (
@@ -1542,7 +1609,7 @@ function App() {
             <label>{selectedDayForTimes}요일 시간대 선택</label>
             <div className="chip-grid time-grid">
               {visibleTimeSlots.map((time) => {
-                const isSelected = (profile.dayTimeSelection?.[selectedDayForTimes] ?? []).includes(time)
+                const isSelected = (currentDayTimeSelection[selectedDayForTimes] ?? []).includes(time)
                 const isDisabled = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
 
                 return (
@@ -1554,7 +1621,7 @@ function App() {
                       if (!selectedDayForTimes) {
                         return
                       }
-                      toggleMultiSelect('times', time)
+                      toggleTimeSelection(time)
                     }}
                     disabled={isDisabled}
                     title={isDisabled ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
@@ -1610,63 +1677,11 @@ function App() {
             </select>
           </div>
 
-          <div className="field-group">
-            <label>주요 레이드</label>
-            <div className="chip-grid raid-option-grid">
-              {raidOptions.map((raid) => (
-                <button
-                  key={raid.id}
-                  type="button"
-                  className={profile.raidFocus === raid.id ? 'chip active' : 'chip'}
-                  onClick={() => {
-                    const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
-                    setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
-                  }}
-                >
-                  <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
-                  <span>{raid.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="two-column">
-            <div className="field-group">
-              <label htmlFor="difficulty">난이도</label>
-              <select
-                id="difficulty"
-                value={profile.difficulty}
-                onChange={(event) => setProfile((prev) => ({ ...prev, difficulty: event.target.value }))}
-              >
-                {difficultyOptions.map((difficulty) => (
-                  <option key={difficulty} value={difficulty}>
-                    {difficulty}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="field-group">
-              <label htmlFor="mode">공략 방식</label>
-              <select
-                id="mode"
-                value={profile.mode}
-                onChange={(event) => setProfile((prev) => ({ ...prev, mode: event.target.value }))}
-              >
-                {modeOptions.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {mode}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
           <div className="selected-summary">
             <h3>내 선택 요약</h3>
             <ul>
               <li>닉네임: {profile.nickname || '미입력'}</li>
-              <li>가능 시간: {formatDayTimeSelection(profile.dayTimeSelection) || '선택 없음'}</li>
+              <li>가능 시간: {formatDayTimeSelection(currentDayTimeSelection) || '선택 없음'}</li>
               <li>참여 여부: {profile.attendance}</li>
               <li>직업: {profile.className}</li>
               <li>전투력: {profile.power}</li>
