@@ -684,6 +684,7 @@ input::placeholder {
 }
 
 .day-raid-member {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -694,7 +695,7 @@ input::placeholder {
   border: 1px solid rgba(136, 170, 255, 0.24);
   color: #edf5ff;
   font-size: 0.66rem;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .day-raid-member .nickname-with-icon,
@@ -755,6 +756,7 @@ input::placeholder {
 }
 
 .raid-detail-member {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -765,7 +767,7 @@ input::placeholder {
   border: 1px solid rgba(136, 170, 255, 0.24);
   color: #edf5ff;
   font-size: 0.7rem;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
 }
 
@@ -820,6 +822,7 @@ input::placeholder {
 }
 
 .member-tag {
+  position: relative;
   display: inline-flex;
   max-width: 100%;
   padding: 5px 8px;
@@ -828,7 +831,7 @@ input::placeholder {
   border-radius: 999px;
   color: #edf5ff;
   font-size: 0.72rem;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
 }
 

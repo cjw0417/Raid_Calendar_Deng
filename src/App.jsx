@@ -1536,13 +1536,20 @@ function App() {
                           </div>
                           <div className="day-raid-members">
                             {members.map((member) => (
-                              <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member">
+                              <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member has-hover-tooltip">
                                 <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                 <span className="member-name-wrap">
                                   <span>{member.nickname}</span>
                                   <span className="member-power-inline">{member.power}</span>
                                 </span>
                                 {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                <span className="member-hover-tooltip" aria-hidden="true">
+                                  <span className="tooltip-header-row">
+                                    <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
+                                    <strong>{member.nickname}</strong>
+                                  </span>
+                                  <span className="tooltip-power">{member.power}</span>
+                                </span>
                               </span>
                             ))}
                           </div>
@@ -1730,7 +1737,7 @@ function App() {
                     <span className="weekday-title">{raidName} · {difficulty} · {mode}</span>
                     <div className="member-tags">
                       {members.map(({ nickname, className, power, leadReady }) => (
-                        <span key={`${raidName}-${difficulty}-${mode}-${nickname}`} className="member-tag">
+                        <span key={`${raidName}-${difficulty}-${mode}-${nickname}`} className="member-tag has-hover-tooltip">
                           <span className="nickname-with-icon small">
                             <img src={getClassIconPath(className)} alt={className} className="nickname-icon" />
                             <span className="member-name-wrap">
@@ -1738,6 +1745,13 @@ function App() {
                               <span className="member-power-inline">{power}</span>
                             </span>
                             {leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                          </span>
+                          <span className="member-hover-tooltip" aria-hidden="true">
+                            <span className="tooltip-header-row">
+                              <img src={getClassIconPath(className)} alt={className} className="tooltip-icon" />
+                              <strong>{nickname}</strong>
+                            </span>
+                            <span className="tooltip-power">{power}</span>
                           </span>
                         </span>
                       ))}
