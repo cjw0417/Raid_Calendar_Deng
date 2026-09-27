@@ -299,13 +299,14 @@ function buildDefaultMember(overrides = {}) {
     days: [],
     times: [],
     dayTimeSelection: initialSelection,
-    attendance: '참',
-    className: '수호성',
-    power: '600~700k',
-    raidFocus: '무스펠',
-    difficulty: '보통',
-    mode: '트라이',
-    leadReady: 'X',
+    // 로그인 직후 폼에는 아무것도 선택되지 않은 상태로 시작한다.
+    attendance: '',
+    className: '',
+    power: '',
+    raidFocus: '',
+    difficulty: '',
+    mode: '',
+    leadReady: '',
     ...overrides,
   }
 }
@@ -437,7 +438,7 @@ function App() {
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
-  const [selectedDayForTimes, setSelectedDayForTimes] = useState(weekdayNames[0])
+  const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [members, setMembers] = useState(() => loadLocalMembers())
   const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
@@ -624,26 +625,28 @@ function App() {
 
   // 폼에서 고른 레이드 · 난이도 · 공략 방식. 요일/시간 선택은 이 조합마다 따로 관리한다.
   const currentNickname = (loggedInNickname || profile.nickname).trim()
-  const selectedRaidLabel = getRaidLabel(profile.raidFocus)
+  const selectedRaidLabel = profile.raidFocus ? getRaidLabel(profile.raidFocus) : ''
   const currentScheduleTarget = {
     raidName: selectedRaidLabel,
-    difficulty: profile.difficulty ?? getDifficultyForRaid(selectedRaidLabel),
-    mode: profile.mode ?? '트라이',
+    difficulty: profile.difficulty,
+    mode: profile.mode,
   }
-  const currentScheduleKey = getScheduleKey(currentScheduleTarget)
-  const savedCurrentSchedule = raidSchedules.find(
-    (entry) => entry.nickname === currentNickname && getScheduleKey(entry) === currentScheduleKey,
-  )
+  // 레이드 · 난이도 · 공략 방식을 모두 골라야 요일/시간을 선택할 수 있다.
+  const isScheduleTargetSelected = Boolean(currentScheduleTarget.raidName && currentScheduleTarget.difficulty && currentScheduleTarget.mode)
+  const currentScheduleKey = isScheduleTargetSelected ? getScheduleKey(currentScheduleTarget) : null
+  const savedCurrentSchedule = currentScheduleKey
+    ? raidSchedules.find((entry) => entry.nickname === currentNickname && getScheduleKey(entry) === currentScheduleKey)
+    : null
   // 저장 전 수정 중인 선택 > 저장된 선택 > 빈 선택 순으로 보여준다.
-  const currentDayTimeSelection = dayTimeDrafts[currentScheduleKey]
+  const currentDayTimeSelection = (currentScheduleKey && dayTimeDrafts[currentScheduleKey])
     ?? savedCurrentSchedule?.dayTimeSelection
     ?? buildEmptyDayTimeSelection()
   const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
 
   const toggleTimeSelection = (time) => {
-    const targetDay = selectedDayForTimes || weekdayNames[0]
+    const targetDay = selectedDayForTimes
 
-    if (!getSelectableTimesForSelectedDay(targetDay).includes(time)) {
+    if (!currentScheduleKey || !targetDay || !getSelectableTimesForSelectedDay(targetDay).includes(time)) {
       return
     }
 
@@ -1006,7 +1009,8 @@ function App() {
       writeStoredLoginNickname('')
     }
 
-    setProfile((prev) => ({ ...prev, nickname: trimmedNickname }))
+    setProfile(buildDefaultMember({ nickname: trimmedNickname }))
+    setSelectedDayForTimes('')
     await loadCurrentProfileByNickname(trimmedNickname)
   }
 
@@ -1016,6 +1020,7 @@ function App() {
     setRememberMe(false)
     writeStoredLoginNickname('')
     setProfile(buildDefaultMember({ nickname: '' }))
+    setSelectedDayForTimes('')
     setDayTimeDrafts({})
   }
 
@@ -1026,6 +1031,8 @@ function App() {
       return
     }
 
+    let member = null
+
     if (supabase) {
       const { data, error } = await supabase
         .from('members')
@@ -1034,43 +1041,25 @@ function App() {
         .maybeSingle()
 
       if (!error && data) {
-        const member = normalizeMemberRecord(data)
-        if (member) {
-          setProfile((prev) => ({
-            ...prev,
-            ...member,
-            className: member.className,
-            raidFocus: getRaidLabel(member.raidFocus),
-            nickname: trimmedNickname,
-          }))
-          return
-        }
+        member = normalizeMemberRecord(data)
       }
+    }
 
-      const storedMember = loadLocalMembers().find((member) => member.nickname === trimmedNickname)
-      if (storedMember) {
-        setProfile((prev) => ({
-          ...prev,
-          ...storedMember,
-          className: storedMember.className,
-          raidFocus: getRaidLabel(storedMember.raidFocus),
-          nickname: trimmedNickname,
-        }))
-      }
+    member = member ?? loadLocalMembers().find((item) => item.nickname === trimmedNickname)
+
+    if (!member) {
       return
     }
 
-    const existing = loadLocalMembers().find((member) => member.nickname === trimmedNickname)
-
-    if (existing) {
-      setProfile((prev) => ({
-        ...prev,
-        ...existing,
-        className: existing.className,
-        raidFocus: getRaidLabel(existing.raidFocus),
-        nickname: trimmedNickname,
-      }))
-    }
+    // 이전에 저장한 개인 정보만 채우고, 레이드 · 난이도 · 공략 방식은 비워 둔다.
+    setProfile((prev) => ({
+      ...prev,
+      nickname: trimmedNickname,
+      attendance: member.attendance,
+      className: member.className,
+      power: member.power,
+      leadReady: member.leadReady,
+    }))
   }
 
   const saveCurrentProfile = async () => {
@@ -1229,6 +1218,29 @@ function App() {
       return [...nextSchedules, localEntry]
     })
     clearSavedDraft()
+  }
+
+  // 저장 전에 선택하지 않은 항목이 있으면 알려준다.
+  const openSaveConfirm = () => {
+    const missingFields = [
+      [selectedRaidLabel, '주요 레이드'],
+      [profile.difficulty, '난이도'],
+      [profile.mode, '공략 방식'],
+      [profile.leadReady, '리딩 여부'],
+      [currentSelectedDays.length > 0, '요일 · 시간대'],
+      [profile.attendance, '참여 가능 여부'],
+      [profile.className, '본인 직업'],
+      [profile.power, '전투력'],
+    ]
+      .filter(([value]) => !value)
+      .map(([, label]) => label)
+
+    if (missingFields.length > 0) {
+      window.alert(`다음 항목을 선택해 주세요.\n\n${missingFields.join(', ')}`)
+      return
+    }
+
+    setSaveConfirmOpen(true)
   }
 
   const confirmSaveCurrentProfile = async () => {
@@ -1511,10 +1523,7 @@ function App() {
                   key={raid.id}
                   type="button"
                   className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
-                  onClick={() => {
-                    const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
-                    setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
-                  }}
+                  onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
                 >
                   <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
                   <span>{raid.label}</span>
@@ -1531,6 +1540,7 @@ function App() {
                 value={profile.difficulty}
                 onChange={(event) => setProfile((prev) => ({ ...prev, difficulty: event.target.value }))}
               >
+                <option value="" disabled>선택</option>
                 {difficultyOptions.map((difficulty) => (
                   <option key={difficulty} value={difficulty}>
                     {difficulty}
@@ -1546,6 +1556,7 @@ function App() {
                 value={profile.mode}
                 onChange={(event) => setProfile((prev) => ({ ...prev, mode: event.target.value }))}
               >
+                <option value="" disabled>선택</option>
                 {modeOptions.map((mode) => (
                   <option key={mode} value={mode}>
                     {mode}
@@ -1585,18 +1596,22 @@ function App() {
 
           <div className="field-group">
             <label>요일 선택</label>
+            {!isScheduleTargetSelected && (
+              <p className="field-hint">레이드, 난이도, 공략 방식을 먼저 선택해 주세요.</p>
+            )}
             <div className="chip-grid">
               {weekdayNames.map((day) => {
                 // active: 시간이 선택된 요일, editing: 지금 시간을 고르고 있는 요일
                 const hasTimes = (currentDayTimeSelection[day] ?? []).length > 0
-                const isEditing = selectedDayForTimes === day
+                const isEditing = isScheduleTargetSelected && selectedDayForTimes === day
 
                 return (
                   <button
                     key={day}
                     type="button"
-                    className={`chip ${hasTimes ? 'active' : ''} ${isEditing ? 'editing' : ''}`}
+                    className={`chip ${hasTimes ? 'active' : ''} ${isEditing ? 'editing' : ''} ${isScheduleTargetSelected ? '' : 'disabled'}`}
                     onClick={() => setSelectedDayForTimes(day)}
+                    disabled={!isScheduleTargetSelected}
                   >
                     {day}
                   </button>
@@ -1606,25 +1621,24 @@ function App() {
           </div>
 
           <div className="field-group">
-            <label>{selectedDayForTimes}요일 시간대 선택</label>
+            <label>{selectedDayForTimes ? `${selectedDayForTimes}요일 시간대 선택` : '시간대 선택'}</label>
+            {isScheduleTargetSelected && !selectedDayForTimes && (
+              <p className="field-hint">요일을 먼저 선택해 주세요.</p>
+            )}
             <div className="chip-grid time-grid">
               {visibleTimeSlots.map((time) => {
                 const isSelected = (currentDayTimeSelection[selectedDayForTimes] ?? []).includes(time)
-                const isDisabled = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
+                const isHiddenDaytime = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
+                const isDisabled = !isScheduleTargetSelected || !selectedDayForTimes || isHiddenDaytime
 
                 return (
                   <button
                     key={time}
                     type="button"
                     className={`${isSelected ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''}`}
-                    onClick={() => {
-                      if (!selectedDayForTimes) {
-                        return
-                      }
-                      toggleTimeSelection(time)
-                    }}
+                    onClick={() => toggleTimeSelection(time)}
                     disabled={isDisabled}
-                    title={isDisabled ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
+                    title={isHiddenDaytime ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
                   >
                     {time}
                   </button>
@@ -1641,6 +1655,7 @@ function App() {
                 value={profile.attendance}
                 onChange={(event) => setProfile((prev) => ({ ...prev, attendance: event.target.value }))}
               >
+                <option value="" disabled>선택</option>
                 <option value="참">참</option>
                 <option value="불참">불참</option>
               </select>
@@ -1653,6 +1668,7 @@ function App() {
                 value={profile.className}
                 onChange={(event) => setProfile((prev) => ({ ...prev, className: event.target.value }))}
               >
+                <option value="" disabled>선택</option>
                 {classOptions.map((className) => (
                   <option key={className} value={className}>
                     {className}
@@ -1669,6 +1685,7 @@ function App() {
               value={profile.power}
               onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
             >
+              <option value="" disabled>선택</option>
               {powerOptions.map((power) => (
                 <option key={power} value={power}>
                   {power}
@@ -1682,11 +1699,14 @@ function App() {
             <ul>
               <li>닉네임: {profile.nickname || '미입력'}</li>
               <li>가능 시간: {formatDayTimeSelection(currentDayTimeSelection) || '선택 없음'}</li>
-              <li>참여 여부: {profile.attendance}</li>
-              <li>직업: {profile.className}</li>
-              <li>전투력: {profile.power}</li>
-              <li>리딩 가능 여부: {profile.leadReady}</li>
-              <li>우선 레이드: {selectedRaidLabel} · {profile.difficulty} · {profile.mode}</li>
+              <li>참여 여부: {profile.attendance || '미선택'}</li>
+              <li>직업: {profile.className || '미선택'}</li>
+              <li>전투력: {profile.power || '미선택'}</li>
+              <li>리딩 가능 여부: {profile.leadReady || '미선택'}</li>
+              <li>
+                우선 레이드:{' '}
+                {[selectedRaidLabel, profile.difficulty, profile.mode].map((value) => value || '미선택').join(' · ')}
+              </li>
             </ul>
           </div>
 
@@ -1715,7 +1735,7 @@ function App() {
           </div>
 
           <div className="member-actions">
-            <button type="button" className="primary-button" onClick={() => setSaveConfirmOpen(true)}>
+            <button type="button" className="primary-button" onClick={openSaveConfirm}>
               캘린더에 저장
             </button>
             <button type="button" className="secondary-button" onClick={() => setPendingDelete('all')}>

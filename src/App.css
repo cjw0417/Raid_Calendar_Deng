@@ -517,6 +517,12 @@
   box-shadow: inset 0 0 0 1px rgba(147, 183, 255, 0.18);
 }
 
+.field-hint {
+  margin: 0 0 8px;
+  color: #8fa3cf;
+  font-size: 0.78rem;
+}
+
 .chip.editing {
   border-color: rgba(147, 183, 255, 0.9);
   box-shadow: 0 0 0 1px rgba(147, 183, 255, 0.6);
