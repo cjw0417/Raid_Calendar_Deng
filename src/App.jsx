@@ -10,7 +10,7 @@ const raidOptions = [
   },
   {
     id: 'snow',
-    label: '비탄의 성역',
+    label: '비탄의 설원',
     modes: ['보통(트라이)', '어려움(트라이)', '보통(반숙이상)', '어려움(반숙이상)'],
   },
 ]
@@ -20,13 +20,13 @@ const modeOptions = ['트라이', '반숙이상']
 const raidTabOptions = [
   { id: 'muspel-normal', label: '무스펠 보통', raid: '무스펠', difficulty: '보통' },
   { id: 'muspel-hard', label: '무스펠 어려움', raid: '무스펠', difficulty: '어려움' },
-  { id: 'snow-normal', label: '비탄의 성역 보통', raid: '비탄의 성역', difficulty: '보통' },
-  { id: 'snow-hard', label: '비탄의 성역 어려움', raid: '비탄의 성역', difficulty: '어려움' },
+  { id: 'snow-normal', label: '비탄의 설원 보통', raid: '비탄의 설원', difficulty: '보통' },
+  { id: 'snow-hard', label: '비탄의 설원 어려움', raid: '비탄의 설원', difficulty: '어려움' },
 ]
 
 const raidDifficultyAvailability = {
   무스펠: ['보통', '어려움'],
-  '비탄의 성역': ['보통', '어려움'],
+  '비탄의 설원': ['보통', '어려움'],
 }
 
 const STORAGE_KEY = 'raid-calendar-members-v1'
@@ -135,21 +135,40 @@ const powerOptions = [
   '1100~1200k',
 ]
 
-function getRaidLabel(raidValue) {
+function normalizeRaidName(raidValue) {
   const normalized = String(raidValue ?? '')
-    .replace(/비탄의\s*설원/g, '비탄의 성역')
-    .replace(/비탄의\s*성역/g, '비탄의 성역')
+    .replace(/비탄의\s*성역/g, '비탄의 설원')
+    .replace(/비탄의\s*설원/g, '비탄의 설원')
     .replace(/\s+/g, ' ')
     .trim()
 
+  if (!normalized) {
+    return '무스펠'
+  }
+
+  const matched = raidOptions.find((raid) => {
+    const label = raid.label
+    return (
+      raid.id === raidValue ||
+      label === raidValue ||
+      label.replace(/\s+/g, ' ') === normalized ||
+      raidValue === label.replace(/\s+/g, ' ')
+    )
+  })
+
+  return matched?.label ?? normalized
+}
+
+function getRaidLabel(raidValue) {
+  const normalized = normalizeRaidName(raidValue)
   return raidOptions.find((raid) => {
     const label = raid.label
-    return raid.id === raidValue || label === raidValue || label.replace(/\s+/g, ' ') === normalized
+    return raid.id === normalized || label === normalized || label === raidValue || label.replace(/\s+/g, ' ') === normalized
   })?.label ?? '무스펠'
 }
 
 function getDifficultyForRaid(raidLabel) {
-  if (raidLabel === '비탄의 성역' || raidLabel === '비탄의 설원') return '보통'
+  if (raidLabel === '비탄의 설원') return '보통'
   return '보통'
 }
 
@@ -216,6 +235,8 @@ function normalizeMemberRecord(member) {
     return null
   }
 
+  const raidFocus = normalizeRaidName(member.raid_focus ?? member.raidFocus ?? '무스펠')
+
   return {
     id: member.id ?? `member-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nickname: member.nickname ?? '닉네임',
@@ -224,8 +245,8 @@ function normalizeMemberRecord(member) {
     attendance: member.attendance ?? '참',
     className: member.class_name ?? member.className ?? '수호성',
     power: member.power ?? '600~700k',
-    raidFocus: member.raid_focus ?? member.raidFocus ?? '무스펠',
-    difficulty: member.difficulty ?? getDifficultyForRaid(member.raid_focus ?? member.raidFocus ?? '무스펠'),
+    raidFocus,
+    difficulty: member.difficulty ?? getDifficultyForRaid(raidFocus),
     mode: member.mode ?? '트라이',
     leadReady: normalizeLeadReady(member.lead_ready ?? member.leadReady ?? 'X'),
   }
@@ -237,7 +258,7 @@ function normalizeRaidScheduleEntry(entry) {
   }
 
   const nickname = entry.nickname ?? '닉네임'
-  const raidName = entry.raid_name ?? entry.raidName ?? '무스펠'
+  const raidName = normalizeRaidName(entry.raid_name ?? entry.raidName ?? '무스펠')
   const difficulty = entry.difficulty ?? '쉬움'
   const mode = entry.mode ?? '트라이'
 
@@ -758,7 +779,7 @@ function App() {
     })
 
     return [...map.values()].sort((a, b) => {
-      const raidOrder = { 무스펠: 0, '비탄의 성역': 1 }
+      const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
       const raidDiff = (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
       if (raidDiff !== 0) return raidDiff
 
@@ -1158,7 +1179,7 @@ function App() {
     return (
       <div className="login-screen">
         <form className="login-card" onSubmit={handleLogin}>
-          <p className="eyebrow centered">그루 레기온의 성역 스케줄</p>
+          <p className="eyebrow centered">그루 레기온의 설원 스케줄</p>
           <h1>닉네임 로그인</h1>
 
           {!isSharedMode && (
@@ -1203,7 +1224,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">그루 레기온의 성역</p>
+          <p className="eyebrow">그루 레기온의 설원</p>
           <h1>스케줄</h1>
         </div>
         <div className="user-header-actions">
@@ -1367,40 +1388,38 @@ function App() {
             </div>
           </div>
 
-          <div className="two-column">
-            <div className="field-group">
-              <label htmlFor="power">전투력</label>
-              <select
-                id="power"
-                value={profile.power}
-                onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
-              >
-                {powerOptions.map((power) => (
-                  <option key={power} value={power}>
-                    {power}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="field-group">
+            <label htmlFor="power">전투력</label>
+            <select
+              id="power"
+              value={profile.power}
+              onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
+            >
+              {powerOptions.map((power) => (
+                <option key={power} value={power}>
+                  {power}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            <div className="field-group">
-              <label>주요 레이드</label>
-              <div className="chip-grid raid-option-grid">
-                {raidOptions.map((raid) => (
-                  <button
-                    key={raid.id}
-                    type="button"
-                    className={profile.raidFocus === raid.id ? 'chip active' : 'chip'}
-                    onClick={() => {
-                      const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
-                      setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
-                    }}
-                  >
-                    <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
-                    <span>{raid.label}</span>
-                  </button>
-                ))}
-              </div>
+          <div className="field-group">
+            <label>주요 레이드</label>
+            <div className="chip-grid raid-option-grid">
+              {raidOptions.map((raid) => (
+                <button
+                  key={raid.id}
+                  type="button"
+                  className={profile.raidFocus === raid.id ? 'chip active' : 'chip'}
+                  onClick={() => {
+                    const nextDifficulty = getDifficultyForRaid(getRaidLabel(raid.id))
+                    setProfile((prev) => ({ ...prev, raidFocus: raid.id, difficulty: nextDifficulty }))
+                  }}
+                >
+                  <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
+                  <span>{raid.label}</span>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1689,7 +1708,7 @@ function App() {
           </div>
 
           <div className="member-day-summary">
-            <h3>보스 난이도별 선택 회원</h3>
+            <h3>보스 난이도별 선택인원</h3>
             <div className="weekday-list">
               {memberByRaidDifficulty.length ? (
                 memberByRaidDifficulty.map(({ raidName, difficulty, mode, members, days, times }) => (

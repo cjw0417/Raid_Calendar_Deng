@@ -491,6 +491,16 @@
   transition: all 0.2s ease;
 }
 
+.raid-option-grid .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.raid-option-tag {
+  margin-right: 4px;
+}
+
 .chip:hover {
   border-color: rgba(138, 170, 255, 0.38);
 }
