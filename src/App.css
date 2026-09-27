@@ -865,6 +865,7 @@ input::placeholder {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
 }
 
 .nickname-with-icon {
@@ -1050,6 +1051,7 @@ input::placeholder {
 }
 
 .time-member-pill {
+  position: relative;
   display: block;
   width: 100%;
   max-width: 100%;
@@ -1062,8 +1064,12 @@ input::placeholder {
   color: #edf5ff;
   text-align: left;
   white-space: nowrap;
-  overflow: hidden;
+  overflow: visible;
   text-overflow: ellipsis;
+}
+
+.time-member-pill.has-hover-tooltip {
+  overflow: visible;
 }
 
 .time-member-pill .nickname-with-icon {
@@ -1073,6 +1079,63 @@ input::placeholder {
   align-items: center;
   min-width: 0;
   flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.member-hover-tooltip {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) translateX(6px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 168px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(8, 13, 24, 0.97);
+  border: 1px solid rgba(161, 177, 255, 0.24);
+  box-shadow: 0 12px 28px rgba(2, 7, 16, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+  z-index: 30;
+}
+
+.has-hover-tooltip:hover .member-hover-tooltip,
+.has-hover-tooltip:focus-within .member-hover-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
+}
+
+.tooltip-header-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  color: #edf5ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  width: 100%;
+}
+
+.tooltip-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.tooltip-power {
+  color: #a8c5ff;
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
+  text-align: left;
+  width: 100%;
 }
 
 .time-member-pill .member-name-wrap {
@@ -1082,8 +1145,9 @@ input::placeholder {
   min-width: 0;
   width: 0;
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-start;
+  text-align: left;
 }
 
 .time-member-pill .member-name-wrap > span:first-child {
@@ -1093,11 +1157,14 @@ input::placeholder {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1 1 auto;
+  text-align: left;
 }
 
 .time-member-pill .member-power-inline {
   font-size: 0.58rem;
   padding-top: 1px;
+  text-align: left;
+  width: 100%;
 }
 
 .empty-raid-text {

@@ -1659,7 +1659,7 @@ function App() {
                                 {partyA.length > 0 ? (
                                   <div className="time-member-list vertical">
                                     {partyA.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill">
+                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill has-hover-tooltip">
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                           <span className="member-name-wrap">
@@ -1667,6 +1667,13 @@ function App() {
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
                                           {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                        </span>
+                                        <span className="member-hover-tooltip" aria-hidden="true">
+                                          <span className="tooltip-header-row">
+                                            <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
+                                            <strong>{member.nickname}</strong>
+                                          </span>
+                                          <span className="tooltip-power">{member.power}</span>
                                         </span>
                                       </span>
                                     ))}
@@ -1680,7 +1687,7 @@ function App() {
                                 {partyB.length > 0 ? (
                                   <div className="time-member-list vertical">
                                     {partyB.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill">
+                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill has-hover-tooltip">
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                           <span className="member-name-wrap">
@@ -1688,6 +1695,13 @@ function App() {
                                             <span className="member-power-inline">{member.power}</span>
                                           </span>
                                           {member.leadReady === 'O' && <span className="lead-badge" aria-label="리딩 가능">O</span>}
+                                        </span>
+                                        <span className="member-hover-tooltip" aria-hidden="true">
+                                          <span className="tooltip-header-row">
+                                            <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
+                                            <strong>{member.nickname}</strong>
+                                          </span>
+                                          <span className="tooltip-power">{member.power}</span>
                                         </span>
                                       </span>
                                     ))}
