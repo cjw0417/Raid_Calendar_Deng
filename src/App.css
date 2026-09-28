@@ -837,7 +837,8 @@ input::placeholder {
   border: 1px solid rgba(136, 170, 255, 0.12);
 }
 
-.day-raid-bundle strong {
+/* 레이드 조합 제목에만 적용 (툴팁 안의 닉네임 strong에는 적용되지 않도록 직계 자식으로 한정) */
+.day-raid-bundle > strong {
   display: block;
   margin-bottom: 6px;
   color: #dfeaff;
@@ -1451,6 +1452,25 @@ input::placeholder {
   font-size: 0.72rem;
   font-weight: 700;
   width: 100%;
+}
+
+.tooltip-header-row strong {
+  line-height: 1;
+}
+
+.tooltip-lead-label {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 6px;
+  line-height: 1;
+  border-radius: 999px;
+  background: rgba(255, 77, 79, 0.18);
+  border: 1px solid #ff4d4f;
+  color: #ffb3b4;
+  font-size: 0.62rem;
+  font-weight: 700;
 }
 
 .tooltip-icon {

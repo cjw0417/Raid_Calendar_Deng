@@ -2262,7 +2262,6 @@ function App() {
                           <span
                             key={`${keyPrefix}-${member.nickname}-${member.className}`}
                             className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''}`}
-                            title={member.leadReady === 'O' ? '리딩 가능' : undefined}
                           >
                             <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                             <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
@@ -2273,6 +2272,7 @@ function App() {
                               <span className="tooltip-header-row">
                                 <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
                                 <strong>{member.nickname}</strong>
+                                {member.leadReady === 'O' && <span className="tooltip-lead-label">리딩 가능</span>}
                               </span>
                               <span className="tooltip-power">{member.power}</span>
                             </span>
