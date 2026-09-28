@@ -1976,7 +1976,6 @@ function App() {
                   className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
                   onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
                 >
-                  <span className="raid-option-tag">Option {raid.id === 'muspel' ? '1' : '2'}</span>
                   <span>{raid.label}</span>
                 </button>
               ))}
