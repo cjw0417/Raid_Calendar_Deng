@@ -2259,13 +2259,16 @@ function App() {
                       {raidGroups.map(({ label, times, timeMembers, members }) => {
                         const groupKey = `${day}-${label}`
                         const renderMember = (member, keyPrefix) => (
-                          <span key={`${keyPrefix}-${member.nickname}-${member.className}`} className="day-raid-member has-hover-tooltip">
+                          <span
+                            key={`${keyPrefix}-${member.nickname}-${member.className}`}
+                            className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''}`}
+                            title={member.leadReady === 'O' ? '리딩 가능' : undefined}
+                          >
                             <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                             <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
                               <span>{member.nickname}</span>
                               <span className="member-power-inline">{member.power}</span>
                             </span>
-                            {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                             <span className="member-hover-tooltip" aria-hidden="true">
                               <span className="tooltip-header-row">
                                 <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
@@ -2285,7 +2288,10 @@ function App() {
                               {times.map((time) => {
                                 const rowKey = `${groupKey}-${time}`
                                 const voters = timeMembers[time] ?? []
-                                const timeVoters = members.filter((member) => voters.includes(`${member.nickname}|${member.className}`))
+                                // 리딩 가능자를 앞쪽에 두어 접힌 상태의 아이콘에도 먼저 보이게 한다.
+                                const timeVoters = members
+                                  .filter((member) => voters.includes(`${member.nickname}|${member.className}`))
+                                  .sort((a, b) => (b.leadReady === 'O') - (a.leadReady === 'O'))
                                 const isExpanded = Boolean(expandedSummaryRows[rowKey])
                                 const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
                                 const hiddenCount = timeVoters.length - previewVoters.length
@@ -2310,7 +2316,7 @@ function App() {
                                               key={`${rowKey}-${member.nickname}-${member.className}`}
                                               src={getClassIconPath(member.className)}
                                               alt=""
-                                              className="day-raid-stack-icon"
+                                              className={`day-raid-stack-icon ${member.leadReady === 'O' ? 'is-leader' : ''}`}
                                             />
                                           ))}
                                           {hiddenCount > 0 && <span className="day-raid-stack-more">+{hiddenCount}</span>}
