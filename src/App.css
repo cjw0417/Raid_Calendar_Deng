@@ -855,13 +855,99 @@ input::placeholder {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px 6px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: rgba(94, 224, 170, 0.12);
   border: 1px solid rgba(94, 224, 170, 0.26);
   color: #dffcf2;
-  font-size: 0.62rem;
+  font-size: 0.82rem;
   font-weight: 700;
+  gap: 4px;
+}
+
+.day-raid-time-count {
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+.day-raid-time-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 접힌 줄: [시간 · 인원 수] 직업 아이콘들 ▾ / 펼친 줄: 아래에 인원 칩 목록 */
+.day-raid-time-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(94, 224, 170, 0.18);
+}
+
+.day-raid-time-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.day-raid-time-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.day-raid-time-toggle:hover .day-raid-time-tag,
+.day-raid-time-row.expanded .day-raid-time-tag {
+  background: rgba(94, 224, 170, 0.24);
+  border-color: rgba(94, 224, 170, 0.5);
+}
+
+.day-raid-time-toggle .day-raid-time-tag {
+  flex-shrink: 0;
+}
+
+.day-raid-icon-stack {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.day-raid-stack-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(12, 18, 28, 0.95);
+  border: 1px solid rgba(136, 170, 255, 0.35);
+  object-fit: contain;
+}
+
+.day-raid-stack-icon + .day-raid-stack-icon {
+  margin-left: -8px;
+}
+
+.day-raid-stack-more {
+  margin-left: 3px;
+  color: #bcd3ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.day-raid-toggle-arrow {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #9fb4de;
+  font-size: 0.85rem;
 }
 
 .day-raid-members {

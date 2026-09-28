@@ -30,6 +30,8 @@ const raidOptions = [
 ]
 
 const difficultyOptions = ['보통', '어려움']
+// 요일별 신청 현황에서 접힌 시간 줄에 미리 보여줄 직업 아이콘 수
+const SUMMARY_ICON_PREVIEW_LIMIT = 4
 const modeOptions = ['트라이', '반숙이상']
 const raidTabOptions = [
   { id: 'muspel-normal', label: '무스펠 보통', raid: '무스펠', difficulty: '보통' },
@@ -462,6 +464,8 @@ function App() {
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
   const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
+  // 요일별 신청 현황에서 펼쳐 둔 시간 줄 ("요일-레이드조합-시간" → true)
+  const [expandedSummaryRows, setExpandedSummaryRows] = useState({})
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
@@ -912,11 +916,19 @@ function App() {
         const existing = raidGroups.get(key) ?? {
           label: key,
           times: new Set(),
+          timeMembers: new Map(),
           members: [],
         }
 
+        // 시간대별로 어떤 인원이 투표했는지 함께 모은다.
+        const memberKey = `${entry.nickname}|${entry.className}`
         const dayTimes = entry.dayTimeSelection?.[day] ?? []
-        dayTimes.forEach((time) => existing.times.add(time))
+        dayTimes.forEach((time) => {
+          existing.times.add(time)
+          const voters = existing.timeMembers.get(time) ?? new Set()
+          voters.add(memberKey)
+          existing.timeMembers.set(time, voters)
+        })
 
         const memberExists = existing.members.some(
           (member) => member.nickname === entry.nickname && member.className === entry.className,
@@ -939,6 +951,9 @@ function App() {
         raidGroups: [...raidGroups.values()].map((group) => ({
           label: group.label,
           times: [...group.times].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)),
+          timeMembers: Object.fromEntries(
+            [...group.timeMembers].map(([time, voters]) => [time, [...voters]]),
+          ),
           members: group.members,
         })),
       }
@@ -2241,35 +2256,90 @@ function App() {
                   </div>
                   {raidGroups.length > 0 ? (
                     <div className="day-raid-list">
-                      {raidGroups.map(({ label, times, members }) => (
-                        <div key={`${day}-${label}`} className="day-raid-bundle">
-                          <strong>{label}</strong>
-                          <div className="day-raid-times">
-                            {times.length > 0 ? times.map((time) => (
-                              <span key={`${day}-${label}-${time}`} className="day-raid-time-tag">{time}</span>
-                            )) : <span className="empty-role">시간 없음</span>}
-                          </div>
-                          <div className="day-raid-members">
-                            {members.map((member) => (
-                              <span key={`${day}-${label}-${member.nickname}`} className="day-raid-member has-hover-tooltip">
-                                <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
-                                  <span>{member.nickname}</span>
-                                  <span className="member-power-inline">{member.power}</span>
-                                </span>
-                                {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
-                                <span className="member-hover-tooltip" aria-hidden="true">
-                                  <span className="tooltip-header-row">
-                                    <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
-                                    <strong>{member.nickname}</strong>
-                                  </span>
-                                  <span className="tooltip-power">{member.power}</span>
-                                </span>
+                      {raidGroups.map(({ label, times, timeMembers, members }) => {
+                        const groupKey = `${day}-${label}`
+                        const renderMember = (member, keyPrefix) => (
+                          <span key={`${keyPrefix}-${member.nickname}-${member.className}`} className="day-raid-member has-hover-tooltip">
+                            <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                            <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
+                              <span>{member.nickname}</span>
+                              <span className="member-power-inline">{member.power}</span>
+                            </span>
+                            {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
+                            <span className="member-hover-tooltip" aria-hidden="true">
+                              <span className="tooltip-header-row">
+                                <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
+                                <strong>{member.nickname}</strong>
                               </span>
-                            ))}
-                          </div>
+                              <span className="tooltip-power">{member.power}</span>
+                            </span>
+                          </span>
+                        )
+
+                        return (
+                        <div key={groupKey} className="day-raid-bundle">
+                          <strong>{label}</strong>
+                          {times.length > 0 ? (
+                            // 시간대마다 한 줄: [시간 · 인원 수 · 직업 아이콘]. 누르면 인원 목록이 펼쳐진다.
+                            <div className="day-raid-time-rows">
+                              {times.map((time) => {
+                                const rowKey = `${groupKey}-${time}`
+                                const voters = timeMembers[time] ?? []
+                                const timeVoters = members.filter((member) => voters.includes(`${member.nickname}|${member.className}`))
+                                const isExpanded = Boolean(expandedSummaryRows[rowKey])
+                                const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
+                                const hiddenCount = timeVoters.length - previewVoters.length
+
+                                return (
+                                  <div key={rowKey} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''}`}>
+                                    <button
+                                      type="button"
+                                      className="day-raid-time-toggle"
+                                      aria-expanded={isExpanded}
+                                      title={isExpanded ? '접기' : `${time} 인원 펼치기`}
+                                      onClick={() => setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))}
+                                    >
+                                      <span className="day-raid-time-tag">
+                                        {time}
+                                        <span className="day-raid-time-count">{timeVoters.length}명</span>
+                                      </span>
+                                      {!isExpanded && (
+                                        <span className="day-raid-icon-stack" aria-hidden="true">
+                                          {previewVoters.map((member) => (
+                                            <img
+                                              key={`${rowKey}-${member.nickname}-${member.className}`}
+                                              src={getClassIconPath(member.className)}
+                                              alt=""
+                                              className="day-raid-stack-icon"
+                                            />
+                                          ))}
+                                          {hiddenCount > 0 && <span className="day-raid-stack-more">+{hiddenCount}</span>}
+                                        </span>
+                                      )}
+                                      <span className="day-raid-toggle-arrow" aria-hidden="true">{isExpanded ? '▴' : '▾'}</span>
+                                    </button>
+                                    {isExpanded && (
+                                      <div className="day-raid-members">
+                                        {timeVoters.map((member) => renderMember(member, rowKey))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <>
+                              <div className="day-raid-times">
+                                <span className="empty-role">시간 없음</span>
+                              </div>
+                              <div className="day-raid-members">
+                                {members.map((member) => renderMember(member, groupKey))}
+                              </div>
+                            </>
+                          )}
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                     <div className="empty-role">신청 인원 없음</div>
