@@ -954,6 +954,77 @@ input::placeholder {
   font-weight: 700;
 }
 
+/* 시간대별 출발 / 클리어 O·X */
+.day-raid-run-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.day-raid-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 3px 2px 7px;
+  border-radius: 999px;
+  background: rgba(12, 18, 28, 0.7);
+  border: 1px solid rgba(136, 170, 255, 0.16);
+}
+
+.day-raid-run-status.is-yes {
+  border-color: rgba(94, 224, 170, 0.55);
+}
+
+.day-raid-run-status.is-no {
+  border-color: rgba(255, 77, 79, 0.45);
+}
+
+.day-raid-run-label {
+  margin-right: 2px;
+  color: #bcd3ff;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.day-raid-run-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(136, 170, 255, 0.22);
+  background: transparent;
+  color: #7f93bd;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.day-raid-run-button:hover:not(:disabled) {
+  color: #edf5ff;
+  border-color: rgba(136, 170, 255, 0.5);
+}
+
+.day-raid-run-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.day-raid-run-status.is-yes .day-raid-run-button.active {
+  background: #2fbf86;
+  border-color: #2fbf86;
+  color: #ffffff;
+  opacity: 1;
+}
+
+.day-raid-run-status.is-no .day-raid-run-button.active {
+  background: #ff4d4f;
+  border-color: #ff4d4f;
+  color: #ffffff;
+  opacity: 1;
+}
+
 .day-raid-toggle-arrow {
   margin-left: auto;
   flex-shrink: 0;

@@ -13,6 +13,7 @@ import {
   memberSetupPassword,
   normalizeHintAnswer,
   saveMemberSchedule,
+  setRaidRunStatus,
 } from './lib/memberApi'
 import './App.css'
 
@@ -48,6 +49,7 @@ const raidDifficultyAvailability = {
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
+const RAID_RUNS_STORAGE_KEY = 'raid-calendar-raid-runs-v1'
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
   '19:00',
@@ -421,6 +423,70 @@ function saveLocalRaidSchedules(nextSchedules) {
   localStorage.setItem(RAID_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
 }
 
+// 시간대별 출발 / 클리어 기록 (raid_runs)
+function formatDateKey(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+function getRaidRunKey(run) {
+  return [run.weekStart, run.day, run.time, run.raidName, run.difficulty, run.mode].join('|')
+}
+
+function normalizeRaidRun(entry) {
+  if (!entry) {
+    return null
+  }
+
+  return {
+    weekStart: entry.week_start ?? entry.weekStart,
+    day: entry.day,
+    time: entry.time,
+    raidName: entry.raid_name ?? entry.raidName,
+    difficulty: entry.difficulty,
+    mode: entry.mode,
+    departed: entry.departed ?? null,
+    cleared: entry.cleared ?? null,
+    departedBy: entry.departed_by ?? entry.departedBy ?? null,
+    clearedBy: entry.cleared_by ?? entry.clearedBy ?? null,
+    // 디스코드 알림을 이미 보냈는지 (시간대마다 한 번만 보낸다)
+    departedNotified: Boolean(entry.departed_notified_at ?? entry.departedNotified),
+    clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),
+  }
+}
+
+function loadLocalRaidRuns() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RAID_RUNS_STORAGE_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.map((entry) => normalizeRaidRun(entry)).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+function saveLocalRaidRuns(nextRuns) {
+  try {
+    localStorage.setItem(RAID_RUNS_STORAGE_KEY, JSON.stringify(nextRuns))
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+// 기록 목록에서 한 건을 바꾸거나 추가한다.
+function upsertRaidRun(runs, nextRun) {
+  const key = getRaidRunKey(nextRun)
+  const index = runs.findIndex((run) => getRaidRunKey(run) === key)
+
+  if (index < 0) {
+    return [...runs, nextRun]
+  }
+
+  const nextRuns = [...runs]
+  nextRuns[index] = nextRun
+  return nextRuns
+}
+
 function readStoredLoginNickname() {
   try {
     return localStorage.getItem(LOGIN_STORAGE_KEY) ?? ''
@@ -491,6 +557,13 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState(null)
   // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
   const [dayTimeDrafts, setDayTimeDrafts] = useState({})
+  // 이번 주(수요일 시작) 시간대별 출발 / 클리어 기록
+  const weekStartKey = useMemo(() => formatDateKey(weekDates[0]), [weekDates])
+  const [raidRuns, setRaidRuns] = useState(() => (supabase ? [] : loadLocalRaidRuns()))
+  // O로 바꾸기 전 확인 팝업 대상: { run, field }
+  const [pendingRunStatus, setPendingRunStatus] = useState(null)
+  // 저장 중인 기록 키 (중복 클릭 방지)
+  const [savingRunKey, setSavingRunKey] = useState('')
 
   useEffect(() => {
     let isMounted = true
@@ -616,6 +689,51 @@ function App() {
       saveLocalRaidSchedules(raidSchedules)
     }
   }, [members, raidSchedules])
+
+  useEffect(() => {
+    if (!supabase) {
+      saveLocalRaidRuns(raidRuns)
+    }
+  }, [raidRuns])
+
+  // 이번 주 출발 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  useEffect(() => {
+    if (!supabase) {
+      return undefined
+    }
+
+    let isMounted = true
+
+    supabase
+      .from('raid_runs')
+      .select('*')
+      .eq('week_start', weekStartKey)
+      .then(({ data, error }) => {
+        if (isMounted && !error && Array.isArray(data)) {
+          setRaidRuns(data.map((entry) => normalizeRaidRun(entry)).filter(Boolean))
+        }
+      })
+
+    const raidRunChannel = supabase
+      .channel('raid-runs-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'raid_runs' },
+        (payload) => {
+          const nextRun = normalizeRaidRun(payload.new)
+
+          if (nextRun?.weekStart === weekStartKey) {
+            setRaidRuns((prev) => upsertRaidRun(prev, nextRun))
+          }
+        },
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      supabase.removeChannel(raidRunChannel)
+    }
+  }, [weekStartKey])
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -915,6 +1033,9 @@ function App() {
 
         const existing = raidGroups.get(key) ?? {
           label: key,
+          raidName: entry.raidName,
+          difficulty: entry.difficulty,
+          mode: entry.mode,
           times: new Set(),
           timeMembers: new Map(),
           members: [],
@@ -950,7 +1071,14 @@ function App() {
         day,
         raidGroups: [...raidGroups.values()].map((group) => ({
           label: group.label,
-          times: [...group.times].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)),
+          raidName: group.raidName,
+          difficulty: group.difficulty,
+          mode: group.mode,
+          // 투표 인원이 많은 시간대부터, 인원이 같으면 이른 시간부터
+          times: [...group.times].sort((a, b) => (
+            (group.timeMembers.get(b)?.size ?? 0) - (group.timeMembers.get(a)?.size ?? 0)
+            || timeSlots.indexOf(a) - timeSlots.indexOf(b)
+          )),
           timeMembers: Object.fromEntries(
             [...group.timeMembers].map(([time, voters]) => [time, [...voters]]),
           ),
@@ -959,6 +1087,11 @@ function App() {
       }
     })
   }, [allScheduleEntries])
+
+  const raidRunByKey = useMemo(
+    () => new Map(raidRuns.filter((run) => run.weekStart === weekStartKey).map((run) => [getRaidRunKey(run), run])),
+    [raidRuns, weekStartKey],
+  )
 
   const memberByRaidDateTime = useMemo(() => {
     const map = new Map()
@@ -1570,6 +1703,82 @@ function App() {
     }
   }
 
+  // 출발 / 클리어 표시를 저장한다. value: 'O' | 'X' | null(표시 지우기)
+  // Supabase 모드에서는 DB 함수가 로그인·규칙을 확인하고, O로 바뀌면 디스코드 알림도 보낸다.
+  const applyRaidRunStatus = async (run, field, value) => {
+    const nickname = loggedInNickname.trim()
+
+    if (!nickname) {
+      window.alert('로그인한 뒤에 출발 · 클리어 여부를 표시할 수 있어요.')
+      return
+    }
+
+    const runKey = getRaidRunKey(run)
+
+    if (supabase) {
+      setSavingRunKey(runKey)
+
+      let result
+
+      try {
+        result = await setRaidRunStatus(nickname, sessionPassword, run, field, value)
+      } catch (error) {
+        window.alert(`표시를 저장하지 못했어요. (${error.message})`)
+        return
+      } finally {
+        setSavingRunKey('')
+      }
+
+      if (result?.error) {
+        window.alert(`표시를 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+        return
+      }
+
+      setRaidRuns((prev) => upsertRaidRun(prev, normalizeRaidRun(result.run)))
+      return
+    }
+
+    // 로컬 모드: DB 함수와 같은 규칙으로 이 브라우저에만 저장한다. (디스코드 알림 없음)
+    const current = raidRunByKey.get(runKey) ?? { ...run, departed: null, cleared: null, departedBy: null, clearedBy: null }
+
+    if (field === 'cleared' && current.departed !== 'O') {
+      window.alert(describeAuthResult('not_departed'))
+      return
+    }
+
+    const nextRun = field === 'departed'
+      ? {
+          ...current,
+          departed: value,
+          departedBy: value ? nickname : null,
+          ...(value === 'O' ? {} : { cleared: null, clearedBy: null }),
+        }
+      : { ...current, cleared: value, clearedBy: value ? nickname : null }
+
+    setRaidRuns((prev) => upsertRaidRun(prev, nextRun))
+  }
+
+  // 같은 값을 다시 누르면 표시를 지운다. O로 바꿀 때는 알림이 가므로 한 번 확인한다.
+  const handleRunStatusClick = (run, field, value) => {
+    const runRecord = raidRunByKey.get(getRaidRunKey(run))
+    const currentValue = runRecord?.[field] ?? null
+    const nextValue = currentValue === value ? null : value
+
+    if (nextValue === 'O') {
+      const alreadyNotified = Boolean(field === 'departed' ? runRecord?.departedNotified : runRecord?.clearedNotified)
+      setPendingRunStatus({ run, field, alreadyNotified })
+      return
+    }
+
+    applyRaidRunStatus(run, field, nextValue)
+  }
+
+  const confirmPendingRunStatus = () => {
+    const target = pendingRunStatus
+    setPendingRunStatus(null)
+    applyRaidRunStatus(target.run, target.field, 'O')
+  }
+
   const confirmPendingDelete = async () => {
     const target = pendingDelete
     setPendingDelete(null)
@@ -1906,6 +2115,31 @@ function App() {
               </button>
               <button type="button" className="primary-button" onClick={confirmSaveCurrentProfile}>
                 저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingRunStatus && (
+        <div className="save-confirm-backdrop" onClick={() => setPendingRunStatus(null)}>
+          <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>{pendingRunStatus.field === 'departed' ? '출발로 표시할까요?' : '클리어로 표시할까요?'}</h3>
+            <p>
+              <span className="save-confirm-nickname">
+                {pendingRunStatus.run.raidName} · {pendingRunStatus.run.difficulty} · {pendingRunStatus.run.mode}
+              </span>
+              {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드를 ${pendingRunStatus.field === 'departed' ? '출발' : '클리어'}(O)로 표시합니다.`}
+              {supabase && (pendingRunStatus.alreadyNotified
+                ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
+                : ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.')}
+            </p>
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setPendingRunStatus(null)}>
+                취소
+              </button>
+              <button type="button" className="primary-button" onClick={confirmPendingRunStatus}>
+                표시
               </button>
             </div>
           </div>
@@ -2256,7 +2490,7 @@ function App() {
                   </div>
                   {raidGroups.length > 0 ? (
                     <div className="day-raid-list">
-                      {raidGroups.map(({ label, times, timeMembers, members }) => {
+                      {raidGroups.map(({ label, raidName, difficulty, mode, times, timeMembers, members }) => {
                         const groupKey = `${day}-${label}`
                         const renderMember = (member, keyPrefix) => (
                           <span
@@ -2295,6 +2529,44 @@ function App() {
                                 const isExpanded = Boolean(expandedSummaryRows[rowKey])
                                 const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
                                 const hiddenCount = timeVoters.length - previewVoters.length
+                                const run = { weekStart: weekStartKey, day, time, raidName, difficulty, mode }
+                                const runKey = getRaidRunKey(run)
+                                const runRecord = raidRunByKey.get(runKey)
+                                const isSavingRun = savingRunKey === runKey
+                                // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
+                                const isSlotVoter = timeVoters.some((member) => member.nickname === loggedInNickname)
+                                const canEditRun = Boolean(loggedInNickname) && isSlotVoter && !isSavingRun
+                                const renderRunStatus = (field, fieldLabel) => {
+                                  const value = runRecord?.[field] ?? null
+                                  const changedBy = field === 'departed' ? runRecord?.departedBy : runRecord?.clearedBy
+                                  const isLocked = field === 'cleared' && runRecord?.departed !== 'O'
+                                  const disabledReason = !loggedInNickname
+                                    ? '로그인한 뒤에 표시할 수 있어요.'
+                                    : !isSlotVoter ? describeAuthResult('not_participant')
+                                    : isLocked ? '출발(O)로 표시한 뒤에 정할 수 있어요.' : ''
+
+                                  return (
+                                    <span
+                                      className={`day-raid-run-status ${value ? `is-${value === 'O' ? 'yes' : 'no'}` : ''}`}
+                                      title={disabledReason || (value && changedBy ? `${fieldLabel} ${value} · ${changedBy}` : `${fieldLabel} 여부`)}
+                                    >
+                                      <span className="day-raid-run-label">{fieldLabel}</span>
+                                      {['O', 'X'].map((option) => (
+                                        <button
+                                          key={option}
+                                          type="button"
+                                          className={`day-raid-run-button ${value === option ? 'active' : ''}`}
+                                          aria-pressed={value === option}
+                                          aria-label={`${time} ${fieldLabel} ${option}`}
+                                          disabled={!canEditRun || isLocked}
+                                          onClick={() => handleRunStatusClick(run, field, option)}
+                                        >
+                                          <LeadMark value={option} />
+                                        </button>
+                                      ))}
+                                    </span>
+                                  )
+                                }
 
                                 return (
                                   <div key={rowKey} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''}`}>
@@ -2324,6 +2596,10 @@ function App() {
                                       )}
                                       <span className="day-raid-toggle-arrow" aria-hidden="true">{isExpanded ? '▴' : '▾'}</span>
                                     </button>
+                                    <div className="day-raid-run-row">
+                                      {renderRunStatus('departed', '출발')}
+                                      {renderRunStatus('cleared', '클리어')}
+                                    </div>
                                     {isExpanded && (
                                       <div className="day-raid-members">
                                         {timeVoters.map((member) => renderMember(member, rowKey))}

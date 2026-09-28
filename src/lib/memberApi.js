@@ -27,6 +27,9 @@ const resultMessages = {
   hint_required: '비밀번호 찾기 질문을 고르고 답을 2글자 이상 적어 주세요.',
   no_hint: '비밀번호 찾기 질문을 정하지 않은 닉네임이에요. 관리자에게 비밀번호 초기화를 요청해 주세요.',
   no_password: '아직 개인 비밀번호를 정하지 않은 닉네임이에요. 초기 비밀번호로 로그인해 비밀번호를 정해 주세요.',
+  not_departed: '출발(O)로 표시한 뒤에 클리어 여부를 정할 수 있어요.',
+  not_participant: '이 시간대에 참여로 투표한 사람만 표시할 수 있어요.',
+  bad_request: '요청 내용이 올바르지 않아요.',
 }
 
 export function describeAuthResult(result) {
@@ -227,4 +230,21 @@ export function deleteMemberSchedule(nickname, password, target) {
 
 export function deleteAllMemberSchedules(nickname, password) {
   return callRpc('member_delete_all_schedules', { p_nickname: nickname, p_password: password })
+}
+
+// 시간대별 출발 / 클리어 표시 (supabase_raid_runs.sql). field: 'departed' | 'cleared', value: 'O' | 'X' | null
+// O로 바뀌면 DB가 디스코드 웹후크로 알림을 보낸다. 반환값: { run, notified } 또는 { error }
+export function setRaidRunStatus(nickname, password, run, field, value) {
+  return callRpc('member_set_raid_run_status', {
+    p_nickname: nickname,
+    p_password: password,
+    p_week_start: run.weekStart,
+    p_day: run.day,
+    p_time: run.time,
+    p_raid_name: run.raidName,
+    p_difficulty: run.difficulty,
+    p_mode: run.mode,
+    p_field: field,
+    p_value: value,
+  })
 }
