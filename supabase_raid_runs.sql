@@ -9,10 +9,8 @@
 --   - O로 바뀌는 순간 디스코드 웹후크로 알림을 보낸다. 출발 / 클리어 알림은 시간대마다 한 번씩만 보낸다.
 --     (O를 지웠다가 다시 O로 해도 다시 보내지 않는다) 웹후크 주소가 비어 있으면 보내지 않는다.
 --
--- 디스코드 웹후크 연결 / 변경 (주소는 이 DB 안에만 두고 앱 코드에는 넣지 않는다)
---   update public.app_settings set value = 'https://discord.com/api/webhooks/...' where key = 'discord_webhook_url';
--- 알림 끄기
---   update public.app_settings set value = '' where key = 'discord_webhook_url';
+-- 디스코드 웹후크 연결 · 확인 · 관리용 SQL은 이 파일 맨 아래 "관리용 SQL"에 있다.
+-- 웹후크 주소는 DB(app_settings)에만 두고, 이 파일이나 앱 코드에는 넣지 않는다.
 
 create extension if not exists pg_net with schema extensions;
 
@@ -295,3 +293,50 @@ revoke execute on function public.member_set_raid_run_status(text, text, date, t
 grant execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text) to anon, authenticated;
 
 notify pgrst, 'reload schema';
+
+-- ===========================================================================
+-- 관리용 SQL
+-- 위 파일 전체를 실행할 때 같이 돌지 않도록 주석으로 둔다.
+-- 필요한 부분만 SQL Editor에 복사하고, 줄 앞의 "-- "를 지운 뒤 실행한다.
+-- ===========================================================================
+
+-- [1] 디스코드 웹후크 연결 / 주소 변경
+--     웹후크 주소는 디스코드 채널 편집 → 연동 → 웹후크에서 복사한다.
+-- update public.app_settings
+-- set value = '웹후크 주소'
+-- where key = 'discord_webhook_url';
+
+-- [2] 연결 확인
+--     주소가 들어갔는지 (앞부분만 표시)
+-- select key, left(value, 45) || '...' as value
+-- from public.app_settings
+-- where key = 'discord_webhook_url';
+--
+--     pg_net이 켜져 있는지 (한 줄이 나오면 정상)
+-- select extname, extversion from pg_extension where extname = 'pg_net';
+
+-- [3] 알림 끄기 (다시 켜려면 [1]을 실행)
+-- update public.app_settings set value = '' where key = 'discord_webhook_url';
+
+-- [4] 이번 주 출발 / 클리어 기록 보기
+-- select day, time, raid_name, difficulty, mode,
+--        departed, departed_by, cleared, cleared_by,
+--        departed_notified_at is not null as 출발알림,
+--        cleared_notified_at is not null as 클리어알림
+-- from public.raid_runs
+-- where week_start = (current_date - ((extract(isodow from current_date)::int + 4) % 7))
+-- order by array_position(array['수', '목', '금', '토', '일', '월', '화'], day), time;
+
+-- [5] 테스트로 누른 시간대 기록 지우기
+--     기록과 알림 여부가 함께 초기화되므로, 다시 O를 누르면 알림이 또 간다.
+-- delete from public.raid_runs
+-- where week_start = (current_date - ((extract(isodow from current_date)::int + 4) % 7))
+--   and day = '수' and time = '21:00'
+--   and raid_name = '무스펠' and difficulty = '보통' and mode = '트라이';
+
+-- [6] 디스코드 전송 결과 확인 (알림이 안 올 때)
+--     status_code 204 = 성공, 다른 값이면 error_msg를 본다.
+-- select created, status_code, error_msg
+-- from net._http_response
+-- order by created desc
+-- limit 5;

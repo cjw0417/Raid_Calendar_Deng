@@ -824,6 +824,13 @@ input::placeholder {
   letter-spacing: 0.08em;
 }
 
+.day-raid-date {
+  color: #8fa6d6;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
 .day-raid-list {
   display: flex;
   flex-direction: column;

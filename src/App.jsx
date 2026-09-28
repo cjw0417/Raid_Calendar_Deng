@@ -2483,10 +2483,14 @@ function App() {
           <div className="day-raid-summary-panel">
             <h3>요일별 레이드 신청 현황</h3>
             <div className="day-raid-summary-grid">
-              {dayRaidSummary.map(({ day, raidGroups }) => (
+              {dayRaidSummary.map(({ day, raidGroups }, dayIndex) => (
                 <div key={day} className="day-raid-card">
                   <div className="day-raid-header">
                     <span>{day}요일</span>
+                    {/* weekdayNames와 weekDates는 둘 다 수요일부터 시작한다. */}
+                    <span className="day-raid-date">
+                      {weekDates[dayIndex].getMonth() + 1}/{weekDates[dayIndex].getDate()}
+                    </span>
                   </div>
                   {raidGroups.length > 0 ? (
                     <div className="day-raid-list">
