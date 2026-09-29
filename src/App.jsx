@@ -589,10 +589,15 @@ function App() {
     () => storedRaidSchedules.filter((entry) => isSavedThisWeek(entry, weekStartTime)),
     [storedRaidSchedules, weekStartTime],
   )
-  // 현재 집계: 이번 주에 저장하고 참여로 표시한 인원
+  // 현재 집계: 이번 주에 참여로 신청한 인원 (한 사람이 여러 레이드를 신청해도 1명)
   const participantCount = useMemo(
-    () => storedMembers.filter((member) => member.attendance === '참' && isSavedThisWeek(member, weekStartTime)).length,
-    [storedMembers, weekStartTime],
+    () =>
+      new Set(
+        raidSchedules
+          .filter((entry) => entry.attendance === '참' && entry.days.length > 0)
+          .map((entry) => entry.nickname),
+      ).size,
+    [raidSchedules],
   )
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
