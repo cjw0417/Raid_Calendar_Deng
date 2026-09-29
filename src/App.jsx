@@ -211,12 +211,17 @@ function getNicknameClassName(nickname) {
   return nickname && nickname.length >= 4 ? 'nickname-truncate' : ''
 }
 
-function getCurrentWeekDates() {
-  const today = new Date()
-  const start = new Date(today)
-  const offset = (today.getDay() + 4) % 7
-  start.setDate(today.getDate() - offset)
+// 기준 시각이 속한 주의 수요일 00시
+function getWeekStart(baseDate) {
+  const start = new Date(baseDate)
+  const offset = (baseDate.getDay() + 4) % 7
+  start.setDate(baseDate.getDate() - offset)
   start.setHours(0, 0, 0, 0)
+  return start
+}
+
+function getWeekDates(weekStartTime) {
+  const start = new Date(weekStartTime)
 
   return Array.from({ length: 7 }, (_, index) => {
     const date = new Date(start)
@@ -360,7 +365,14 @@ function normalizeMemberRecord(member) {
     difficulty: member.difficulty ?? getDifficultyForRaid(raidFocus),
     mode: member.mode ?? '트라이',
     leadReady: normalizeLeadReady(member.lead_ready ?? member.leadReady ?? 'X'),
+    updatedAt: member.updated_at ?? member.updatedAt ?? new Date().toISOString(),
   }
+}
+
+// 이번 주(수요일 00시) 이후에 저장된 기록인지. 지난주에 저장한 신청은 매주 수요일에 초기화된 것으로 본다.
+function isSavedThisWeek(record, weekStartTime) {
+  const savedTime = new Date(record.updatedAt).getTime()
+  return Number.isNaN(savedTime) || savedTime >= weekStartTime
 }
 
 function normalizeRaidScheduleEntry(entry) {
@@ -530,8 +542,10 @@ function LeadMark({ value }) {
 }
 
 function App() {
-  const weekDates = useMemo(() => getCurrentWeekDates(), [])
   const [currentTime, setCurrentTime] = useState(new Date())
+  // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
+  const weekStartTime = getWeekStart(currentTime).getTime()
+  const weekDates = useMemo(() => getWeekDates(weekStartTime), [weekStartTime])
   const [nextReset, setNextReset] = useState(() => getNextResetDate())
   const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 보통')
@@ -559,8 +573,27 @@ function App() {
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
-  const [members, setMembers] = useState(() => loadLocalMembers())
-  const [raidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
+  const [storedMembers, setMembers] = useState(() => loadLocalMembers())
+  const [storedRaidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
+  // 화면에는 이번 주에 저장된 신청만 보여 준다. (지난주 신청은 수요일 00시에 초기화)
+  const members = useMemo(
+    () =>
+      storedMembers.map((member) =>
+        isSavedThisWeek(member, weekStartTime)
+          ? member
+          : { ...member, days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() },
+      ),
+    [storedMembers, weekStartTime],
+  )
+  const raidSchedules = useMemo(
+    () => storedRaidSchedules.filter((entry) => isSavedThisWeek(entry, weekStartTime)),
+    [storedRaidSchedules, weekStartTime],
+  )
+  // 현재 집계: 이번 주에 저장하고 참여로 표시한 인원
+  const participantCount = useMemo(
+    () => storedMembers.filter((member) => member.attendance === '참' && isSavedThisWeek(member, weekStartTime)).length,
+    [storedMembers, weekStartTime],
+  )
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
   // 삭제 확인 팝업 대상: 'all'(전체 삭제) 또는 삭제할 스케줄 한 건
@@ -599,8 +632,8 @@ function App() {
 
   useEffect(() => {
     if (!supabase) {
-      saveLocalMembers(members)
-      saveLocalRaidSchedules(raidSchedules)
+      saveLocalMembers(storedMembers)
+      saveLocalRaidSchedules(storedRaidSchedules)
       return
     }
 
@@ -695,10 +728,10 @@ function App() {
 
   useEffect(() => {
     if (!supabase) {
-      saveLocalMembers(members)
-      saveLocalRaidSchedules(raidSchedules)
+      saveLocalMembers(storedMembers)
+      saveLocalRaidSchedules(storedRaidSchedules)
     }
-  }, [members, raidSchedules])
+  }, [storedMembers, storedRaidSchedules])
 
   useEffect(() => {
     if (!supabase) {
@@ -2072,7 +2105,9 @@ function App() {
             <strong>{currentTime.toLocaleString('ko-KR')}</strong>
           </div>
           <div className="user-badge-wrap">
-            <span className="user-badge">{loggedInNickname}</span>
+            <span className="user-badge" title={loggedInNickname}>
+              <span className="user-badge-name">{loggedInNickname}</span>
+            </span>
             <button type="button" className="secondary-button small-logout" onClick={openPasswordChange}>
               비밀번호 변경
             </button>
@@ -2259,7 +2294,7 @@ function App() {
 
         <article className="summary-card">
           <span className="label">현재 집계</span>
-          <strong>{members.filter((member) => member.attendance === '참').length}명 참여</strong>
+          <strong>{participantCount}명 참여</strong>
           <small>{getDayTimePairs(currentDayTimeSelection).length}개 타임 선택 · {currentSelectedDays.length}개 요일</small>
         </article>
 
