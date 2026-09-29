@@ -499,6 +499,13 @@ select.login-input {
   margin-bottom: 8px;
 }
 
+.field-label-row .small-toggle {
+  flex-shrink: 0;
+  width: auto;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
 .field-label-row label,
 .lead-label-inline {
   margin: 0;

@@ -2435,7 +2435,20 @@ function App() {
           </div>
 
           <div className="field-group">
-            <label>{selectedDayForTimes ? `${selectedDayForTimes}요일 시간대 선택` : '시간대 선택'}</label>
+            <div className="field-label-row">
+              <label>{selectedDayForTimes ? `${selectedDayForTimes}요일 시간대 선택` : '시간대 선택'}</label>
+              {/* 주말은 낮시간(12~16시)을 켜야 선택할 수 있어서, 모바일에서도 보이도록 입력 폼에 토글을 둔다. */}
+              {(selectedDayForTimes === '토' || selectedDayForTimes === '일') && (
+                <button
+                  type="button"
+                  className="secondary-button small-toggle"
+                  onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                  aria-pressed={showDaytimeSlots}
+                >
+                  {showDaytimeSlots ? '낮시간 숨기기' : '낮시간 보기'}
+                </button>
+              )}
+            </div>
             {isScheduleTargetSelected && !selectedDayForTimes && (
               <p className="field-hint">요일을 먼저 선택해 주세요.</p>
             )}
