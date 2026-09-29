@@ -6,6 +6,8 @@ html {
   font-family: 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
   background: #070d1b;
   color: #edf4ff;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {

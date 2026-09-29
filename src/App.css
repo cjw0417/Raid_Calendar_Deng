@@ -1657,8 +1657,9 @@ input::placeholder {
 }
 
 @media (max-width: 980px) {
+  /* 1fr이면 캘린더 최소 폭만큼 칼럼이 늘어나 화면 밖으로 넘친다 */
   .content-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .summary-grid {
@@ -1666,22 +1667,430 @@ input::placeholder {
   }
 }
 
+/* 모바일 전용 요소: 데스크톱에서는 숨긴다 */
+.mobile-section-name,
+.mobile-menu-button,
+.mobile-nav-backdrop {
+  display: none;
+}
+
+@keyframes mobile-nav-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+/* 모바일 (375px 기준) */
 @media (max-width: 640px) {
   .app-shell {
-    width: min(100% - 20px, 100%);
-    padding: 16px;
+    width: 100%;
+    padding: 0 18px 32px;
+    border: none;
   }
 
+  /* 햄버거 메뉴에서 고른 영역만 보여준다 (data-section이 없는 요소는 항상 보임) */
+  .app-shell[data-mobile-section='form'] [data-section]:not([data-section='form']),
+  .app-shell[data-mobile-section='day'] [data-section]:not([data-section='day']),
+  .app-shell[data-mobile-section='calendar'] [data-section]:not([data-section='calendar']),
+  .app-shell[data-mobile-section='members'] [data-section]:not([data-section='members']),
+  .app-shell[data-mobile-section='form'] .calendar-panel {
+    display: none;
+  }
+
+  /* 로그인 · 비밀번호 화면 */
+  .login-screen {
+    place-items: start center;
+    padding: 32px 12px 24px;
+  }
+
+  .login-card {
+    padding: 22px 18px 18px;
+    border-radius: 16px;
+  }
+
+  .login-card h1 {
+    font-size: 1.6rem;
+  }
+
+  .login-subtitle {
+    margin-bottom: 18px;
+    font-size: 0.88rem;
+    line-height: 1.7;
+  }
+
+  /* 16px 미만이면 iOS에서 입력창을 누를 때 화면이 확대된다 */
+  input,
+  select,
+  .login-input {
+    font-size: 16px;
+  }
+
+  /* 상단 바: 제목 · 현재 영역 · 햄버거 버튼만 두고 스크롤해도 위에 고정 */
   .topbar {
-    flex-direction: column;
-    align-items: flex-start;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    margin: 0 -18px 14px;
+    padding: 10px 18px;
+    gap: 10px;
+    background: rgba(8, 12, 25, 0.94);
+    border-bottom: 1px solid rgba(179, 198, 255, 0.1);
+    backdrop-filter: blur(8px);
   }
 
-  .live-clock {
-    align-items: flex-start;
+  .topbar-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .topbar .eyebrow,
+  .user-header-actions {
+    display: none;
+  }
+
+  .topbar h1 {
+    flex-shrink: 0;
+    font-size: 1.3rem;
+  }
+
+  .mobile-section-name {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: #8cc5ff;
+    font-size: 0.86rem;
+    font-weight: 700;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 12px;
+    border: 1px solid rgba(150, 170, 255, 0.22);
+    background: rgba(19, 27, 42, 0.9);
+  }
+
+  .mobile-menu-button span {
+    display: block;
+    width: 18px;
+    height: 2px;
+    border-radius: 2px;
+    background: #dfeaff;
+  }
+
+  /* 햄버거 메뉴 (오른쪽에서 열리는 패널) */
+  .mobile-nav-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    display: flex;
+    justify-content: flex-end;
+    background: rgba(3, 7, 15, 0.6);
+    backdrop-filter: blur(3px);
+  }
+
+  .mobile-nav-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: min(300px, 82vw);
+    height: 100%;
+    padding: 18px 16px 24px;
+    overflow-y: auto;
+    background: #0e1422;
+    border-left: 1px solid rgba(156, 178, 255, 0.18);
+    box-shadow: -16px 0 40px rgba(2, 6, 14, 0.5);
+    animation: mobile-nav-in 0.2s ease;
+  }
+
+  .mobile-nav-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .mobile-nav-head .user-badge {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-nav-close {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid rgba(150, 170, 255, 0.2);
+    background: transparent;
+    color: #dfeaff;
+    font-size: 0.9rem;
+  }
+
+  .mobile-nav-clock {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(124, 145, 255, 0.08);
+    border: 1px solid rgba(148, 162, 255, 0.18);
+    color: #dfe9ff;
+  }
+
+  .mobile-nav-clock span {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+
+  .mobile-nav-clock strong {
+    font-size: 0.88rem;
+  }
+
+  .shared-mode-warning {
+    padding: 8px 10px;
+    white-space: normal;
+    font-size: 0.74rem;
+    line-height: 1.5;
+  }
+
+  .mobile-nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .mobile-nav-item {
+    width: 100%;
+    padding: 13px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 167, 255, 0.14);
+    background: rgba(17, 23, 36, 0.95);
+    color: #dfe8ff;
+    font-size: 0.95rem;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .mobile-nav-item.active {
+    background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
+    border-color: rgba(128, 170, 255, 0.55);
+    color: #f2f7ff;
+  }
+
+  .mobile-nav-actions {
+    display: grid;
+    gap: 8px;
+    margin-top: auto;
+  }
+
+  /* 요약 카드: 다음 리셋은 한 줄 전체, 나머지 둘은 나란히 */
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .summary-card.accent {
+    grid-column: 1 / -1;
+  }
+
+  .summary-card {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .summary-card .label {
+    margin-bottom: 4px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+
+  .summary-card strong {
+    margin-bottom: 4px;
+    font-size: 1rem;
+  }
+
+  .summary-card small {
+    font-size: 0.74rem;
+  }
+
+  /* 패널 공통 */
+  .content-grid {
+    gap: 12px;
+  }
+
+  .panel {
+    padding: 16px 14px;
+    border-radius: 16px;
+  }
+
+  .panel-header {
+    flex-wrap: wrap;
+  }
+
+  .panel-header h2 {
+    font-size: 1.12rem;
+  }
+
+  .slot-legend {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .small-toggle {
+    width: auto;
+    padding: 6px 10px;
+    font-size: 0.76rem;
+  }
+
+  /* 입력 폼 */
+  .field-group {
+    margin-bottom: 14px;
+  }
+
+  .field-group label {
+    font-size: 0.92rem;
   }
 
   .two-column {
     grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .nickname-row input {
+    height: 46px;
+  }
+
+  .selected-summary {
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .selected-summary ul {
+    font-size: 0.86rem;
+  }
+
+  .save-confirm-modal {
+    width: calc(100vw - 24px);
+    padding: 18px 14px 14px;
+  }
+
+  /* 요일별 레이드 신청 현황: 한 줄에 한 요일 */
+  /* 모바일에선 영역마다 따로 보여서 위아래 간격이 필요 없다 */
+  .day-raid-summary-panel {
+    margin-bottom: 0;
+    padding: 12px 10px 10px;
+    border-radius: 12px;
+  }
+
+  .day-raid-summary-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  /* 레이드 탭 */
+  .raid-tab {
+    padding: 7px 10px;
+    font-size: 0.78rem;
+  }
+
+  .subtab {
+    font-size: 0.74rem;
+  }
+
+  /* 주간 캘린더: 가로 스크롤해도 시간 열은 왼쪽에 고정 */
+  .calendar-panel {
+    min-height: 0;
+  }
+
+  .calendar-grid {
+    grid-template-columns: 44px repeat(7, minmax(120px, 1fr));
+    gap: 6px;
+  }
+
+  .calendar-corner,
+  .time-label {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: #161d2b;
+    /* 칸 사이 간격으로 뒤 칸이 비치지 않도록 가린다 */
+    box-shadow: 6px 0 0 #0d121f;
+  }
+
+  .calendar-corner,
+  .day-header,
+  .time-label {
+    min-height: 52px;
+    border-radius: 10px;
+  }
+
+  .calendar-corner,
+  .time-label {
+    font-size: 0.7rem;
+  }
+
+  .slot-cell {
+    min-height: 112px;
+    border-radius: 10px;
+  }
+
+  /* 칸이 좁아서 A/B 파티를 좌우 대신 위아래로 쌓는다 */
+  .party-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .party-column {
+    min-height: 0;
+  }
+
+  /* 보스 난이도별 선택인원: 한 줄에 한 조합, 인원 칩은 가로로 채운다 */
+  .member-day-summary {
+    margin-top: 0;
+  }
+
+  .weekday-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .weekday-card {
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .weekday-title {
+    letter-spacing: 0.02em;
+  }
+}
+
+/* 터치 기기: 호버 툴팁은 화면 밖으로 나가고 닫기도 어려워서 숨긴다 (이름·전투력·리딩은 칩에 이미 표시됨) */
+@media (hover: none) {
+  .member-hover-tooltip {
+    display: none;
+  }
+
+  .primary-button:hover,
+  .secondary-button:hover {
+    transform: none;
   }
 }

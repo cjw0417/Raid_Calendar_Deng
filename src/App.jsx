@@ -50,6 +50,14 @@ const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 const RAID_RUNS_STORAGE_KEY = 'raid-calendar-raid-runs-v1'
+
+// 모바일에서 햄버거 메뉴로 한 번에 하나씩 보여주는 영역 (data-section 값과 맞춘다)
+const MOBILE_SECTIONS = [
+  { id: 'form', label: '내 시간 등록' },
+  { id: 'day', label: '요일별 신청 현황' },
+  { id: 'calendar', label: '주간 레이드 슬롯' },
+  { id: 'members', label: '난이도별 선택인원' },
+]
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
   '19:00',
@@ -530,6 +538,8 @@ function App() {
   const [activeModeTab, setActiveModeTab] = useState('트라이')
   const [helpOpen, setHelpOpen] = useState(false)
   const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
+  const [mobileSection, setMobileSection] = useState(MOBILE_SECTIONS[0].id)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   // 요일별 신청 현황에서 펼쳐 둔 시간 줄 ("요일-레이드조합-시간" → true)
   const [expandedSummaryRows, setExpandedSummaryRows] = useState({})
   const [loggedInNickname, setLoggedInNickname] = useState('')
@@ -1420,7 +1430,21 @@ function App() {
     setProfile(buildDefaultMember({ nickname: '' }))
     setSelectedDayForTimes('')
     setDayTimeDrafts({})
+    setMobileMenuOpen(false)
   }
+
+  const selectMobileSection = (sectionId) => {
+    setMobileSection(sectionId)
+    setMobileMenuOpen(false)
+    window.scrollTo({ top: 0 })
+  }
+
+  const openPasswordChangeFromMenu = () => {
+    setMobileMenuOpen(false)
+    openPasswordChange()
+  }
+
+  const mobileSectionLabel = MOBILE_SECTIONS.find((section) => section.id === mobileSection)?.label ?? ''
 
   const loadCurrentProfileByNickname = async (nickname) => {
     const trimmedNickname = String(nickname ?? '').trim()
@@ -2019,12 +2043,24 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-mobile-section={mobileSection}>
       <header className="topbar">
-        <div>
+        <div className="topbar-title">
           <p className="eyebrow">그루 레기온의 설원</p>
           <h1>스케줄</h1>
+          <span className="mobile-section-name">{mobileSectionLabel}</span>
         </div>
+        <button
+          type="button"
+          className="mobile-menu-button"
+          onClick={() => setMobileMenuOpen(true)}
+          aria-label="메뉴 열기"
+          aria-expanded={mobileMenuOpen}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
         <div className="user-header-actions">
           {!isSharedMode && (
             <div className="shared-mode-warning">
@@ -2046,6 +2082,50 @@ function App() {
           </div>
         </div>
       </header>
+
+      {mobileMenuOpen && (
+        <div className="mobile-nav-backdrop" onClick={() => setMobileMenuOpen(false)}>
+          <nav className="mobile-nav-drawer" aria-label="메뉴" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-nav-head">
+              <span className="user-badge">{loggedInNickname}</span>
+              <button type="button" className="mobile-nav-close" onClick={() => setMobileMenuOpen(false)} aria-label="메뉴 닫기">
+                ✕
+              </button>
+            </div>
+            <div className="mobile-nav-clock">
+              <span>실시간</span>
+              <strong>{currentTime.toLocaleString('ko-KR')}</strong>
+            </div>
+            {!isSharedMode && (
+              <div className="shared-mode-warning">
+                공유 저장소가 비활성화됨 · 다른 IP에서 보이지 않음
+              </div>
+            )}
+            <ul className="mobile-nav-list">
+              {MOBILE_SECTIONS.map((section) => (
+                <li key={section.id}>
+                  <button
+                    type="button"
+                    className={`mobile-nav-item ${mobileSection === section.id ? 'active' : ''}`}
+                    onClick={() => selectMobileSection(section.id)}
+                    aria-current={mobileSection === section.id ? 'page' : undefined}
+                  >
+                    {section.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="mobile-nav-actions">
+              <button type="button" className="secondary-button" onClick={openPasswordChangeFromMenu}>
+                비밀번호 변경
+              </button>
+              <button type="button" className="secondary-button" onClick={handleLogout}>
+                로그아웃
+              </button>
+            </div>
+          </nav>
+        </div>
+      )}
 
       {passwordChangeOpen && (
         <div className="save-confirm-backdrop" onClick={() => setPasswordChangeOpen(false)}>
@@ -2168,7 +2248,7 @@ function App() {
         </div>
       )}
 
-      <section className="summary-grid">
+      <section className="summary-grid" data-section="form">
         <article className="summary-card accent">
           <span className="label">다음 리셋</span>
           <strong>{nextReset.toLocaleString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })}</strong>
@@ -2191,7 +2271,7 @@ function App() {
       </section>
 
       <main className="content-grid">
-        <section className="panel form-panel">
+        <section className="panel form-panel" data-section="form">
           <div className="panel-header">
             <h2>나의 레이드 가능 시간</h2>
             <button
@@ -2444,7 +2524,7 @@ function App() {
         </section>
 
         <section className="panel calendar-panel">
-          <div className="panel-header">
+          <div className="panel-header" data-section="calendar">
             <div className="panel-header-title-wrap">
               <h2>주간 레이드 슬롯</h2>
               <button
@@ -2472,7 +2552,7 @@ function App() {
           </div>
 
           {calendarHelpOpen && (
-            <div className="help-panel compact">
+            <div className="help-panel compact" data-section="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
               <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여주고, A/B 파티로 나뉘어 집계됩니다.</p>
               <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
@@ -2480,7 +2560,7 @@ function App() {
             </div>
           )}
 
-          <div className="day-raid-summary-panel">
+          <div className="day-raid-summary-panel" data-section="day">
             <h3>요일별 레이드 신청 현황</h3>
             <div className="day-raid-summary-grid">
               {dayRaidSummary.map(({ day, raidGroups }, dayIndex) => (
@@ -2635,7 +2715,7 @@ function App() {
             </div>
           </div>
 
-          <div className="raid-tab-group">
+          <div className="raid-tab-group" data-section="calendar">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">
               {visibleRaidTabs.map((tab) => (
                 <button
@@ -2672,7 +2752,7 @@ function App() {
             </div>
           </div>
 
-          <div className="calendar-grid">
+          <div className="calendar-grid" data-section="calendar">
             <div className="calendar-corner">시간</div>
             {weekDates.map((date) => {
               const label = date.toLocaleDateString('ko-KR', { weekday: 'short' })
@@ -2799,7 +2879,7 @@ function App() {
             })}
           </div>
 
-          <div className="member-day-summary">
+          <div className="member-day-summary" data-section="members">
             <h3>보스 난이도별 선택인원</h3>
             <div className="weekday-list">
               {memberByRaidDifficulty.length ? (
