@@ -49,6 +49,8 @@ const raidDifficultyAvailability = {
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
+// '비밀번호 저장'을 켠 기기에서만 비밀번호를 남겨 두고, 다음 접속 때 입력칸에 미리 채운다.
+const SAVED_PASSWORD_STORAGE_KEY = 'raid-calendar-saved-password-v1'
 const RAID_RUNS_STORAGE_KEY = 'raid-calendar-raid-runs-v1'
 
 // 모바일에서 햄버거 메뉴로 한 번에 하나씩 보여주는 영역 (data-section 값과 맞춘다)
@@ -528,6 +530,27 @@ function writeStoredLoginNickname(nextNickname) {
   }
 }
 
+function readStoredLoginPassword() {
+  try {
+    return localStorage.getItem(SAVED_PASSWORD_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredLoginPassword(nextPassword) {
+  try {
+    if (nextPassword) {
+      localStorage.setItem(SAVED_PASSWORD_STORAGE_KEY, nextPassword)
+      return
+    }
+
+    localStorage.removeItem(SAVED_PASSWORD_STORAGE_KEY)
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 function buildEmptyPasswordForm() {
   return { current: '', next: '', confirm: '', hintQuestion: '', hintAnswer: '', error: '', message: '' }
 }
@@ -559,7 +582,8 @@ function App() {
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
-  const [loginPassword, setLoginPassword] = useState('')
+  const [savePassword, setSavePassword] = useState(() => Boolean(readStoredLoginPassword()))
+  const [loginPassword, setLoginPassword] = useState(() => readStoredLoginPassword())
   const [loginError, setLoginError] = useState('')
   const [isLoginPending, setIsLoginPending] = useState(false)
   // 로그인한 사람의 비밀번호. 저장·삭제할 때 DB가 다시 확인하므로 메모리에만 들고 있는다.
@@ -1276,11 +1300,13 @@ function App() {
     setSessionPassword(password)
     setLoggedInNickname(nickname)
 
-    if (rememberMe) {
+    if (rememberMe || savePassword) {
       writeStoredLoginNickname(nickname)
     } else {
       writeStoredLoginNickname('')
     }
+
+    writeStoredLoginPassword(savePassword ? password : '')
 
     setProfile(buildDefaultMember({ nickname }))
     setSelectedDayForTimes('')
@@ -1369,6 +1395,11 @@ function App() {
       }
 
       setSessionPassword(passwordForm.next)
+
+      if (readStoredLoginPassword()) {
+        writeStoredLoginPassword(passwordForm.next)
+      }
+
       setPasswordForm({ ...buildEmptyPasswordForm(), message: '비밀번호를 바꿨어요.' })
     } catch (error) {
       setPasswordForm((prev) => ({ ...prev, error: `비밀번호 변경 중 오류가 났어요. (${error.message})` }))
@@ -1464,7 +1495,9 @@ function App() {
     setPasswordChangeOpen(false)
     resetPasswordForm()
     setRememberMe(false)
+    setSavePassword(false)
     writeStoredLoginNickname('')
+    writeStoredLoginPassword('')
     setProfile(buildDefaultMember({ nickname: '' }))
     setSelectedDayForTimes('')
     setDayTimeDrafts({})
@@ -2059,15 +2092,32 @@ function App() {
 
           {loginError && <p className="login-error" role="alert">{loginError}</p>}
 
-          <label className="remember-row" htmlFor="rememberMe">
-            <input
-              id="rememberMe"
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(event) => setRememberMe(event.target.checked)}
-            />
-            <span>기억하기</span>
-          </label>
+          <div className="remember-options">
+            <label className="remember-row" htmlFor="rememberMe">
+              <input
+                id="rememberMe"
+                type="checkbox"
+                checked={rememberMe || savePassword}
+                disabled={savePassword}
+                onChange={(event) => setRememberMe(event.target.checked)}
+              />
+              <span>닉네임 기억하기</span>
+            </label>
+
+            <label className="remember-row" htmlFor="savePassword">
+              <input
+                id="savePassword"
+                type="checkbox"
+                checked={savePassword}
+                onChange={(event) => setSavePassword(event.target.checked)}
+              />
+              <span>비밀번호 저장</span>
+            </label>
+          </div>
+
+          {savePassword && (
+            <p className="remember-hint">개인 기기에서만 사용하세요. 로그아웃하면 저장된 비밀번호도 지워져요.</p>
+          )}
 
           <button type="submit" className="primary-button login-button" disabled={isLoginPending}>
             {isLoginPending ? '확인 중...' : '로그인'}
