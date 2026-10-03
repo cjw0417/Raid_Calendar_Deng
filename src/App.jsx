@@ -569,6 +569,7 @@ function App() {
   // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
   const weekStartTime = getWeekStart(currentTime).getTime()
   const weekDates = useMemo(() => getWeekDates(weekStartTime), [weekStartTime])
+  const todayStartTime = new Date(currentTime).setHours(0, 0, 0, 0)
   const [nextReset, setNextReset] = useState(() => getNextResetDate())
   const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 보통')
@@ -2723,8 +2724,12 @@ function App() {
                                 // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
                                 const isSlotVoter = timeVoters.some((member) => member.nickname === loggedInNickname)
                                 const canEditRun = Boolean(loggedInNickname) && isSlotVoter && !isSavingRun
+                                // 어제까지의 요일인데 출발 표시가 없으면 출발하지 않은 것으로 보고 X를 띄운다. (DB에는 저장하지 않음)
+                                const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
                                 const renderRunStatus = (field, fieldLabel) => {
-                                  const value = runRecord?.[field] ?? null
+                                  const storedValue = runRecord?.[field] ?? null
+                                  const isAutoX = field === 'departed' && isPastDay && storedValue === null
+                                  const value = isAutoX ? 'X' : storedValue
                                   const changedBy = field === 'departed' ? runRecord?.departedBy : runRecord?.clearedBy
                                   const isLocked = field === 'cleared' && runRecord?.departed !== 'O'
                                   const disabledReason = !loggedInNickname
@@ -2734,8 +2739,8 @@ function App() {
 
                                   return (
                                     <span
-                                      className={`day-raid-run-status ${value ? `is-${value === 'O' ? 'yes' : 'no'}` : ''}`}
-                                      title={disabledReason || (value && changedBy ? `${fieldLabel} ${value} · ${changedBy}` : `${fieldLabel} 여부`)}
+                                      className={`day-raid-run-status ${value ? `is-${value === 'O' ? 'yes' : 'no'}` : ''} ${isAutoX ? 'is-auto' : ''}`}
+                                      title={disabledReason || (isAutoX ? '출발 표시 없이 지난 요일이라 X로 표시돼요.' : value && changedBy ? `${fieldLabel} ${value} · ${changedBy}` : `${fieldLabel} 여부`)}
                                     >
                                       <span className="day-raid-run-label">{fieldLabel}</span>
                                       {['O', 'X'].map((option) => (

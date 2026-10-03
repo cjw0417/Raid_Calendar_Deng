@@ -1015,6 +1015,15 @@ input::placeholder {
   border-color: rgba(255, 77, 79, 0.45);
 }
 
+/* 지난 요일에 출발 표시가 없어 자동으로 띄운 X */
+.day-raid-run-status.is-auto {
+  border-style: dashed;
+}
+
+.day-raid-run-status.is-auto.is-no .day-raid-run-button.active {
+  opacity: 0.6;
+}
+
 .day-raid-run-label {
   margin-right: 2px;
   color: #bcd3ff;
