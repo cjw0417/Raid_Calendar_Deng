@@ -13,6 +13,7 @@ import {
   memberSetupPassword,
   normalizeHintAnswer,
   saveMemberSchedule,
+  setRaidRally,
   setRaidRunStatus,
 } from './lib/memberApi'
 import './App.css'
@@ -445,7 +446,7 @@ function saveLocalRaidSchedules(nextSchedules) {
   localStorage.setItem(RAID_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
 }
 
-// 시간대별 출발 / 클리어 기록 (raid_runs)
+// 시간대별 집결 / 클리어 기록 (raid_runs)
 function formatDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
@@ -468,12 +469,15 @@ function normalizeRaidRun(entry) {
     raidName: entry.raid_name ?? entry.raidName,
     difficulty: entry.difficulty,
     mode: entry.mode,
-    departed: entry.departed ?? null,
+    // 집결: 호출한 사람 · 시각, 체크한 닉네임, 모두 모인 시각
+    rallyCalledBy: entry.rally_called_by ?? entry.rallyCalledBy ?? null,
+    rallyCalledAt: entry.rally_called_at ?? entry.rallyCalledAt ?? null,
+    rallyCheckins: entry.rally_checkins ?? entry.rallyCheckins ?? [],
+    gatheredAt: entry.gathered_at ?? entry.gatheredAt ?? null,
     cleared: entry.cleared ?? null,
-    departedBy: entry.departed_by ?? entry.departedBy ?? null,
     clearedBy: entry.cleared_by ?? entry.clearedBy ?? null,
     // 디스코드 알림을 이미 보냈는지 (시간대마다 한 번만 보낸다)
-    departedNotified: Boolean(entry.departed_notified_at ?? entry.departedNotified),
+    rallyNotified: Boolean(entry.rally_notified_at ?? entry.rallyNotified),
     clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),
   }
 }
@@ -630,10 +634,10 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState(null)
   // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
   const [dayTimeDrafts, setDayTimeDrafts] = useState({})
-  // 이번 주(수요일 시작) 시간대별 출발 / 클리어 기록
+  // 이번 주(수요일 시작) 시간대별 집결 / 클리어 기록
   const weekStartKey = useMemo(() => formatDateKey(weekDates[0]), [weekDates])
   const [raidRuns, setRaidRuns] = useState(() => (supabase ? [] : loadLocalRaidRuns()))
-  // O로 바꾸기 전 확인 팝업 대상: { run, field }
+  // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'cleared', alreadyNotified }
   const [pendingRunStatus, setPendingRunStatus] = useState(null)
   // 저장 중인 기록 키 (중복 클릭 방지)
   const [savingRunKey, setSavingRunKey] = useState('')
@@ -769,7 +773,7 @@ function App() {
     }
   }, [raidRuns])
 
-  // 이번 주 출발 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  // 이번 주 집결 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
   useEffect(() => {
     if (!supabase) {
       return undefined
@@ -1799,13 +1803,13 @@ function App() {
     }
   }
 
-  // 출발 / 클리어 표시를 저장한다. value: 'O' | 'X' | null(표시 지우기)
+  // 클리어 표시를 저장한다. value: 'O' | 'X' | null(표시 지우기)
   // Supabase 모드에서는 DB 함수가 로그인·규칙을 확인하고, O로 바뀌면 디스코드 알림도 보낸다.
   const applyRaidRunStatus = async (run, field, value) => {
     const nickname = loggedInNickname.trim()
 
     if (!nickname) {
-      window.alert('로그인한 뒤에 출발 · 클리어 여부를 표시할 수 있어요.')
+      window.alert('로그인한 뒤에 클리어 여부를 표시할 수 있어요.')
       return
     }
 
@@ -1835,21 +1839,86 @@ function App() {
     }
 
     // 로컬 모드: DB 함수와 같은 규칙으로 이 브라우저에만 저장한다. (디스코드 알림 없음)
-    const current = raidRunByKey.get(runKey) ?? { ...run, departed: null, cleared: null, departedBy: null, clearedBy: null }
+    const current = raidRunByKey.get(runKey)
 
-    if (field === 'cleared' && current.departed !== 'O') {
-      window.alert(describeAuthResult('not_departed'))
+    if (!current?.gatheredAt) {
+      window.alert(describeAuthResult('not_gathered'))
       return
     }
 
-    const nextRun = field === 'departed'
-      ? {
-          ...current,
-          departed: value,
-          departedBy: value ? nickname : null,
-          ...(value === 'O' ? {} : { cleared: null, clearedBy: null }),
-        }
-      : { ...current, cleared: value, clearedBy: value ? nickname : null }
+    setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null }))
+  }
+
+  // 집결 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
+  const applyRaidRally = async (run, action, slotVoterNicknames) => {
+    const nickname = loggedInNickname.trim()
+
+    if (!nickname) {
+      window.alert('로그인한 뒤에 집결을 표시할 수 있어요.')
+      return
+    }
+
+    const runKey = getRaidRunKey(run)
+
+    if (supabase) {
+      setSavingRunKey(runKey)
+
+      let result
+
+      try {
+        result = await setRaidRally(nickname, sessionPassword, run, action)
+      } catch (error) {
+        window.alert(`집결을 저장하지 못했어요. (${error.message})`)
+        return
+      } finally {
+        setSavingRunKey('')
+      }
+
+      // 다른 사람이 먼저 호출했거나 취소한 경우에도 최신 상태로 맞춘다.
+      if (result?.run) {
+        setRaidRuns((prev) => upsertRaidRun(prev, normalizeRaidRun(result.run)))
+      }
+
+      if (result?.error) {
+        window.alert(`집결을 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+      }
+
+      return
+    }
+
+    // 로컬 모드: DB 함수와 같은 규칙으로 이 브라우저에만 저장한다. (디스코드 알림 없음)
+    const current = raidRunByKey.get(runKey)
+      ?? { ...run, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null }
+    let nextRun
+
+    if (action === 'call') {
+      if (current.rallyCalledAt) {
+        window.alert(describeAuthResult('already_called'))
+        return
+      }
+
+      nextRun = { ...current, rallyCalledBy: nickname, rallyCalledAt: new Date().toISOString(), rallyCheckins: [nickname], gatheredAt: null }
+    } else if (action === 'cancel') {
+      nextRun = { ...current, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null }
+    } else {
+      if (!current.rallyCalledAt) {
+        window.alert(describeAuthResult('not_called'))
+        return
+      }
+
+      if (action === 'uncheck' && current.gatheredAt) {
+        window.alert(describeAuthResult('already_gathered'))
+        return
+      }
+
+      const others = current.rallyCheckins.filter((name) => name !== nickname)
+      nextRun = { ...current, rallyCheckins: action === 'check' ? [...others, nickname] : others }
+    }
+
+    if (nextRun.rallyCalledAt && !nextRun.gatheredAt
+      && slotVoterNicknames.length > 0 && slotVoterNicknames.every((name) => nextRun.rallyCheckins.includes(name))) {
+      nextRun = { ...nextRun, gatheredAt: new Date().toISOString() }
+    }
 
     setRaidRuns((prev) => upsertRaidRun(prev, nextRun))
   }
@@ -1861,18 +1930,34 @@ function App() {
     const nextValue = currentValue === value ? null : value
 
     if (nextValue === 'O') {
-      const alreadyNotified = Boolean(field === 'departed' ? runRecord?.departedNotified : runRecord?.clearedNotified)
-      setPendingRunStatus({ run, field, alreadyNotified })
+      setPendingRunStatus({ run, action: 'cleared', alreadyNotified: Boolean(runRecord?.clearedNotified) })
       return
     }
 
     applyRaidRunStatus(run, field, nextValue)
   }
 
+  // 호출은 디스코드 알림이 가고, 호출 취소는 체크 · 클리어 기록이 지워지므로 한 번 확인한다.
+  const handleRallyClick = (run, action, slotVoterNicknames) => {
+    if (action === 'call' || action === 'cancel') {
+      const runRecord = raidRunByKey.get(getRaidRunKey(run))
+      setPendingRunStatus({ run, action, slotVoterNicknames, alreadyNotified: Boolean(runRecord?.rallyNotified) })
+      return
+    }
+
+    applyRaidRally(run, action, slotVoterNicknames)
+  }
+
   const confirmPendingRunStatus = () => {
     const target = pendingRunStatus
     setPendingRunStatus(null)
-    applyRaidRunStatus(target.run, target.field, 'O')
+
+    if (target.action === 'cleared') {
+      applyRaidRunStatus(target.run, 'cleared', 'O')
+      return
+    }
+
+    applyRaidRally(target.run, target.action, target.slotVoterNicknames)
   }
 
   const confirmPendingDelete = async () => {
@@ -2295,22 +2380,29 @@ function App() {
       {pendingRunStatus && (
         <div className="save-confirm-backdrop" onClick={() => setPendingRunStatus(null)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>{pendingRunStatus.field === 'departed' ? '출발로 표시할까요?' : '클리어로 표시할까요?'}</h3>
+            <h3>
+              {pendingRunStatus.action === 'call' ? '집결을 호출할까요?'
+                : pendingRunStatus.action === 'cancel' ? '집결 호출을 취소할까요?'
+                : '클리어로 표시할까요?'}
+            </h3>
             <p>
               <span className="save-confirm-nickname">
                 {pendingRunStatus.run.raidName} · {pendingRunStatus.run.difficulty} · {pendingRunStatus.run.mode}
               </span>
-              {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드를 ${pendingRunStatus.field === 'departed' ? '출발' : '클리어'}(O)로 표시합니다.`}
-              {supabase && (pendingRunStatus.alreadyNotified
+              {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드`}
+              {pendingRunStatus.action === 'call' && '에 집결을 호출합니다. 이 시간대에 투표한 사람이 모두 체크하면 집결 완료가 돼요.'}
+              {pendingRunStatus.action === 'cancel' && '의 집결 호출을 취소합니다. 지금까지의 체크와 클리어 표시도 함께 지워져요.'}
+              {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
+              {supabase && pendingRunStatus.action !== 'cancel' && (pendingRunStatus.alreadyNotified
                 ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
                 : ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.')}
             </p>
             <div className="save-confirm-actions">
               <button type="button" className="secondary-button" onClick={() => setPendingRunStatus(null)}>
-                취소
+                {pendingRunStatus.action === 'cancel' ? '닫기' : '취소'}
               </button>
               <button type="button" className="primary-button" onClick={confirmPendingRunStatus}>
-                표시
+                {pendingRunStatus.action === 'call' ? '호출' : pendingRunStatus.action === 'cancel' ? '호출 취소' : '표시'}
               </button>
             </div>
           </div>
@@ -2680,11 +2772,17 @@ function App() {
                     <div className="day-raid-list">
                       {raidGroups.map(({ label, raidName, difficulty, mode, times, timeMembers, members }) => {
                         const groupKey = `${day}-${label}`
-                        const renderMember = (member, keyPrefix) => (
+                        // rallyState: 집결 호출 중일 때 'checked' | 'waiting', 아니면 undefined
+                        const renderMember = (member, keyPrefix, rallyState) => (
                           <span
                             key={`${keyPrefix}-${member.nickname}-${member.className}`}
-                            className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''}`}
+                            className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''} ${rallyState ? `rally-${rallyState}` : ''}`}
                           >
+                            {rallyState && (
+                              <span className="day-raid-member-check" title={rallyState === 'checked' ? '집결 체크함' : '아직 체크 안 함'}>
+                                {rallyState === 'checked' ? '✓' : '·'}
+                              </span>
+                            )}
                             <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                             <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
                               <span>{member.nickname}</span>
@@ -2724,23 +2822,82 @@ function App() {
                                 // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
                                 const isSlotVoter = timeVoters.some((member) => member.nickname === loggedInNickname)
                                 const canEditRun = Boolean(loggedInNickname) && isSlotVoter && !isSavingRun
-                                // 어제까지의 요일인데 출발 표시가 없으면 출발하지 않은 것으로 보고 X를 띄운다. (DB에는 저장하지 않음)
+                                const editDisabledReason = !loggedInNickname
+                                  ? '로그인한 뒤에 표시할 수 있어요.'
+                                  : !isSlotVoter ? describeAuthResult('not_participant') : ''
+                                // 집결: 이 시간대에 투표한 닉네임 중 몇 명이 체크했는지
+                                const slotVoterNicknames = [...new Set(timeVoters.map((member) => member.nickname))]
+                                const isRallyCalled = Boolean(runRecord?.rallyCalledAt)
+                                const isGathered = Boolean(runRecord?.gatheredAt)
+                                const rallyCheckins = runRecord?.rallyCheckins ?? []
+                                const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
+                                const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
+                                const isMeChecked = rallyCheckins.includes(loggedInNickname)
+                                // 어제까지의 요일인데 집결 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
                                 const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
-                                const renderRunStatus = (field, fieldLabel) => {
-                                  const storedValue = runRecord?.[field] ?? null
-                                  const isAutoX = field === 'departed' && isPastDay && storedValue === null
-                                  const value = isAutoX ? 'X' : storedValue
-                                  const changedBy = field === 'departed' ? runRecord?.departedBy : runRecord?.clearedBy
-                                  const isLocked = field === 'cleared' && runRecord?.departed !== 'O'
-                                  const disabledReason = !loggedInNickname
-                                    ? '로그인한 뒤에 표시할 수 있어요.'
-                                    : !isSlotVoter ? describeAuthResult('not_participant')
-                                    : isLocked ? '출발(O)로 표시한 뒤에 정할 수 있어요.' : ''
+                                const renderRally = () => {
+                                  if (!isRallyCalled) {
+                                    return (
+                                      <span
+                                        className={`day-raid-run-status day-raid-rally ${isPastDay ? 'is-auto' : ''}`}
+                                        title={editDisabledReason || (isPastDay ? '집결 호출 없이 지난 요일이에요.' : '누르면 이 시간대 인원에게 집결을 호출해요.')}
+                                      >
+                                        <button
+                                          type="button"
+                                          className="day-raid-rally-button"
+                                          disabled={!canEditRun}
+                                          onClick={() => handleRallyClick(run, 'call', slotVoterNicknames)}
+                                        >
+                                          📣 집결 호출
+                                        </button>
+                                      </span>
+                                    )
+                                  }
 
                                   return (
                                     <span
-                                      className={`day-raid-run-status ${value ? `is-${value === 'O' ? 'yes' : 'no'}` : ''} ${isAutoX ? 'is-auto' : ''}`}
-                                      title={disabledReason || (isAutoX ? '출발 표시 없이 지난 요일이라 X로 표시돼요.' : value && changedBy ? `${fieldLabel} ${value} · ${changedBy}` : `${fieldLabel} 여부`)}
+                                      className={`day-raid-run-status day-raid-rally ${isGathered ? 'is-yes' : 'is-pending'}`}
+                                      title={isGathered
+                                        ? `집결 완료 · 호출 ${runRecord.rallyCalledBy ?? '-'}`
+                                        : `호출 ${runRecord.rallyCalledBy ?? '-'} · 기다리는 중: ${waitingNicknames.join(', ') || '없음'}`}
+                                    >
+                                      <span className="day-raid-run-label">
+                                        {isGathered ? '집결 완료' : '집결'} {checkedCount}/{slotVoterNicknames.length}
+                                      </span>
+                                      {!isGathered && isSlotVoter && (
+                                        <button
+                                          type="button"
+                                          className={`day-raid-rally-button ${isMeChecked ? 'active' : ''}`}
+                                          aria-pressed={isMeChecked}
+                                          disabled={!canEditRun}
+                                          onClick={() => handleRallyClick(run, isMeChecked ? 'uncheck' : 'check', slotVoterNicknames)}
+                                        >
+                                          {isMeChecked ? '체크 취소' : '✓ 체크'}
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        className="day-raid-run-button"
+                                        aria-label={`${time} 집결 호출 취소`}
+                                        title={editDisabledReason || '집결 호출 취소'}
+                                        disabled={!canEditRun}
+                                        onClick={() => handleRallyClick(run, 'cancel', slotVoterNicknames)}
+                                      >
+                                        ×
+                                      </button>
+                                    </span>
+                                  )
+                                }
+                                const renderRunStatus = (field, fieldLabel) => {
+                                  const value = runRecord?.[field] ?? null
+                                  const changedBy = runRecord?.clearedBy
+                                  const isLocked = !isGathered
+                                  const disabledReason = editDisabledReason || (isLocked ? describeAuthResult('not_gathered') : '')
+
+                                  return (
+                                    <span
+                                      className={`day-raid-run-status ${value ? `is-${value === 'O' ? 'yes' : 'no'}` : ''}`}
+                                      title={disabledReason || (value && changedBy ? `${fieldLabel} ${value} · ${changedBy}` : `${fieldLabel} 여부`)}
                                     >
                                       <span className="day-raid-run-label">{fieldLabel}</span>
                                       {['O', 'X'].map((option) => (
@@ -2789,12 +2946,16 @@ function App() {
                                       <span className="day-raid-toggle-arrow" aria-hidden="true">{isExpanded ? '▴' : '▾'}</span>
                                     </button>
                                     <div className="day-raid-run-row">
-                                      {renderRunStatus('departed', '출발')}
+                                      {renderRally()}
                                       {renderRunStatus('cleared', '클리어')}
                                     </div>
                                     {isExpanded && (
                                       <div className="day-raid-members">
-                                        {timeVoters.map((member) => renderMember(member, rowKey))}
+                                        {timeVoters.map((member) => renderMember(
+                                          member,
+                                          rowKey,
+                                          isRallyCalled ? (rallyCheckins.includes(member.nickname) ? 'checked' : 'waiting') : undefined,
+                                        ))}
                                       </div>
                                     )}
                                   </div>

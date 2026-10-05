@@ -990,7 +990,7 @@ input::placeholder {
   font-weight: 700;
 }
 
-/* 시간대별 출발 / 클리어 O·X */
+/* 시간대별 집결 / 클리어 O·X */
 .day-raid-run-row {
   display: flex;
   flex-wrap: wrap;
@@ -1015,7 +1015,7 @@ input::placeholder {
   border-color: rgba(255, 77, 79, 0.45);
 }
 
-/* 지난 요일에 출발 표시가 없어 자동으로 띄운 X */
+/* 지난 요일에 집결 호출이 없던 시간대 */
 .day-raid-run-status.is-auto {
   border-style: dashed;
 }
@@ -1068,6 +1068,82 @@ input::placeholder {
   border-color: #ff4d4f;
   color: #ffffff;
   opacity: 1;
+}
+
+/* 시간대별 집결 호출 / 체크 */
+.day-raid-run-status.day-raid-rally {
+  padding-left: 3px;
+}
+
+.day-raid-run-status.day-raid-rally .day-raid-run-label {
+  margin-left: 4px;
+}
+
+.day-raid-run-status.is-pending {
+  border-color: rgba(255, 196, 77, 0.55);
+}
+
+.day-raid-run-status.is-pending .day-raid-run-label {
+  color: #ffd27a;
+}
+
+.day-raid-run-status.day-raid-rally.is-yes .day-raid-run-label {
+  color: #5ee0aa;
+}
+
+.day-raid-rally-button {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(136, 170, 255, 0.35);
+  background: rgba(104, 122, 255, 0.18);
+  color: #edf5ff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.day-raid-rally-button:hover:not(:disabled) {
+  background: rgba(104, 122, 255, 0.32);
+  border-color: rgba(136, 170, 255, 0.6);
+}
+
+.day-raid-rally-button.active {
+  background: transparent;
+  color: #9fb4de;
+}
+
+.day-raid-rally-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 펼친 인원 칩: 집결 체크 여부 */
+.day-raid-member-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.day-raid-member.rally-checked .day-raid-member-check {
+  background: #2fbf86;
+  color: #ffffff;
+}
+
+.day-raid-member.rally-waiting {
+  opacity: 0.55;
+}
+
+.day-raid-member.rally-waiting .day-raid-member-check {
+  border: 1px dashed rgba(255, 196, 77, 0.8);
+  color: #ffd27a;
 }
 
 .day-raid-toggle-arrow {
