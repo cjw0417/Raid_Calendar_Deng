@@ -27,10 +27,10 @@ const resultMessages = {
   hint_required: '비밀번호 찾기 질문을 고르고 답을 2글자 이상 적어 주세요.',
   no_hint: '비밀번호 찾기 질문을 정하지 않은 닉네임이에요. 관리자에게 비밀번호 초기화를 요청해 주세요.',
   no_password: '아직 개인 비밀번호를 정하지 않은 닉네임이에요. 초기 비밀번호로 로그인해 비밀번호를 정해 주세요.',
-  not_gathered: '집결이 완료된 뒤에 클리어 여부를 정할 수 있어요.',
-  already_called: '이미 다른 사람이 집결을 호출했어요. 체크만 눌러 주세요.',
-  not_called: '아직 집결 호출이 없거나 취소됐어요.',
-  already_gathered: '이미 집결이 완료되어 체크를 풀 수 없어요. 필요하면 호출을 취소해 주세요.',
+  not_gathered: '전원 준비가 된 뒤에 클리어 여부를 정할 수 있어요.',
+  already_called: '이미 다른 사람이 준비 확인을 시작했어요. 준비 완료만 눌러 주세요.',
+  not_called: '아직 준비 확인이 없거나 취소됐어요.',
+  already_gathered: '이미 전원 준비가 되어 준비를 취소할 수 없어요. 필요하면 준비 확인을 취소해 주세요.',
   not_participant: '이 시간대에 참여로 투표한 사람만 표시할 수 있어요.',
   bad_request: '요청 내용이 올바르지 않아요.',
 }
@@ -252,7 +252,7 @@ export function setRaidRunStatus(nickname, password, run, field, value) {
   })
 }
 
-// 시간대별 집결 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel'
+// 시간대별 준비 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel'
 // 호출하거나 모두 체크하면 DB가 디스코드 웹후크로 알림을 보낸다. 반환값: { run, notified } 또는 { error, run? }
 export function setRaidRally(nickname, password, run, action) {
   return callRpc('member_raid_rally', {

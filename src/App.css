@@ -990,7 +990,7 @@ input::placeholder {
   font-weight: 700;
 }
 
-/* 시간대별 집결 / 클리어 O·X */
+/* 시간대별 준비 / 클리어 O·X */
 .day-raid-run-row {
   display: flex;
   flex-wrap: wrap;
@@ -1015,7 +1015,7 @@ input::placeholder {
   border-color: rgba(255, 77, 79, 0.45);
 }
 
-/* 지난 요일에 집결 호출이 없던 시간대 */
+/* 지난 요일에 준비 호출이 없던 시간대 */
 .day-raid-run-status.is-auto {
   border-style: dashed;
 }
@@ -1070,7 +1070,7 @@ input::placeholder {
   opacity: 1;
 }
 
-/* 시간대별 집결 호출 / 체크 */
+/* 시간대별 준비 호출 / 체크 */
 .day-raid-run-status.day-raid-rally {
   padding-left: 3px;
 }
@@ -1151,7 +1151,7 @@ input::placeholder {
   font-weight: 700;
 }
 
-/* 펼친 인원 칩: 집결 체크 여부 */
+/* 펼친 인원 칩: 준비 체크 여부 */
 .day-raid-member-check {
   display: inline-flex;
   align-items: center;

@@ -446,7 +446,7 @@ function saveLocalRaidSchedules(nextSchedules) {
   localStorage.setItem(RAID_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
 }
 
-// 시간대별 집결 / 클리어 기록 (raid_runs)
+// 시간대별 준비 / 클리어 기록 (raid_runs)
 function formatDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
@@ -469,7 +469,7 @@ function normalizeRaidRun(entry) {
     raidName: entry.raid_name ?? entry.raidName,
     difficulty: entry.difficulty,
     mode: entry.mode,
-    // 집결: 호출한 사람 · 시각, 체크한 닉네임, 모두 모인 시각
+    // 준비: 호출한 사람 · 시각, 체크한 닉네임, 모두 모인 시각
     rallyCalledBy: entry.rally_called_by ?? entry.rallyCalledBy ?? null,
     rallyCalledAt: entry.rally_called_at ?? entry.rallyCalledAt ?? null,
     rallyCheckins: entry.rally_checkins ?? entry.rallyCheckins ?? [],
@@ -634,7 +634,7 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState(null)
   // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
   const [dayTimeDrafts, setDayTimeDrafts] = useState({})
-  // 이번 주(수요일 시작) 시간대별 집결 / 클리어 기록
+  // 이번 주(수요일 시작) 시간대별 준비 / 클리어 기록
   const weekStartKey = useMemo(() => formatDateKey(weekDates[0]), [weekDates])
   const [raidRuns, setRaidRuns] = useState(() => (supabase ? [] : loadLocalRaidRuns()))
   // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'cleared', alreadyNotified }
@@ -773,7 +773,7 @@ function App() {
     }
   }, [raidRuns])
 
-  // 이번 주 집결 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  // 이번 주 준비 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
   useEffect(() => {
     if (!supabase) {
       return undefined
@@ -1849,12 +1849,12 @@ function App() {
     setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null }))
   }
 
-  // 집결 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
+  // 준비 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
   const applyRaidRally = async (run, action, slotVoterNicknames) => {
     const nickname = loggedInNickname.trim()
 
     if (!nickname) {
-      window.alert('로그인한 뒤에 집결을 표시할 수 있어요.')
+      window.alert('로그인한 뒤에 준비를 표시할 수 있어요.')
       return
     }
 
@@ -1868,7 +1868,7 @@ function App() {
       try {
         result = await setRaidRally(nickname, sessionPassword, run, action)
       } catch (error) {
-        window.alert(`집결을 저장하지 못했어요. (${error.message})`)
+        window.alert(`준비 상태를 저장하지 못했어요. (${error.message})`)
         return
       } finally {
         setSavingRunKey('')
@@ -1880,7 +1880,7 @@ function App() {
       }
 
       if (result?.error) {
-        window.alert(`집결을 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+        window.alert(`준비 상태를 저장하지 못했어요. ${describeAuthResult(result.error)}`)
       }
 
       return
@@ -2381,8 +2381,8 @@ function App() {
         <div className="save-confirm-backdrop" onClick={() => setPendingRunStatus(null)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h3>
-              {pendingRunStatus.action === 'call' ? '집결을 호출할까요?'
-                : pendingRunStatus.action === 'cancel' ? '집결 호출을 취소할까요?'
+              {pendingRunStatus.action === 'call' ? '준비 확인을 시작할까요?'
+                : pendingRunStatus.action === 'cancel' ? '준비 확인을 취소할까요?'
                 : '클리어로 표시할까요?'}
             </h3>
             <p>
@@ -2390,8 +2390,8 @@ function App() {
                 {pendingRunStatus.run.raidName} · {pendingRunStatus.run.difficulty} · {pendingRunStatus.run.mode}
               </span>
               {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드`}
-              {pendingRunStatus.action === 'call' && '에 집결을 호출합니다. 이 시간대에 투표한 사람이 모두 체크하면 집결 완료가 돼요.'}
-              {pendingRunStatus.action === 'cancel' && '의 집결 호출을 취소합니다. 지금까지의 체크와 클리어 표시도 함께 지워져요.'}
+              {pendingRunStatus.action === 'call' && '의 준비 확인을 시작합니다. 이 시간대에 투표한 사람이 모두 준비 완료를 누르면 전원 준비가 돼요.'}
+              {pendingRunStatus.action === 'cancel' && '의 준비 확인을 취소합니다. 지금까지의 준비 완료와 클리어 표시도 함께 지워져요.'}
               {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
               {supabase && pendingRunStatus.action !== 'cancel' && (pendingRunStatus.alreadyNotified
                 ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
@@ -2772,14 +2772,14 @@ function App() {
                     <div className="day-raid-list">
                       {raidGroups.map(({ label, raidName, difficulty, mode, times, timeMembers, members }) => {
                         const groupKey = `${day}-${label}`
-                        // rallyState: 집결 호출 중일 때 'checked' | 'waiting', 아니면 undefined
+                        // rallyState: 준비 호출 중일 때 'checked' | 'waiting', 아니면 undefined
                         const renderMember = (member, keyPrefix, rallyState) => (
                           <span
                             key={`${keyPrefix}-${member.nickname}-${member.className}`}
                             className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''} ${rallyState ? `rally-${rallyState}` : ''}`}
                           >
                             {rallyState && (
-                              <span className="day-raid-member-check" title={rallyState === 'checked' ? '집결 체크함' : '아직 체크 안 함'}>
+                              <span className="day-raid-member-check" title={rallyState === 'checked' ? '준비 완료' : '아직 준비 안 함'}>
                                 {rallyState === 'checked' ? '✓' : '·'}
                               </span>
                             )}
@@ -2825,7 +2825,7 @@ function App() {
                                 const editDisabledReason = !loggedInNickname
                                   ? '로그인한 뒤에 표시할 수 있어요.'
                                   : !isSlotVoter ? describeAuthResult('not_participant') : ''
-                                // 집결: 이 시간대에 투표한 닉네임 중 몇 명이 체크했는지
+                                // 준비: 이 시간대에 투표한 닉네임 중 몇 명이 체크했는지
                                 const slotVoterNicknames = [...new Set(timeVoters.map((member) => member.nickname))]
                                 const isRallyCalled = Boolean(runRecord?.rallyCalledAt)
                                 const isGathered = Boolean(runRecord?.gatheredAt)
@@ -2833,14 +2833,14 @@ function App() {
                                 const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
                                 const isMeChecked = rallyCheckins.includes(loggedInNickname)
-                                // 어제까지의 요일인데 집결 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
+                                // 어제까지의 요일인데 준비 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
                                 const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
                                 const renderRally = () => {
                                   if (!isRallyCalled) {
                                     return (
                                       <span
                                         className={`day-raid-run-status day-raid-rally ${isPastDay ? 'is-auto' : ''}`}
-                                        title={editDisabledReason || (isPastDay ? '집결 호출 없이 지난 요일이에요.' : '누르면 이 시간대 인원에게 집결을 호출해요.')}
+                                        title={editDisabledReason || (isPastDay ? '준비 확인 없이 지난 요일이에요.' : '누르면 이 시간대 인원에게 준비 확인을 보내요.')}
                                       >
                                         <button
                                           type="button"
@@ -2848,7 +2848,7 @@ function App() {
                                           disabled={!canEditRun}
                                           onClick={() => handleRallyClick(run, 'call', slotVoterNicknames)}
                                         >
-                                          📣 집결 호출
+                                          📣 준비 확인
                                         </button>
                                       </span>
                                     )
@@ -2858,11 +2858,11 @@ function App() {
                                     <span
                                       className={`day-raid-run-status day-raid-rally ${isGathered ? 'is-yes' : 'is-pending'}`}
                                       title={isGathered
-                                        ? `집결 완료 · 호출 ${runRecord.rallyCalledBy ?? '-'}`
-                                        : `호출 ${runRecord.rallyCalledBy ?? '-'} · 기다리는 중: ${waitingNicknames.join(', ') || '없음'}`}
+                                        ? `전원 준비 · 확인 시작 ${runRecord.rallyCalledBy ?? '-'}`
+                                        : `확인 시작 ${runRecord.rallyCalledBy ?? '-'} · 기다리는 중: ${waitingNicknames.join(', ') || '없음'}`}
                                     >
                                       <span className="day-raid-run-label">
-                                        {isGathered ? '집결 완료' : '집결'} {checkedCount}/{slotVoterNicknames.length}
+                                        {isGathered ? '전원 준비' : '준비'} {checkedCount}/{slotVoterNicknames.length}
                                       </span>
                                       {!isGathered && isSlotVoter && (
                                         <button
@@ -2872,14 +2872,14 @@ function App() {
                                           disabled={!canEditRun}
                                           onClick={() => handleRallyClick(run, isMeChecked ? 'uncheck' : 'check', slotVoterNicknames)}
                                         >
-                                          {isMeChecked ? '체크 취소' : '✓ 체크'}
+                                          {isMeChecked ? '준비 취소' : '✓ 준비 완료'}
                                         </button>
                                       )}
                                       <button
                                         type="button"
                                         className="day-raid-run-button"
-                                        aria-label={`${time} 집결 호출 취소`}
-                                        title={editDisabledReason || '집결 호출 취소'}
+                                        aria-label={`${time} 준비 확인 취소`}
+                                        title={editDisabledReason || '준비 확인 취소'}
                                         disabled={!canEditRun}
                                         onClick={() => handleRallyClick(run, 'cancel', slotVoterNicknames)}
                                       >
@@ -2952,7 +2952,7 @@ function App() {
                                     {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
                                     {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
                                       <div className="day-raid-rally-waiting">
-                                        <span className="day-raid-rally-waiting-label">미집결 {waitingNicknames.length}명</span>
+                                        <span className="day-raid-rally-waiting-label">대기 {waitingNicknames.length}명</span>
                                         {waitingNicknames.map((name) => (
                                           <span
                                             key={`${rowKey}-waiting-${name}`}
