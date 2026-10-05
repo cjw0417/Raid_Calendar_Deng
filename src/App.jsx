@@ -2949,6 +2949,20 @@ function App() {
                                       {renderRally()}
                                       {renderRunStatus('cleared', '클리어')}
                                     </div>
+                                    {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
+                                    {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
+                                      <div className="day-raid-rally-waiting">
+                                        <span className="day-raid-rally-waiting-label">미집결 {waitingNicknames.length}명</span>
+                                        {waitingNicknames.map((name) => (
+                                          <span
+                                            key={`${rowKey}-waiting-${name}`}
+                                            className={`day-raid-rally-waiting-name ${name === loggedInNickname ? 'is-me' : ''}`}
+                                          >
+                                            {name}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
                                     {isExpanded && (
                                       <div className="day-raid-members">
                                         {timeVoters.map((member) => renderMember(

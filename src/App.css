@@ -1119,6 +1119,38 @@ input::placeholder {
   cursor: not-allowed;
 }
 
+/* 호출 중 아직 체크하지 않은 인원 */
+.day-raid-rally-waiting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+}
+
+.day-raid-rally-waiting-label {
+  color: #ffd27a;
+  font-weight: 700;
+}
+
+.day-raid-rally-waiting-name {
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px dashed rgba(255, 196, 77, 0.6);
+  color: #edf5ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 내가 아직 체크하지 않았으면 눈에 띄게 */
+.day-raid-rally-waiting-name.is-me {
+  border-style: solid;
+  background: rgba(255, 196, 77, 0.2);
+  font-weight: 700;
+}
+
 /* 펼친 인원 칩: 집결 체크 여부 */
 .day-raid-member-check {
   display: inline-flex;
