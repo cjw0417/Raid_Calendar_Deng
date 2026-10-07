@@ -476,8 +476,8 @@ function normalizeRaidRun(entry) {
     gatheredAt: entry.gathered_at ?? entry.gatheredAt ?? null,
     cleared: entry.cleared ?? null,
     clearedBy: entry.cleared_by ?? entry.clearedBy ?? null,
-    // 디스코드 알림을 이미 보냈는지 (시간대마다 한 번만 보낸다)
-    rallyNotified: Boolean(entry.rally_notified_at ?? entry.rallyNotified),
+    // 준비 확인 알림을 보낸 횟수 (시간대마다 최대 2번). 클리어 알림은 한 번만 보낸다.
+    rallyNotifyCount: entry.rally_notify_count ?? entry.rallyNotifyCount ?? (entry.rally_notified_at ? 1 : 0),
     clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),
   }
 }
@@ -1881,6 +1881,8 @@ function App() {
 
       if (result?.error) {
         window.alert(`준비 상태를 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+      } else if (action === 'remind' && !result?.notified) {
+        window.alert('디스코드 알림이 연결되어 있지 않아 다시 알림을 보내지 못했어요.')
       }
 
       return
@@ -1937,11 +1939,11 @@ function App() {
     applyRaidRunStatus(run, field, nextValue)
   }
 
-  // 호출은 디스코드 알림이 가고, 호출 취소는 체크 · 클리어 기록이 지워지므로 한 번 확인한다.
+  // 호출 · 다시 알림은 디스코드 알림이 가고, 호출 취소는 체크 · 클리어 기록이 지워지므로 한 번 확인한다.
   const handleRallyClick = (run, action, slotVoterNicknames) => {
-    if (action === 'call' || action === 'cancel') {
+    if (action === 'call' || action === 'cancel' || action === 'remind') {
       const runRecord = raidRunByKey.get(getRaidRunKey(run))
-      setPendingRunStatus({ run, action, slotVoterNicknames, alreadyNotified: Boolean(runRecord?.rallyNotified) })
+      setPendingRunStatus({ run, action, slotVoterNicknames, alreadyNotified: (runRecord?.rallyNotifyCount ?? 0) >= 2 })
       return
     }
 
@@ -2383,6 +2385,7 @@ function App() {
             <h3>
               {pendingRunStatus.action === 'call' ? '준비 확인을 시작할까요?'
                 : pendingRunStatus.action === 'cancel' ? '준비 확인을 취소할까요?'
+                : pendingRunStatus.action === 'remind' ? '준비 확인을 다시 알릴까요?'
                 : '클리어로 표시할까요?'}
             </h3>
             <p>
@@ -2392,8 +2395,9 @@ function App() {
               {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드`}
               {pendingRunStatus.action === 'call' && '의 준비 확인을 시작합니다. 이 시간대에 투표한 사람이 모두 준비 완료를 누르면 전원 준비가 돼요.'}
               {pendingRunStatus.action === 'cancel' && '의 준비 확인을 취소합니다. 지금까지의 준비 완료와 클리어 표시도 함께 지워져요.'}
+              {pendingRunStatus.action === 'remind' && '의 준비 확인을 디스코드로 한 번 더 알립니다. 지금 신청한 인원과 아직 준비 안 한 인원이 함께 가요. (시간대마다 두 번까지)'}
               {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
-              {supabase && pendingRunStatus.action !== 'cancel' && (pendingRunStatus.alreadyNotified
+              {supabase && (pendingRunStatus.action === 'call' || pendingRunStatus.action === 'cleared') && (pendingRunStatus.alreadyNotified
                 ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
                 : ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.')}
             </p>
@@ -2402,7 +2406,9 @@ function App() {
                 {pendingRunStatus.action === 'cancel' ? '닫기' : '취소'}
               </button>
               <button type="button" className="primary-button" onClick={confirmPendingRunStatus}>
-                {pendingRunStatus.action === 'call' ? '호출' : pendingRunStatus.action === 'cancel' ? '호출 취소' : '표시'}
+                {pendingRunStatus.action === 'call' ? '호출'
+                  : pendingRunStatus.action === 'cancel' ? '호출 취소'
+                  : pendingRunStatus.action === 'remind' ? '다시 알림' : '표시'}
               </button>
             </div>
           </div>
@@ -2873,6 +2879,18 @@ function App() {
                                           onClick={() => handleRallyClick(run, isMeChecked ? 'uncheck' : 'check', slotVoterNicknames)}
                                         >
                                           {isMeChecked ? '준비 취소' : '✓ 준비 완료'}
+                                        </button>
+                                      )}
+                                      {/* 인원이 늘었을 때 디스코드로 한 번 더 알린다. (시간대마다 준비 확인 알림 최대 2번) */}
+                                      {supabase && !isGathered && (runRecord.rallyNotifyCount ?? 0) < 2 && (
+                                        <button
+                                          type="button"
+                                          className="day-raid-rally-button"
+                                          title={editDisabledReason || '디스코드로 준비 확인을 한 번 더 보내요.'}
+                                          disabled={!canEditRun}
+                                          onClick={() => handleRallyClick(run, 'remind', slotVoterNicknames)}
+                                        >
+                                          📣 다시 알림
                                         </button>
                                       )}
                                       <button

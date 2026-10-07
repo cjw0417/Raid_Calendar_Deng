@@ -32,6 +32,7 @@ const resultMessages = {
   not_called: '아직 준비 확인이 없거나 취소됐어요.',
   already_gathered: '이미 전원 준비가 되어 준비를 취소할 수 없어요. 필요하면 준비 확인을 취소해 주세요.',
   not_participant: '이 시간대에 참여로 투표한 사람만 표시할 수 있어요.',
+  notify_limit: '이 시간대는 준비 확인 알림을 이미 두 번 보냈어요.',
   bad_request: '요청 내용이 올바르지 않아요.',
 }
 

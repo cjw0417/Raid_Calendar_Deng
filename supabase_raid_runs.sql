@@ -9,8 +9,9 @@
 --     투표한 사람이 모두 준비 완료를 누르면 전원 준비가 되고 디스코드로 완료 알림이 간다.
 --     전원 준비 뒤에는 준비 완료를 풀 수 없다. 준비 확인을 취소하면 준비 완료 · 전원 준비 · 클리어 기록을 모두 비운다.
 --   - 클리어는 전원 준비 뒤에만 정할 수 있다.
---   - 호출 / 전원 준비 / 클리어 알림은 시간대마다 한 번씩만 보낸다.
---     (취소했다가 다시 호출해도 다시 보내지 않는다) 웹후크 주소가 비어 있으면 보내지 않는다.
+--   - 준비 확인 알림은 시간대마다 두 번까지 보낸다. (인원이 늘었을 때 "다시 알림"으로 한 번 더,
+--     또는 취소했다가 다시 호출할 때) 전원 준비 / 클리어 알림은 시간대마다 한 번씩만 보낸다.
+--     웹후크 주소가 비어 있으면 보내지 않는다.
 --
 -- 디스코드 웹후크 연결 · 확인 · 관리용 SQL은 이 파일 맨 아래 "관리용 SQL"에 있다.
 -- 웹후크 주소는 DB(app_settings)에만 두고, 이 파일이나 앱 코드에는 넣지 않는다.
@@ -48,6 +49,10 @@ alter table public.raid_runs add column if not exists rally_checkins text[] not 
 alter table public.raid_runs add column if not exists gathered_at timestamptz;
 alter table public.raid_runs add column if not exists rally_notified_at timestamptz;
 alter table public.raid_runs add column if not exists gathered_notified_at timestamptz;
+
+-- 준비 확인 알림을 보낸 횟수 (최대 2번). 이 컬럼이 생기기 전에 이미 보낸 시간대는 1번으로 친다.
+alter table public.raid_runs add column if not exists rally_notify_count integer not null default 0;
+update public.raid_runs set rally_notify_count = 1 where rally_notified_at is not null and rally_notify_count = 0;
 
 alter table public.raid_runs enable row level security;
 
@@ -297,9 +302,10 @@ grant execute on function public.member_set_raid_run_status(text, text, date, te
 
 -- 4. 준비 확인 / 준비 완료
 --    p_action: 'call'(호출, 호출한 사람은 자동 체크) | 'check' | 'uncheck' | 'cancel'(호출 취소)
+--              | 'remind'(준비 확인 중에 디스코드로 한 번 더 알림)
 --    반환값: { "run": {...}, "notified": true|false }
 --            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant'
---                            | 'already_called' | 'not_called' | 'already_gathered' }
+--                            | 'already_called' | 'not_called' | 'already_gathered' | 'notify_limit' }
 create or replace function public.member_raid_rally(
   p_nickname text,
   p_password text,
@@ -324,6 +330,7 @@ declare
   member_count integer;
   members_text text;
   leaders_text text;
+  waiting_text text;
   just_gathered boolean := false;
   notified boolean := false;
 begin
@@ -333,7 +340,7 @@ begin
     return jsonb_build_object('error', verify_result);
   end if;
 
-  if p_action not in ('call', 'check', 'uncheck', 'cancel')
+  if p_action not in ('call', 'check', 'uncheck', 'cancel', 'remind')
      or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null then
     return jsonb_build_object('error', 'bad_request');
   end if;
@@ -384,6 +391,18 @@ begin
     returning * into run_row;
 
     return jsonb_build_object('run', to_jsonb(run_row), 'notified', false);
+  elsif p_action = 'remind' then
+    if run_row.rally_called_at is null then
+      return jsonb_build_object('error', 'not_called', 'run', to_jsonb(run_row));
+    end if;
+
+    if run_row.gathered_at is not null then
+      return jsonb_build_object('error', 'already_gathered', 'run', to_jsonb(run_row));
+    end if;
+
+    if run_row.rally_notify_count >= 2 then
+      return jsonb_build_object('error', 'notify_limit', 'run', to_jsonb(run_row));
+    end if;
   else
     if run_row.rally_called_at is null then
       return jsonb_build_object('error', 'not_called', 'run', to_jsonb(run_row));
@@ -414,15 +433,17 @@ begin
   select
     count(*),
     string_agg(s.nickname || case when s.lead_ready = 'O' then '★' else '' end, ', ' order by (s.lead_ready = 'O') desc, s.nickname),
-    string_agg(s.nickname, ', ' order by s.nickname) filter (where s.lead_ready = 'O')
-  into member_count, members_text, leaders_text
+    string_agg(s.nickname, ', ' order by s.nickname) filter (where s.lead_ready = 'O'),
+    string_agg(s.nickname, ', ' order by s.nickname) filter (where not (s.nickname = any(run_row.rally_checkins)))
+  into member_count, members_text, leaders_text, waiting_text
   from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
 
-  if p_action = 'call' and run_row.rally_notified_at is null then
+  -- 준비 확인 알림: 호출 때 한 번, 인원이 늘었을 때 다시 알림으로 한 번 더 (시간대마다 최대 2번)
+  if p_action in ('call', 'remind') and run_row.rally_notify_count < 2 then
     if public._send_discord(jsonb_build_object(
       'username', '레이드 캘린더',
       'embeds', jsonb_build_array(jsonb_build_object(
-        'title', '📣 준비 확인 | ' || run_title,
+        'title', case when p_action = 'remind' then '📣 준비 확인 (다시 알림) | ' else '📣 준비 확인 | ' end || run_title,
         'description', '레이드 캘린더에서 준비 완료를 눌러 주세요. 모두 누르면 전원 준비 알림이 갑니다.',
         'color', 5793266,
         'fields', jsonb_build_array(
@@ -430,12 +451,18 @@ begin
           jsonb_build_object('name', '👥 인원', 'value', member_count || '명', 'inline', true),
           jsonb_build_object('name', '★ 리딩', 'value', coalesce(leaders_text, '없음'), 'inline', true),
           jsonb_build_object('name', '참여 인원', 'value', left(coalesce(members_text, '없음'), 1000))
-        ),
-        'footer', jsonb_build_object('text', '준비 확인: ' || nickname_value)
+        ) || case when p_action = 'remind' then jsonb_build_array(
+          jsonb_build_object('name', '⏳ 아직 준비 안 함', 'value', left(coalesce(waiting_text, '없음'), 1000))
+        ) else '[]'::jsonb end,
+        'footer', jsonb_build_object('text', case when p_action = 'remind' then '다시 알림: ' else '준비 확인: ' end || nickname_value)
       ))
     )) then
       notified := true;
-      update public.raid_runs set rally_notified_at = now() where id = run_row.id returning * into run_row;
+      update public.raid_runs
+      set rally_notified_at = now(),
+          rally_notify_count = rally_notify_count + 1
+      where id = run_row.id
+      returning * into run_row;
     end if;
   end if;
 
@@ -502,7 +529,7 @@ notify pgrst, 'reload schema';
 -- select day, time, raid_name, difficulty, mode,
 --        rally_called_by, rally_checkins, gathered_at is not null as 전원준비,
 --        cleared, cleared_by,
---        rally_notified_at is not null as 확인알림,
+--        rally_notify_count as 확인알림횟수,
 --        gathered_notified_at is not null as 준비알림,
 --        cleared_notified_at is not null as 클리어알림
 -- from public.raid_runs
