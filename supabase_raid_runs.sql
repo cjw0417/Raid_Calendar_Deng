@@ -103,8 +103,13 @@ $$;
 
 revoke execute on function public._send_discord(jsonb) from public, anon, authenticated;
 
--- 그 시간대(요일 · 시간 · 레이드 조합)에 참여로 투표한 스케줄
+-- 그 주 그 시간대(요일 · 시간 · 레이드 조합)에 참여로 투표한 스케줄
+-- 앱의 "요일별 레이드 신청 현황"과 같은 기준으로, 그 주 수요일 00시(한국 시간) 이후에 저장한 신청만 본다.
+-- (주 구분 없이 지난주 신청까지 읽던 예전 5개 인자 버전은 지운다)
+drop function if exists public._raid_slot_voters(text, text, text, text, text);
+
 create or replace function public._raid_slot_voters(
+  p_week_start date,
   p_day text,
   p_time text,
   p_raid_name text,
@@ -123,6 +128,7 @@ as $$
     and s.difficulty = p_difficulty
     and s.mode = p_mode
     and s.attendance = '참'
+    and s.updated_at >= (p_week_start::timestamp at time zone 'Asia/Seoul')
     and (
       coalesce(s.day_time_selection -> p_day, '[]'::jsonb) ? p_time
       -- 요일별 시간이 없는 예전 기록은 days × times 조합으로 본다.
@@ -130,7 +136,7 @@ as $$
     );
 $$;
 
-revoke execute on function public._raid_slot_voters(text, text, text, text, text) from public, anon, authenticated;
+revoke execute on function public._raid_slot_voters(date, text, text, text, text, text) from public, anon, authenticated;
 
 -- 준비 확인을 시작했고, 그 시간대에 투표한 사람이 모두 체크했는지
 create or replace function public._raid_run_all_gathered(p_run public.raid_runs)
@@ -142,11 +148,11 @@ set search_path = public, extensions
 as $$
   select p_run.rally_called_at is not null
     and exists (
-      select 1 from public._raid_slot_voters(p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode)
+      select 1 from public._raid_slot_voters(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode)
     )
     and not exists (
       select 1
-      from public._raid_slot_voters(p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode) v
+      from public._raid_slot_voters(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode) v
       where not (v.nickname = any(p_run.rally_checkins))
     );
 $$;
@@ -214,7 +220,7 @@ begin
   -- 그 시간대에 투표한 사람만 바꿀 수 있다.
   if not exists (
     select 1
-    from public._raid_slot_voters(p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
     where v.nickname = nickname_value
   ) then
     return jsonb_build_object('error', 'not_participant');
@@ -253,7 +259,7 @@ begin
   if p_value = 'O' and previous_value is distinct from 'O' and run_row.cleared_notified_at is null then
     select string_agg(s.nickname || case when s.lead_ready = 'O' then '★' else '' end, ', ' order by (s.lead_ready = 'O') desc, s.nickname)
     into members_text
-    from public._raid_slot_voters(p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
 
     payload := jsonb_build_object(
       'username', '레이드 캘린더',
@@ -334,7 +340,7 @@ begin
 
   if not exists (
     select 1
-    from public._raid_slot_voters(p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
     where v.nickname = nickname_value
   ) then
     return jsonb_build_object('error', 'not_participant');
@@ -410,7 +416,7 @@ begin
     string_agg(s.nickname || case when s.lead_ready = 'O' then '★' else '' end, ', ' order by (s.lead_ready = 'O') desc, s.nickname),
     string_agg(s.nickname, ', ' order by s.nickname) filter (where s.lead_ready = 'O')
   into member_count, members_text, leaders_text
-  from public._raid_slot_voters(p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
+  from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
 
   if p_action = 'call' and run_row.rally_notified_at is null then
     if public._send_discord(jsonb_build_object(
