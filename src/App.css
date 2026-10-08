@@ -825,22 +825,80 @@ input::placeholder {
 }
 
 .day-raid-summary-panel h3 {
-  margin: 0 0 12px;
+  margin: 0;
   color: #edf4ff;
   font-size: 1rem;
 }
 
+.day-raid-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* 제목 줄 오른쪽의 작은 '지난 요일 펼치기 / 접기' 버튼 */
+.day-raid-past-toggle {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border: 1px solid rgba(150, 170, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(19, 27, 42, 0.9);
+  color: #bcd3ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.day-raid-past-toggle:hover {
+  background: rgba(32, 44, 68, 0.95);
+  color: #e6eeff;
+}
+
+.day-raid-past-toggle:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.8);
+  outline-offset: 2px;
+}
+
+/* 지난 요일 카드가 가로로 접혀 좁아질 수 있게 flex로 배치한다. */
 .day-raid-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
 .day-raid-card {
+  flex: 1 1 120px;
+  min-width: 0;
   padding: 10px 10px 8px;
   border-radius: 12px;
   background: rgba(12, 18, 28, 0.85);
   border: 1px solid rgba(163, 182, 255, 0.1);
+  transition: flex-basis 0.2s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+/* 오늘 카드는 노란 테두리로 강조해 바로 찾을 수 있게 한다. */
+.day-raid-card.is-today {
+  border: 2px solid #f5c542;
+  box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.18), 0 0 14px rgba(245, 197, 66, 0.25);
+}
+
+.day-raid-card.is-today .day-raid-header {
+  color: #ffe08a;
+}
+
+.day-raid-today-chip {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #f5c542;
+  color: #1b1607;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  vertical-align: 1px;
 }
 
 .day-raid-header {
@@ -857,6 +915,82 @@ input::placeholder {
   color: #8fa6d6;
   font-size: 0.72rem;
   font-weight: 600;
+  letter-spacing: 0;
+}
+
+.day-raid-card.is-collapsed {
+  opacity: 0.7;
+}
+
+.day-raid-header-toggle {
+  width: 100%;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.day-raid-header-toggle:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.8);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.day-raid-header-toggle:hover .day-raid-toggle-arrow {
+  color: #e6eeff;
+}
+
+.day-raid-header-toggle .day-raid-date {
+  margin-left: auto;
+}
+
+.day-raid-header-toggle .day-raid-toggle-arrow {
+  margin-left: 0;
+}
+
+/* 가로로 접힌 지난 요일: 좁은 띠에 요일 · 날짜 · 레이드 수를 위아래로 쌓아 보여 준다. */
+.day-raid-card.is-collapsed {
+  display: flex;
+  flex: 0 0 60px;
+  padding: 0;
+}
+
+/* 접힌 띠 전체가 버튼이라 마우스를 올리면 눌러도 된다는 걸 보여 준다. */
+.day-raid-card.is-collapsed:hover {
+  opacity: 1;
+  background: rgba(24, 34, 52, 0.95);
+  border-color: rgba(163, 182, 255, 0.35);
+}
+
+.day-raid-card.is-collapsed .day-raid-header-toggle {
+  flex-direction: column;
+  justify-content: flex-start;
+  flex: 1;
+  padding: 10px 4px;
+  margin-bottom: 0;
+  text-align: center;
+}
+
+.day-raid-card.is-collapsed .day-raid-header-toggle > span:first-child {
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+.day-raid-card.is-collapsed .day-raid-date {
+  margin-left: 0;
+  font-size: 0.66rem;
+}
+
+.day-raid-collapsed-count {
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: rgba(163, 182, 255, 0.15);
+  color: #bcd3ff;
+  font-size: 0.66rem;
   letter-spacing: 0;
 }
 
@@ -2148,8 +2282,31 @@ input::placeholder {
   }
 
   .day-raid-summary-grid {
-    grid-template-columns: 1fr;
+    flex-direction: column;
     gap: 8px;
+  }
+
+  /* 한 줄에 한 요일이라 모바일에선 접힌 카드를 얇은 가로 줄로 보여 준다. */
+  .day-raid-card,
+  .day-raid-card.is-collapsed {
+    flex: none;
+  }
+
+  .day-raid-card.is-collapsed {
+    padding: 0;
+  }
+
+  .day-raid-card.is-collapsed .day-raid-header-toggle {
+    flex-direction: row;
+    padding: 8px 10px;
+  }
+
+  .day-raid-card.is-collapsed .day-raid-date {
+    margin-left: auto;
+  }
+
+  .day-raid-header-toggle .day-raid-toggle-arrow {
+    transform: rotate(90deg);
   }
 
   /* 레이드 탭 */

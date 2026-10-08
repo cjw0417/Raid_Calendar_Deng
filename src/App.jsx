@@ -584,6 +584,10 @@ function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   // 요일별 신청 현황에서 펼쳐 둔 시간 줄 ("요일-레이드조합-시간" → true)
   const [expandedSummaryRows, setExpandedSummaryRows] = useState({})
+  // 요일별 신청 현황에서 펼쳐 둔 지난 요일 ("수" → true). 지난 요일은 기본으로 접혀 있다.
+  const [expandedPastDays, setExpandedPastDays] = useState({})
+  const pastDayNames = weekdayNames.filter((_, index) => weekDates[index].getTime() < todayStartTime)
+  const areAllPastDaysExpanded = pastDayNames.length > 0 && pastDayNames.every((day) => expandedPastDays[day])
   const [loggedInNickname, setLoggedInNickname] = useState('')
   const [loginNickname, setLoginNickname] = useState(() => readStoredLoginNickname())
   const [rememberMe, setRememberMe] = useState(() => Boolean(readStoredLoginNickname()))
@@ -1304,6 +1308,7 @@ function App() {
     setPasswordSetup(null)
     setSessionPassword(password)
     setLoggedInNickname(nickname)
+    setExpandedPastDays({})
 
     if (rememberMe || savePassword) {
       writeStoredLoginNickname(nickname)
@@ -2763,18 +2768,60 @@ function App() {
           )}
 
           <div className="day-raid-summary-panel" data-section="day">
-            <h3>요일별 레이드 신청 현황</h3>
+            <div className="day-raid-summary-head">
+              <h3>요일별 레이드 신청 현황</h3>
+              {pastDayNames.length > 0 && (
+                <button
+                  type="button"
+                  className="day-raid-past-toggle"
+                  onClick={() => setExpandedPastDays(
+                    areAllPastDaysExpanded ? {} : Object.fromEntries(pastDayNames.map((day) => [day, true])),
+                  )}
+                >
+                  {areAllPastDaysExpanded ? '지난 요일 접기' : `지난 요일 펼치기 (${pastDayNames.length})`}
+                </button>
+              )}
+            </div>
             <div className="day-raid-summary-grid">
-              {dayRaidSummary.map(({ day, raidGroups }, dayIndex) => (
-                <div key={day} className="day-raid-card">
-                  <div className="day-raid-header">
-                    <span>{day}요일</span>
-                    {/* weekdayNames와 weekDates는 둘 다 수요일부터 시작한다. */}
+              {dayRaidSummary.map(({ day, raidGroups }, dayIndex) => {
+                // weekdayNames와 weekDates는 둘 다 수요일부터 시작한다.
+                const isPastCard = weekDates[dayIndex].getTime() < todayStartTime
+                const isCardCollapsed = isPastCard && !expandedPastDays[day]
+                const isTodayCard = weekDates[dayIndex].getTime() === todayStartTime
+                const headerContent = (
+                  <>
+                    <span>
+                      {day}요일
+                      {isTodayCard && <span className="day-raid-today-chip">오늘</span>}
+                    </span>
                     <span className="day-raid-date">
                       {weekDates[dayIndex].getMonth() + 1}/{weekDates[dayIndex].getDate()}
                     </span>
-                  </div>
-                  {raidGroups.length > 0 ? (
+                  </>
+                )
+
+                return (
+                <div key={day} className={`day-raid-card ${isPastCard ? 'is-past' : ''} ${isCardCollapsed ? 'is-collapsed' : ''} ${isTodayCard ? 'is-today' : ''}`}>
+                  {isPastCard ? (
+                    <button
+                      type="button"
+                      className="day-raid-header day-raid-header-toggle"
+                      aria-expanded={!isCardCollapsed}
+                      title={isCardCollapsed
+                        ? `${day}요일 펼치기${raidGroups.length > 0 ? ` · 레이드 ${raidGroups.length}개` : ' · 신청 없음'}`
+                        : `${day}요일 접기`}
+                      onClick={() => setExpandedPastDays((prev) => ({ ...prev, [day]: !prev[day] }))}
+                    >
+                      {headerContent}
+                      {isCardCollapsed && raidGroups.length > 0 && (
+                        <span className="day-raid-collapsed-count">{raidGroups.length}</span>
+                      )}
+                      <span className="day-raid-toggle-arrow" aria-hidden="true">{isCardCollapsed ? '▸' : '◂'}</span>
+                    </button>
+                  ) : (
+                    <div className="day-raid-header">{headerContent}</div>
+                  )}
+                  {isCardCollapsed ? null : raidGroups.length > 0 ? (
                     <div className="day-raid-list">
                       {raidGroups.map(({ label, raidName, difficulty, mode, times, timeMembers, members }) => {
                         const groupKey = `${day}-${label}`
@@ -3012,7 +3059,8 @@ function App() {
                     <div className="empty-role">신청 인원 없음</div>
                   )}
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
 
