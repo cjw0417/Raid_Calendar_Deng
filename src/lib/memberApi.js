@@ -34,6 +34,14 @@ const resultMessages = {
   not_participant: '이 시간대에 참여로 투표한 사람만 표시할 수 있어요.',
   notify_limit: '이 시간대는 준비 확인 알림을 이미 두 번 보냈어요.',
   bad_request: '요청 내용이 올바르지 않아요.',
+  linked_alt: '본캐에 연결된 부캐 닉네임이에요. 본캐로 로그인한 뒤 캐릭터를 바꿔 주세요.',
+  time_conflict: '같은 시간에 이미 신청한 캐릭터가 있어요.',
+  alt_invalid: '부캐 닉네임을 확인해 주세요. 본캐와 같은 닉네임은 연결할 수 없어요.',
+  alt_taken: '이미 다른 본캐에 연결된 부캐예요.',
+  alt_has_alts: '부캐를 가진 본캐 닉네임은 부캐로 연결할 수 없어요.',
+  alt_limit: '부캐는 5개까지 연결할 수 있어요.',
+  alt_invalid_password: '부캐 비밀번호가 맞지 않아요. 부캐가 따로 정해 둔 비밀번호를 입력해 주세요.',
+  alt_time_conflict: '부캐가 이번 주에 신청한 시간이 본캐 · 다른 부캐와 겹쳐요. 겹치는 신청을 먼저 지워 주세요.',
 }
 
 export function describeAuthResult(result) {
@@ -234,6 +242,21 @@ export function deleteMemberSchedule(nickname, password, target) {
 
 export function deleteAllMemberSchedules(nickname, password) {
   return callRpc('member_delete_all_schedules', { p_nickname: nickname, p_password: password })
+}
+
+// 부캐 연결 / 해제 (Supabase 모드 전용). nickname · password는 로그인한 본캐.
+// altPassword는 부캐가 이미 개인 비밀번호를 정한 닉네임일 때만 확인한다. 반환값: 'ok' 또는 오류 코드
+export function linkMemberAlt(nickname, password, altNickname, altPassword) {
+  return callRpc('member_link_alt', {
+    p_nickname: nickname,
+    p_password: password,
+    p_alt_nickname: altNickname,
+    p_alt_password: altPassword,
+  })
+}
+
+export function unlinkMemberAlt(nickname, password, altNickname) {
+  return callRpc('member_unlink_alt', { p_nickname: nickname, p_password: password, p_alt_nickname: altNickname })
 }
 
 // 시간대별 클리어 표시 (supabase_raid_runs.sql). field: 'cleared', value: 'O' | 'X' | null

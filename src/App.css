@@ -536,11 +536,79 @@ select.login-input {
   gap: 10px;
 }
 
-.nickname-row input {
+.nickname-row input,
+.nickname-row select {
   flex: 1 1 auto;
   min-width: 0;
   height: 48px;
   box-sizing: border-box;
+}
+
+/* 닉네임 라벨 옆 작은 '부캐 관리' 버튼 */
+.nickname-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.alt-manage-button {
+  padding: 2px 8px;
+  border: 1px solid rgba(150, 170, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(19, 27, 42, 0.9);
+  color: #bcd3ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.alt-manage-button:hover {
+  background: rgba(32, 44, 68, 0.95);
+  color: #e6eeff;
+}
+
+.alt-manager-desc {
+  margin: 0 0 12px;
+  color: #a9b9da;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.alt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.alt-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(150, 170, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(17, 23, 36, 0.95);
+  color: #edf3ff;
+  font-size: 0.86rem;
+}
+
+.alt-unlink-button {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 140, 140, 0.35);
+  border-radius: 999px;
+  background: none;
+  color: #ffb3b3;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.alt-unlink-button:hover {
+  background: rgba(255, 120, 120, 0.12);
 }
 
 .lead-toggle {
@@ -632,6 +700,24 @@ select.login-input {
 .time-grid .chip {
   min-width: 74px;
   text-align: center;
+}
+
+/* 같은 계정의 다른 캐릭터 · 다른 레이드로 이미 신청한 시간 */
+.time-grid .chip.is-taken {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  border-style: dashed;
+}
+
+.time-taken-label {
+  max-width: 72px;
+  overflow: hidden;
+  color: #f5c542;
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .two-column {
@@ -1846,6 +1932,13 @@ input::placeholder {
   width: 100%;
 }
 
+.tooltip-alt-owner {
+  color: #f5c542;
+  font-size: 0.62rem;
+  text-align: left;
+  width: 100%;
+}
+
 .time-member-pill .member-name-wrap {
   gap: 2px;
   overflow: hidden;
@@ -2254,7 +2347,8 @@ input::placeholder {
     gap: 0;
   }
 
-  .nickname-row input {
+  .nickname-row input,
+  .nickname-row select {
     height: 46px;
   }
 

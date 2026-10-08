@@ -7,6 +7,12 @@
 --   - 개인 비밀번호를 정할 때 비밀번호 찾기 질문과 답도 정하고, 비밀번호를 잊으면 답을 맞혀 새로 정한다.
 --   - 비밀번호·찾기 답을 합쳐 10번 연속으로 틀리면 5분 동안 잠긴다.
 --   - 스케줄 읽기는 지금처럼 누구나 할 수 있고, 쓰기는 아래 함수를 통해서만 가능하다.
+--   - 본캐에 부캐를 연결하면, 본캐로 로그인해 본캐 비밀번호로 부캐 신청 · 준비 · 클리어까지 할 수 있다.
+--     부캐 닉네임으로는 따로 로그인하지 않는다.
+--   - 같은 계정(본캐 + 부캐)은 이번 주에 같은 요일 · 시간을 두 번 신청할 수 없다. (같은 캐릭터의 다른 레이드 포함)
+--
+-- 부캐 연결을 관리자가 직접 끊으려면:
+--   delete from public.member_alts where alt_nickname = '부캐닉네임';
 --
 -- 찾기 답까지 잊은 사람이 있으면 아래를 실행해 초기화한다. (다시 초기 비밀번호로 로그인해 새로 정한다)
 --   delete from public.member_credentials where nickname = '닉네임';
@@ -38,10 +44,31 @@ create table if not exists public.member_credentials (
 alter table public.member_credentials add column if not exists hint_question text;
 alter table public.member_credentials add column if not exists hint_answer_hash text;
 
+-- 본캐에 연결한 부캐. 부캐는 본캐 비밀번호로 저장·삭제·준비 표시를 하고, 부캐 닉네임으로 따로 로그인하지 않는다.
+-- 한 부캐는 한 본캐에만 연결되고(alt_nickname이 기본키), 부캐에 또 부캐를 달 수 없다.
+create table if not exists public.member_alts (
+  alt_nickname text primary key,
+  owner_nickname text not null,
+  created_at timestamptz not null default now(),
+  check (alt_nickname <> owner_nickname)
+);
+
+create index if not exists member_alts_owner_idx on public.member_alts (owner_nickname);
+
 alter table public.app_settings enable row level security;
 alter table public.member_credentials enable row level security;
+alter table public.member_alts enable row level security;
 revoke all on public.app_settings from anon, authenticated;
 revoke all on public.member_credentials from anon, authenticated;
+
+-- 부캐 연결은 캘린더에 "OO의 부캐"로 보여 주려고 누구나 읽을 수 있다. 쓰기는 아래 함수로만.
+revoke all on public.member_alts from anon, authenticated;
+grant select on public.member_alts to anon, authenticated;
+drop policy if exists "Anyone can read member alts" on public.member_alts;
+create policy "Anyone can read member alts"
+on public.member_alts
+for select
+using (true);
 
 -- 2. 내부용 함수
 -- 비밀번호·찾기 답을 틀렸을 때 실패 횟수를 늘리고, 10번째면 5분 동안 잠근다.
@@ -68,7 +95,18 @@ as $$
   select lower(regexp_replace(coalesce(p_answer, ''), '\s+', '', 'g'));
 $$;
 
--- 비밀번호 확인
+-- 부캐면 연결된 본캐 닉네임, 아니면 그대로. 비밀번호 · 중복 시간 확인은 본캐(계정) 기준으로 한다.
+create or replace function public._account_nickname(p_nickname text)
+returns text
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select coalesce((select owner_nickname from public.member_alts where alt_nickname = p_nickname), p_nickname);
+$$;
+
+-- 비밀번호 확인. 부캐 닉네임이면 본캐 비밀번호로 확인한다.
 --    반환값: 'ok' 개인 비밀번호 일치 / 'initial' 개인 비밀번호가 없고 초기 비밀번호 일치
 --            'invalid' 불일치 / 'locked' 잠김
 create or replace function public._verify_member_password(p_nickname text, p_password text, p_allow_initial boolean)
@@ -78,10 +116,11 @@ security definer
 set search_path = public, extensions
 as $$
 declare
+  account_nickname text := public._account_nickname(p_nickname);
   cred public.member_credentials;
   initial_password text;
 begin
-  select * into cred from public.member_credentials where nickname = p_nickname for update;
+  select * into cred from public.member_credentials where nickname = account_nickname for update;
 
   if not found then
     select value into initial_password from public.app_settings where key = 'initial_password';
@@ -100,12 +139,12 @@ begin
   if cred.password_hash = extensions.crypt(p_password, cred.password_hash) then
     update public.member_credentials
     set failed_attempts = 0, locked_until = null
-    where nickname = p_nickname;
+    where nickname = account_nickname;
 
     return 'ok';
   end if;
 
-  perform public._record_failed_attempt(p_nickname);
+  perform public._record_failed_attempt(account_nickname);
   return 'invalid';
 end;
 $$;
@@ -113,9 +152,11 @@ $$;
 revoke execute on function public._record_failed_attempt(text) from public, anon, authenticated;
 revoke execute on function public._normalize_hint_answer(text) from public, anon, authenticated;
 revoke execute on function public._verify_member_password(text, text, boolean) from public, anon, authenticated;
+revoke execute on function public._account_nickname(text) from public, anon, authenticated;
 
 -- 3. 로그인
 --    반환값: 'ok' / 'must_change'(초기 비밀번호로 들어옴 → 개인 비밀번호 설정 필요) / 'invalid' / 'locked'
+--            'linked_alt'(본캐에 연결된 부캐 닉네임 → 본캐로 로그인해야 함)
 create or replace function public.member_login(p_nickname text, p_password text)
 returns text
 language plpgsql
@@ -125,6 +166,11 @@ as $$
 declare
   result text;
 begin
+  -- 부캐 닉네임으로는 로그인하지 않는다. (다른 사람이 초기 비밀번호로 그 닉네임을 새로 쓰는 것도 막는다)
+  if exists (select 1 from public.member_alts where alt_nickname = btrim(p_nickname)) then
+    return 'linked_alt';
+  end if;
+
   result := public._verify_member_password(btrim(p_nickname), p_password, true);
   return case when result = 'initial' then 'must_change' else result end;
 end;
@@ -263,6 +309,10 @@ as $$
 declare
   cred public.member_credentials;
 begin
+  if exists (select 1 from public.member_alts where alt_nickname = btrim(p_nickname)) then
+    return jsonb_build_object('status', 'linked_alt');
+  end if;
+
   select * into cred from public.member_credentials where nickname = btrim(p_nickname);
 
   if not found then
@@ -323,8 +373,70 @@ begin
 end;
 $$;
 
--- 5. 스케줄 저장 (members 개인 정보 + raid_schedules 한 건)
---    반환값: { "member": {...}, "schedule": {...} } 또는 { "error": 'invalid' | 'locked' }
+-- 5. 같은 시간 중복 신청 확인
+-- 이번 주 시작(수요일 00시, 한국 시간). 앱이 지난주 신청을 초기화된 것으로 보는 기준과 같다.
+create or replace function public._current_week_start()
+returns timestamptz
+language sql
+stable
+set search_path = public, extensions
+as $$
+  select (date_trunc('week', (now() at time zone 'Asia/Seoul') - interval '2 days') + interval '2 days') at time zone 'Asia/Seoul';
+$$;
+
+-- p_nickname이 p_selection({ "수": ["21:00"], ... })으로 신청하려 할 때, 같은 계정(본캐 + 부캐)의
+-- 이번 주 참여 신청 중 같은 요일 · 시간이 겹치는 것이 있으면 하나를 돌려준다. 없으면 null.
+-- 같은 캐릭터의 다른 레이드도 겹치는 것으로 본다. 지금 덮어쓸 스케줄(같은 캐릭터 · 같은 레이드 조합)만 뺀다.
+create or replace function public._schedule_time_conflict(
+  p_nickname text,
+  p_raid_name text,
+  p_difficulty text,
+  p_mode text,
+  p_selection jsonb
+)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  with account as (
+    select public._account_nickname(p_nickname) as nickname
+  ),
+  characters as (
+    select nickname from account
+    union
+    select a.alt_nickname from public.member_alts a join account on a.owner_nickname = account.nickname
+  ),
+  new_slots as (
+    select d.key as slot_day, t.value as slot_time
+    from jsonb_each(case when jsonb_typeof(p_selection) = 'object' then p_selection else '{}'::jsonb end) d
+    cross join lateral jsonb_array_elements_text(case when jsonb_typeof(d.value) = 'array' then d.value else '[]'::jsonb end) t
+  )
+  select jsonb_build_object(
+    'nickname', s.nickname,
+    'raid_name', s.raid_name,
+    'difficulty', s.difficulty,
+    'mode', s.mode,
+    'day', n.slot_day,
+    'time', n.slot_time
+  )
+  from public.raid_schedules s
+  join new_slots n on coalesce(s.day_time_selection -> n.slot_day, '[]'::jsonb) ? n.slot_time
+  where s.nickname in (select nickname from characters)
+    and s.attendance = '참'
+    and s.updated_at >= public._current_week_start()
+    and not (s.nickname = p_nickname and s.raid_name = p_raid_name and s.difficulty = p_difficulty and s.mode = p_mode)
+  limit 1;
+$$;
+
+revoke execute on function public._current_week_start() from public, anon, authenticated;
+revoke execute on function public._schedule_time_conflict(text, text, text, text, jsonb) from public, anon, authenticated;
+
+-- 6. 스케줄 저장 (members 개인 정보 + raid_schedules 한 건)
+--    p_nickname은 로그인한 본캐 또는 본캐에 연결된 부캐. 비밀번호는 본캐 비밀번호.
+--    반환값: { "member": {...}, "schedule": {...} }
+--            또는 { "error": 'invalid' | 'locked' } / { "error": 'time_conflict', "conflict": {...} }
 create or replace function public.member_save_schedule(p_nickname text, p_password text, p_member jsonb, p_schedule jsonb)
 returns jsonb
 language plpgsql
@@ -334,6 +446,7 @@ as $$
 declare
   nickname_value text := btrim(p_nickname);
   verify_result text;
+  conflict jsonb;
   member_row public.members;
   schedule_row public.raid_schedules;
 begin
@@ -341,6 +454,23 @@ begin
 
   if verify_result <> 'ok' then
     return jsonb_build_object('error', verify_result);
+  end if;
+
+  -- 같은 계정의 저장이 동시에 들어와 둘 다 중복 확인을 통과하지 않도록 계정 단위로 순서를 세운다.
+  perform pg_advisory_xact_lock(hashtext('member_schedule:' || public._account_nickname(nickname_value)));
+
+  if p_schedule->>'attendance' = '참' then
+    conflict := public._schedule_time_conflict(
+      nickname_value,
+      p_schedule->>'raid_name',
+      p_schedule->>'difficulty',
+      p_schedule->>'mode',
+      p_schedule->'day_time_selection'
+    );
+
+    if conflict is not null then
+      return jsonb_build_object('error', 'time_conflict', 'conflict', conflict);
+    end if;
   end if;
 
   insert into public.members (nickname, attendance, class_name, power, lead_ready)
@@ -391,7 +521,7 @@ begin
 end;
 $$;
 
--- 6. 스케줄 한 건 삭제
+-- 7. 스케줄 한 건 삭제
 create or replace function public.member_delete_schedule(p_nickname text, p_password text, p_raid_name text, p_difficulty text, p_mode text)
 returns jsonb
 language plpgsql
@@ -426,7 +556,7 @@ begin
 end;
 $$;
 
--- 7. 내 스케줄 전체 삭제
+-- 8. 내 스케줄 전체 삭제
 create or replace function public.member_delete_all_schedules(p_nickname text, p_password text)
 returns jsonb
 language plpgsql
@@ -450,7 +580,122 @@ begin
 end;
 $$;
 
--- 8. 앱에서 호출할 수 있는 함수만 공개
+-- 9. 부캐 연결 / 해제
+--    연결: 본캐로 로그인한 사람이 부캐 닉네임을 본캐에 붙인다.
+--          부캐가 이미 개인 비밀번호를 정한 닉네임이면 그 비밀번호를 한 번 확인하고, 연결 뒤에는 지운다.
+--          (아직 비밀번호가 없는 닉네임은 누구나 초기 비밀번호로 쓸 수 있는 상태라 따로 확인하지 않는다)
+--    반환값: 'ok' / 'invalid' / 'locked' / 'bad_request'
+--            'alt_invalid'(빈 닉네임 · 자기 자신) / 'alt_taken'(이미 어떤 본캐의 부캐)
+--            'alt_has_alts'(부캐를 가진 본캐) / 'alt_limit'(부캐 5개 초과)
+--            'alt_invalid_password'(부캐 비밀번호 불일치) / 'alt_time_conflict'(이번 주 신청 시간이 겹침)
+create or replace function public.member_link_alt(p_nickname text, p_password text, p_alt_nickname text, p_alt_password text)
+returns text
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  nickname_value text := btrim(p_nickname);
+  alt_value text := btrim(coalesce(p_alt_nickname, ''));
+  verify_result text;
+  alt_row public.raid_schedules;
+begin
+  -- 부캐 닉네임 + 본캐 비밀번호로 부르는 경우를 막는다. 연결은 본캐로만 한다.
+  if exists (select 1 from public.member_alts where alt_nickname = nickname_value) then
+    return 'bad_request';
+  end if;
+
+  verify_result := public._verify_member_password(nickname_value, p_password, false);
+
+  if verify_result <> 'ok' then
+    return verify_result;
+  end if;
+
+  if alt_value = '' or alt_value = nickname_value then
+    return 'alt_invalid';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('member_schedule:' || nickname_value));
+
+  if exists (select 1 from public.member_alts where alt_nickname = alt_value) then
+    return 'alt_taken';
+  end if;
+
+  if exists (select 1 from public.member_alts where owner_nickname = alt_value) then
+    return 'alt_has_alts';
+  end if;
+
+  if (select count(*) from public.member_alts where owner_nickname = nickname_value) >= 5 then
+    return 'alt_limit';
+  end if;
+
+  if exists (select 1 from public.member_credentials where nickname = alt_value) then
+    verify_result := public._verify_member_password(alt_value, coalesce(p_alt_password, ''), false);
+
+    if verify_result = 'locked' then
+      return 'locked';
+    end if;
+
+    if verify_result <> 'ok' then
+      return 'alt_invalid_password';
+    end if;
+  end if;
+
+  -- 부캐가 이번 주에 이미 신청한 시간이 본캐 · 다른 부캐와 겹치면 먼저 정리하게 한다.
+  for alt_row in
+    select * from public.raid_schedules
+    where nickname = alt_value
+      and attendance = '참'
+      and updated_at >= public._current_week_start()
+  loop
+    if public._schedule_time_conflict(nickname_value, '', '', '', alt_row.day_time_selection) is not null then
+      return 'alt_time_conflict';
+    end if;
+  end loop;
+
+  -- 연결한 뒤에는 본캐 비밀번호만 쓴다.
+  delete from public.member_credentials where nickname = alt_value;
+  insert into public.member_alts (alt_nickname, owner_nickname) values (alt_value, nickname_value);
+
+  return 'ok';
+end;
+$$;
+
+-- 해제: 연결만 끊는다. 부캐의 신청 기록은 남고, 부캐 닉네임은 다시 초기 비밀번호로 로그인해 개인 비밀번호를 정한다.
+--    반환값: 'ok' / 'invalid' / 'locked' / 'bad_request'
+create or replace function public.member_unlink_alt(p_nickname text, p_password text, p_alt_nickname text)
+returns text
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  nickname_value text := btrim(p_nickname);
+  verify_result text;
+begin
+  if exists (select 1 from public.member_alts where alt_nickname = nickname_value) then
+    return 'bad_request';
+  end if;
+
+  verify_result := public._verify_member_password(nickname_value, p_password, false);
+
+  if verify_result <> 'ok' then
+    return verify_result;
+  end if;
+
+  delete from public.member_alts
+  where owner_nickname = nickname_value
+    and alt_nickname = btrim(coalesce(p_alt_nickname, ''));
+
+  if not found then
+    return 'bad_request';
+  end if;
+
+  return 'ok';
+end;
+$$;
+
+-- 10. 앱에서 호출할 수 있는 함수만 공개
 revoke execute on function public.member_login(text, text) from public;
 revoke execute on function public.member_setup_password(text, text, text, text, text) from public;
 revoke execute on function public.member_set_password(text, text, text) from public;
@@ -459,6 +704,8 @@ revoke execute on function public.member_reset_password(text, text, text) from p
 revoke execute on function public.member_save_schedule(text, text, jsonb, jsonb) from public;
 revoke execute on function public.member_delete_schedule(text, text, text, text, text) from public;
 revoke execute on function public.member_delete_all_schedules(text, text) from public;
+revoke execute on function public.member_link_alt(text, text, text, text) from public;
+revoke execute on function public.member_unlink_alt(text, text, text) from public;
 
 grant execute on function public.member_login(text, text) to anon, authenticated;
 grant execute on function public.member_setup_password(text, text, text, text, text) to anon, authenticated;
@@ -468,8 +715,10 @@ grant execute on function public.member_reset_password(text, text, text) to anon
 grant execute on function public.member_save_schedule(text, text, jsonb, jsonb) to anon, authenticated;
 grant execute on function public.member_delete_schedule(text, text, text, text, text) to anon, authenticated;
 grant execute on function public.member_delete_all_schedules(text, text) to anon, authenticated;
+grant execute on function public.member_link_alt(text, text, text, text) to anon, authenticated;
+grant execute on function public.member_unlink_alt(text, text, text) to anon, authenticated;
 
--- 9. 테이블 직접 쓰기 막기 (읽기 정책 "Anyone can read ..."는 그대로 둔다)
+-- 11. 테이블 직접 쓰기 막기 (읽기 정책 "Anyone can read ..."는 그대로 둔다)
 drop policy if exists "Anyone can insert members" on public.members;
 drop policy if exists "Anyone can update members" on public.members;
 drop policy if exists "Anyone can delete members" on public.members;

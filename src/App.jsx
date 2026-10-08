@@ -6,6 +6,7 @@ import {
   deleteAllMemberSchedules,
   deleteMemberSchedule,
   describeAuthResult,
+  linkMemberAlt,
   memberGetHintQuestion,
   memberLogin,
   memberResetPassword,
@@ -15,6 +16,7 @@ import {
   saveMemberSchedule,
   setRaidRally,
   setRaidRunStatus,
+  unlinkMemberAlt,
 } from './lib/memberApi'
 import './App.css'
 
@@ -559,6 +561,21 @@ function buildEmptyPasswordForm() {
   return { current: '', next: '', confirm: '', hintQuestion: '', hintAnswer: '', error: '', message: '' }
 }
 
+// 본캐 · 부캐 연결 목록. 실패하거나 로컬 모드면 null (부캐 기능은 Supabase 모드 전용)
+async function fetchMemberAlts() {
+  if (!supabase) {
+    return null
+  }
+
+  const { data, error } = await supabase.from('member_alts').select('alt_nickname, owner_nickname')
+
+  if (error || !Array.isArray(data)) {
+    return null
+  }
+
+  return data.map((row) => ({ altNickname: row.alt_nickname, ownerNickname: row.owner_nickname }))
+}
+
 // 리딩 O/X 표시. 글꼴·화면 배율에 따라 글자가 틀어지지 않도록 SVG로 그린다.
 function LeadMark({ value }) {
   return (
@@ -597,6 +614,12 @@ function App() {
   const [isLoginPending, setIsLoginPending] = useState(false)
   // 로그인한 사람의 비밀번호. 저장·삭제할 때 DB가 다시 확인하므로 메모리에만 들고 있는다.
   const [sessionPassword, setSessionPassword] = useState('')
+  // 본캐에 연결된 부캐 목록: [{ altNickname, ownerNickname }] (누구나 읽을 수 있어 캘린더에 "OO의 부캐"로도 쓴다)
+  const [memberAlts, setMemberAlts] = useState([])
+  // 신청 폼에서 고른 캐릭터. ''이면 로그인한 본캐.
+  const [activeCharacter, setActiveCharacter] = useState('')
+  const [altManagerOpen, setAltManagerOpen] = useState(false)
+  const [altForm, setAltForm] = useState({ nickname: '', password: '', error: '', pending: false })
   // 초기 비밀번호로 들어온 경우의 개인 비밀번호 설정 단계: { nickname, currentPassword }
   const [passwordSetup, setPasswordSetup] = useState(null)
   // 비밀번호 찾기 단계: { nickname, question } (question이 null이면 닉네임 입력 단계)
@@ -701,6 +724,7 @@ function App() {
 
     loadRemoteMembers()
     loadRemoteRaidSchedules()
+    fetchMemberAlts().then((alts) => alts && setMemberAlts(alts))
 
     const memberChannel = supabase
       .channel('members-live')
@@ -866,7 +890,24 @@ function App() {
   const visibleTimeSlots = getSelectableTimesForSelectedDay(selectedDayForTimes)
 
   // 폼에서 고른 레이드 · 난이도 · 공략 방식. 요일/시간 선택은 이 조합마다 따로 관리한다.
-  const currentNickname = (loggedInNickname || profile.nickname).trim()
+  // 지금 신청 · 삭제하는 캐릭터 (본캐 또는 고른 부캐)
+  const currentNickname = (activeCharacter || loggedInNickname || profile.nickname).trim()
+  const altOwnerByNickname = useMemo(
+    () => new Map(memberAlts.map(({ altNickname, ownerNickname }) => [altNickname, ownerNickname])),
+    [memberAlts],
+  )
+  const myAltNicknames = useMemo(
+    () => memberAlts
+      .filter(({ ownerNickname }) => ownerNickname === loggedInNickname)
+      .map(({ altNickname }) => altNickname)
+      .sort((a, b) => a.localeCompare(b)),
+    [memberAlts, loggedInNickname],
+  )
+  // 로그인한 사람이 움직일 수 있는 캐릭터 (본캐 + 부캐). 준비 · 클리어 표시와 중복 시간 확인에 쓴다.
+  const myCharacters = useMemo(
+    () => (loggedInNickname ? [loggedInNickname, ...myAltNicknames] : [currentNickname]),
+    [loggedInNickname, myAltNicknames, currentNickname],
+  )
   const selectedRaidLabel = profile.raidFocus ? getRaidLabel(profile.raidFocus) : ''
   const currentScheduleTarget = {
     raidName: selectedRaidLabel,
@@ -885,6 +926,37 @@ function App() {
     ?? buildEmptyDayTimeSelection()
   const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
 
+  // 같은 계정(본캐 + 부캐)이 이번 주에 이미 참여로 신청한 시간 ("요일|시간" → 그 신청).
+  // 지금 고치고 있는 스케줄(같은 캐릭터 · 같은 레이드 조합)은 덮어쓸 것이라 뺀다. DB의 _schedule_time_conflict와 같은 기준이다.
+  const takenSlots = useMemo(() => {
+    const map = new Map()
+
+    raidSchedules.forEach((entry) => {
+      if (
+        entry.attendance !== '참'
+        || !myCharacters.includes(entry.nickname)
+        || (entry.nickname === currentNickname && getScheduleKey(entry) === currentScheduleKey)
+      ) {
+        return
+      }
+
+      getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
+        const slotKey = `${day}|${time}`
+
+        if (!map.has(slotKey)) {
+          map.set(slotKey, entry)
+        }
+      })
+    })
+
+    return map
+  }, [raidSchedules, myCharacters, currentNickname, currentScheduleKey])
+
+  // "부캐명 · 무스펠 보통 트라이" 처럼 겹친 신청을 알려 주는 문구
+  const describeTakenSlot = (entry) => (
+    `${entry.nickname === currentNickname ? '이 캐릭터' : entry.nickname} · ${entry.raidName} ${entry.difficulty} ${entry.mode}`
+  )
+
   const toggleTimeSelection = (time) => {
     const targetDay = selectedDayForTimes
 
@@ -894,6 +966,12 @@ function App() {
 
     const nextSelection = normalizeDayTimeSelection(currentDayTimeSelection)
     const currentTimes = nextSelection[targetDay] ?? []
+
+    // 이미 다른 신청이 있는 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
+    if (!currentTimes.includes(time) && takenSlots.has(`${targetDay}|${time}`)) {
+      return
+    }
+
     nextSelection[targetDay] = currentTimes.includes(time)
       ? currentTimes.filter((item) => item !== time)
       : [...currentTimes, time]
@@ -1236,7 +1314,7 @@ function App() {
 
   // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
   const mySavedSchedules = useMemo(() => {
-    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+    const trimmedNickname = currentNickname
     const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
     const difficultyOrder = { 보통: 0, 어려움: 1 }
 
@@ -1247,7 +1325,7 @@ function App() {
         || (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
         || (a.mode ?? '').localeCompare(b.mode ?? ''),
       )
-  }, [loggedInNickname, profile.nickname, raidSchedules])
+  }, [currentNickname, raidSchedules])
 
   const activeRaidScheduleEntries = useMemo(() => {
     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
@@ -1308,7 +1386,10 @@ function App() {
     setPasswordSetup(null)
     setSessionPassword(password)
     setLoggedInNickname(nickname)
+    setActiveCharacter('')
     setExpandedPastDays({})
+    // 다른 기기에서 연결한 부캐도 보이도록 로그인할 때 다시 불러온다.
+    reloadMemberAlts()
 
     if (rememberMe || savePassword) {
       writeStoredLoginNickname(nickname)
@@ -1497,6 +1578,8 @@ function App() {
 
   const handleLogout = () => {
     setLoggedInNickname('')
+    setActiveCharacter('')
+    setAltManagerOpen(false)
     setLoginNickname('')
     setLoginPassword('')
     setSessionPassword('')
@@ -1565,15 +1648,104 @@ function App() {
     }))
   }
 
+  // 신청 폼의 캐릭터를 바꾼다. 직업 · 전투력 · 리딩은 캐릭터마다 달라서 다시 불러오고, 레이드 조합은 그대로 둔다.
+  const switchCharacter = async (nickname) => {
+    const nextCharacter = nickname === loggedInNickname ? '' : nickname
+
+    if (nextCharacter === activeCharacter) {
+      return
+    }
+
+    setActiveCharacter(nextCharacter)
+    setDayTimeDrafts({})
+    setSelectedDayForTimes('')
+    setProfile((prev) => buildDefaultMember({
+      nickname,
+      raidFocus: prev.raidFocus,
+      difficulty: prev.difficulty,
+      mode: prev.mode,
+    }))
+    await loadCurrentProfileByNickname(nickname)
+  }
+
+  const reloadMemberAlts = async () => {
+    const alts = await fetchMemberAlts()
+
+    if (alts) {
+      setMemberAlts(alts)
+    }
+
+    return alts
+  }
+
+  const openAltManager = () => {
+    setAltForm({ nickname: '', password: '', error: '', pending: false })
+    setAltManagerOpen(true)
+    setMobileMenuOpen(false)
+  }
+
+  const handleLinkAlt = async (event) => {
+    event.preventDefault()
+
+    const altNickname = altForm.nickname.trim()
+
+    if (!altNickname) {
+      setAltForm((prev) => ({ ...prev, error: '부캐 닉네임을 입력해 주세요.' }))
+      return
+    }
+
+    setAltForm((prev) => ({ ...prev, error: '', pending: true }))
+
+    try {
+      const result = await linkMemberAlt(loggedInNickname, sessionPassword, altNickname, altForm.password)
+
+      if (result !== 'ok') {
+        setAltForm((prev) => ({ ...prev, error: describeAuthResult(result), pending: false }))
+        return
+      }
+
+      await reloadMemberAlts()
+      setAltForm({ nickname: '', password: '', error: '', pending: false })
+    } catch (error) {
+      setAltForm((prev) => ({ ...prev, error: `부캐를 연결하지 못했어요. (${error.message})`, pending: false }))
+    }
+  }
+
+  const handleUnlinkAlt = async (altNickname) => {
+    if (!window.confirm(`${altNickname} 부캐 연결을 해제할까요?\n\n신청 기록은 남고, ${altNickname}은(는) 다시 초기 비밀번호로 로그인해 개인 비밀번호를 정해야 해요.`)) {
+      return
+    }
+
+    try {
+      const result = await unlinkMemberAlt(loggedInNickname, sessionPassword, altNickname)
+
+      if (result !== 'ok') {
+        setAltForm((prev) => ({ ...prev, error: describeAuthResult(result) }))
+        return
+      }
+
+      await reloadMemberAlts()
+
+      if (activeCharacter === altNickname) {
+        await switchCharacter(loggedInNickname)
+      }
+    } catch (error) {
+      setAltForm((prev) => ({ ...prev, error: `부캐 연결을 해제하지 못했어요. (${error.message})` }))
+    }
+  }
+
   const saveCurrentProfile = async () => {
-    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+    const trimmedNickname = currentNickname
 
     if (!trimmedNickname) {
       return
     }
 
-    setLoggedInNickname(trimmedNickname)
-    writeStoredLoginNickname(trimmedNickname)
+    // 부캐로 저장할 때 로그인 닉네임(본캐)이 부캐로 바뀌지 않게 한다.
+    if (!loggedInNickname) {
+      setLoggedInNickname(trimmedNickname)
+      writeStoredLoginNickname(trimmedNickname)
+    }
 
     const savedScheduleKey = currentScheduleKey
     const savedSelection = normalizeDayTimeSelection(currentDayTimeSelection)
@@ -1633,7 +1805,11 @@ function App() {
       }
 
       if (result?.error) {
-        window.alert(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}`)
+        const conflict = result.conflict
+        const conflictDetail = conflict
+          ? `\n\n${conflict.day}요일 ${conflict.time}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
+          : ''
+        window.alert(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}${conflictDetail}`)
         return
       }
 
@@ -1730,6 +1906,18 @@ function App() {
       return
     }
 
+    // 골라 둔 뒤에 다른 캐릭터로 같은 시간을 저장했을 수 있어 저장 전에 한 번 더 본다.
+    const conflictLines = profile.attendance === '참'
+      ? getDayTimePairs(currentDayTimeSelection)
+        .filter(([day, time]) => takenSlots.has(`${day}|${time}`))
+        .map(([day, time]) => `${day}요일 ${time}: ${describeTakenSlot(takenSlots.get(`${day}|${time}`))}`)
+      : []
+
+    if (conflictLines.length > 0) {
+      window.alert(`같은 시간에 이미 신청한 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n\n${conflictLines.join('\n')}`)
+      return
+    }
+
     setSaveConfirmOpen(true)
   }
 
@@ -1739,7 +1927,7 @@ function App() {
   }
 
   const clearCurrentSchedule = async () => {
-    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+    const trimmedNickname = currentNickname
 
     if (!trimmedNickname) {
       return
@@ -1760,7 +1948,7 @@ function App() {
 
   // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다.
   const deleteSchedule = async (target) => {
-    const trimmedNickname = (loggedInNickname || profile.nickname).trim()
+    const trimmedNickname = currentNickname
 
     if (!trimmedNickname) {
       return
@@ -1808,10 +1996,23 @@ function App() {
     }
   }
 
+  // 그 시간대(요일 · 시간 · 레이드 조합)에 참여로 투표한 내 캐릭터. 같은 시간 중복 신청을 막아서 많아야 하나다.
+  // 준비 · 클리어 표시는 이 캐릭터 이름으로 남긴다. 없으면 로그인한 본캐.
+  const getMySlotNickname = (run) => (
+    raidSchedules.find((entry) => (
+      entry.attendance === '참'
+      && myCharacters.includes(entry.nickname)
+      && entry.raidName === run.raidName
+      && entry.difficulty === run.difficulty
+      && entry.mode === run.mode
+      && (entry.dayTimeSelection?.[run.day] ?? []).includes(run.time)
+    ))?.nickname ?? loggedInNickname.trim()
+  )
+
   // 클리어 표시를 저장한다. value: 'O' | 'X' | null(표시 지우기)
   // Supabase 모드에서는 DB 함수가 로그인·규칙을 확인하고, O로 바뀌면 디스코드 알림도 보낸다.
   const applyRaidRunStatus = async (run, field, value) => {
-    const nickname = loggedInNickname.trim()
+    const nickname = loggedInNickname ? getMySlotNickname(run) : ''
 
     if (!nickname) {
       window.alert('로그인한 뒤에 클리어 여부를 표시할 수 있어요.')
@@ -1856,7 +2057,7 @@ function App() {
 
   // 준비 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
   const applyRaidRally = async (run, action, slotVoterNicknames) => {
-    const nickname = loggedInNickname.trim()
+    const nickname = loggedInNickname ? getMySlotNickname(run) : ''
 
     if (!nickname) {
       window.alert('로그인한 뒤에 준비를 표시할 수 있어요.')
@@ -2302,11 +2503,76 @@ function App() {
               <button type="button" className="secondary-button" onClick={openPasswordChangeFromMenu}>
                 비밀번호 변경
               </button>
+              {supabase && (
+                <button type="button" className="secondary-button" onClick={openAltManager}>
+                  부캐 관리
+                </button>
+              )}
               <button type="button" className="secondary-button" onClick={handleLogout}>
                 로그아웃
               </button>
             </div>
           </nav>
+        </div>
+      )}
+
+      {altManagerOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setAltManagerOpen(false)}>
+          <form className="save-confirm-modal password-change-modal" onClick={(event) => event.stopPropagation()} onSubmit={handleLinkAlt}>
+            <h3>부캐 관리</h3>
+            <p className="alt-manager-desc">
+              부캐를 연결하면 <strong>{loggedInNickname}</strong>(으)로 로그인한 채 신청 폼에서 캐릭터를 바꿔 신청할 수 있어요.
+              부캐 닉네임으로는 따로 로그인하지 않고, 본캐와 부캐는 같은 요일 · 시간에 함께 신청할 수 없어요.
+            </p>
+
+            {myAltNicknames.length > 0 ? (
+              <ul className="alt-list">
+                {myAltNicknames.map((altNickname) => (
+                  <li key={altNickname} className="alt-list-item">
+                    <span>{altNickname}</span>
+                    <button type="button" className="alt-unlink-button" onClick={() => handleUnlinkAlt(altNickname)}>
+                      연결 해제
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="field-hint">아직 연결한 부캐가 없어요.</p>
+            )}
+
+            <label htmlFor="altNickname" className="login-label">부캐 닉네임</label>
+            <input
+              id="altNickname"
+              className="login-input"
+              type="text"
+              value={altForm.nickname}
+              onChange={(event) => setAltForm((prev) => ({ ...prev, nickname: event.target.value, error: '' }))}
+              autoComplete="off"
+            />
+
+            <label htmlFor="altPassword" className="login-label">부캐 비밀번호 (부캐로 비밀번호를 정해 둔 경우만)</label>
+            <input
+              id="altPassword"
+              className="login-input"
+              type="password"
+              inputMode="numeric"
+              value={altForm.password}
+              onChange={(event) => setAltForm((prev) => ({ ...prev, password: event.target.value, error: '' }))}
+              placeholder="처음 쓰는 닉네임이면 비워 두세요"
+              autoComplete="off"
+            />
+
+            {altForm.error && <p className="login-error" role="alert">{altForm.error}</p>}
+
+            <div className="save-confirm-actions">
+              <button type="button" className="secondary-button" onClick={() => setAltManagerOpen(false)}>
+                닫기
+              </button>
+              <button type="submit" className="primary-button" disabled={altForm.pending}>
+                {altForm.pending ? '연결 중…' : '부캐 연결'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -2369,7 +2635,7 @@ function App() {
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h3>캘린더에 저장할까요?</h3>
             <p>
-              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
+              <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
               의 레이드 시간 정보를 저장하시겠습니까
             </p>
             <div className="save-confirm-actions">
@@ -2425,7 +2691,7 @@ function App() {
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h3>{pendingDelete === 'all' ? '내 스케줄을 전부 삭제할까요?' : '이 스케줄을 삭제할까요?'}</h3>
             <p>
-              <span className="save-confirm-nickname">{(loggedInNickname || profile.nickname).trim() || '현재 프로필'}</span>
+              <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
               {pendingDelete === 'all'
                 ? '의 모든 레이드 시간 정보를 삭제하시겠습니까'
                 : `의 ${pendingDelete.raidName} · ${pendingDelete.difficulty} · ${pendingDelete.mode} 레이드 시간 정보를 삭제하시겠습니까`}
@@ -2541,17 +2807,39 @@ function App() {
 
           <div className="field-group">
             <div className="field-label-row">
-              <label htmlFor="nickname">닉네임</label>
+              <span className="nickname-label-wrap">
+                <label htmlFor="nickname">{myAltNicknames.length > 0 ? '캐릭터' : '닉네임'}</label>
+                {supabase && (
+                  <button type="button" className="alt-manage-button" onClick={openAltManager}>
+                    부캐 관리{myAltNicknames.length > 0 ? ` (${myAltNicknames.length})` : ''}
+                  </button>
+                )}
+              </span>
               <span className="lead-label-inline">리딩 여부</span>
             </div>
             <div className="nickname-row">
-              <input
-                id="nickname"
-                type="text"
-                value={profile.nickname}
-                readOnly
-                title="닉네임은 로그인한 닉네임으로 고정돼요."
-              />
+              {myAltNicknames.length > 0 ? (
+                <select
+                  id="nickname"
+                  value={currentNickname}
+                  onChange={(event) => switchCharacter(event.target.value)}
+                  title="신청할 캐릭터를 골라요. 부캐도 본캐 비밀번호로 저장돼요."
+                >
+                  {myCharacters.map((nickname) => (
+                    <option key={nickname} value={nickname}>
+                      {nickname === loggedInNickname ? `${nickname} (본캐)` : `${nickname} (부캐)`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="nickname"
+                  type="text"
+                  value={profile.nickname}
+                  readOnly
+                  title="닉네임은 로그인한 닉네임으로 고정돼요."
+                />
+              )}
               <div className="lead-toggle" aria-label="리딩 가능 여부">
                 {['O', 'X'].map((value) => (
                   <button
@@ -2615,18 +2903,28 @@ function App() {
               {visibleTimeSlots.map((time) => {
                 const isSelected = (currentDayTimeSelection[selectedDayForTimes] ?? []).includes(time)
                 const isHiddenDaytime = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
-                const isDisabled = !isScheduleTargetSelected || !selectedDayForTimes || isHiddenDaytime
+                // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
+                const takenBy = selectedDayForTimes ? takenSlots.get(`${selectedDayForTimes}|${time}`) : null
+                const isTaken = Boolean(takenBy)
+                const isDisabled = !isScheduleTargetSelected || !selectedDayForTimes || isHiddenDaytime || (isTaken && !isSelected)
 
                 return (
                   <button
                     key={time}
                     type="button"
-                    className={`${isSelected ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''}`}
+                    className={`${isSelected ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''} ${isTaken ? 'is-taken' : ''}`}
                     onClick={() => toggleTimeSelection(time)}
                     disabled={isDisabled}
-                    title={isHiddenDaytime ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.' : ''}
+                    title={isHiddenDaytime
+                      ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.'
+                      : isTaken ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : ''}
                   >
                     {time}
+                    {isTaken && (
+                      <span className="time-taken-label">
+                        {takenBy.nickname === currentNickname ? takenBy.raidName : takenBy.nickname}
+                      </span>
+                    )}
                   </button>
                 )
               })}
@@ -2848,6 +3146,9 @@ function App() {
                                 {member.leadReady === 'O' && <span className="tooltip-lead-label">리딩 가능</span>}
                               </span>
                               <span className="tooltip-power">{member.power}</span>
+                              {altOwnerByNickname.has(member.nickname) && (
+                                <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>
+                              )}
                             </span>
                           </span>
                         )
@@ -2873,7 +3174,9 @@ function App() {
                                 const runRecord = raidRunByKey.get(runKey)
                                 const isSavingRun = savingRunKey === runKey
                                 // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
-                                const isSlotVoter = timeVoters.some((member) => member.nickname === loggedInNickname)
+                                // 부캐로 투표했으면 그 부캐로 표시한다. (같은 시간 중복 신청이 막혀 있어 내 캐릭터는 많아야 하나)
+                                const mySlotNickname = timeVoters.find((member) => myCharacters.includes(member.nickname))?.nickname ?? ''
+                                const isSlotVoter = Boolean(mySlotNickname)
                                 const canEditRun = Boolean(loggedInNickname) && isSlotVoter && !isSavingRun
                                 const editDisabledReason = !loggedInNickname
                                   ? '로그인한 뒤에 표시할 수 있어요.'
@@ -2885,7 +3188,7 @@ function App() {
                                 const rallyCheckins = runRecord?.rallyCheckins ?? []
                                 const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
-                                const isMeChecked = rallyCheckins.includes(loggedInNickname)
+                                const isMeChecked = rallyCheckins.includes(mySlotNickname)
                                 // 어제까지의 요일인데 준비 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
                                 const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
                                 const renderRally = () => {
@@ -3021,7 +3324,7 @@ function App() {
                                         {waitingNicknames.map((name) => (
                                           <span
                                             key={`${rowKey}-waiting-${name}`}
-                                            className={`day-raid-rally-waiting-name ${name === loggedInNickname ? 'is-me' : ''}`}
+                                            className={`day-raid-rally-waiting-name ${myCharacters.includes(name) ? 'is-me' : ''}`}
                                           >
                                             {name}
                                           </span>
@@ -3181,6 +3484,7 @@ function App() {
                                             <strong>{member.nickname}</strong>
                                           </span>
                                           <span className="tooltip-power">{member.power}</span>
+                                          {altOwnerByNickname.has(member.nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>}
                                         </span>
                                       </span>
                                     ))}
@@ -3209,6 +3513,7 @@ function App() {
                                             <strong>{member.nickname}</strong>
                                           </span>
                                           <span className="tooltip-power">{member.power}</span>
+                                          {altOwnerByNickname.has(member.nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>}
                                         </span>
                                       </span>
                                     ))}
@@ -3252,6 +3557,7 @@ function App() {
                               <strong>{nickname}</strong>
                             </span>
                             <span className="tooltip-power">{power}</span>
+                            {altOwnerByNickname.has(nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(nickname)}의 부캐</span>}
                           </span>
                         </span>
                       ))}
