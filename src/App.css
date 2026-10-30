@@ -765,57 +765,244 @@ input::placeholder {
   font-size: 0.92rem;
 }
 
+.saved-schedule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.saved-schedule-list .saved-schedule-head h3 {
+  margin: 0;
+}
+
+.saved-schedule-count {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 195, 255, 0.12);
+  border: 1px solid rgba(124, 195, 255, 0.24);
+  color: #9cc9ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.saved-schedule-hint {
+  margin: 0 0 10px;
+  color: #8293ba;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
 .saved-schedule-list ul {
   list-style: none;
   padding-left: 0;
-  gap: 8px;
+  gap: 10px;
 }
 
+/* 스케줄 카드: 왼쪽 띠 색으로 레이드를 구분한다 (무스펠 = 주황, 비탄의 설원 = 하늘) */
 .saved-schedule-item {
+  --raid-accent: #ff9f5a;
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 12px 12px 12px 16px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(23, 30, 47, 0.98), rgba(15, 20, 32, 0.98));
+  border: 1px solid rgba(148, 167, 255, 0.14);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.saved-schedule-item.raid-snow {
+  --raid-accent: #7cd4ff;
+}
+
+.saved-schedule-item::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--raid-accent);
+  opacity: 0.85;
+}
+
+.saved-schedule-item:hover {
+  border-color: rgba(148, 167, 255, 0.28);
+}
+
+.saved-schedule-item.is-absent {
+  opacity: 0.72;
+}
+
+.saved-schedule-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(17, 23, 36, 0.95);
-  border: 1px solid rgba(148, 167, 255, 0.14);
 }
 
-.saved-schedule-info {
-  display: grid;
-  gap: 4px;
+.saved-schedule-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
 }
 
-.saved-schedule-info strong {
+.saved-schedule-title strong {
+  margin-right: 2px;
   color: #edf5ff;
-  font-size: 0.88rem;
+  font-size: 0.92rem;
 }
 
-.saved-schedule-info span {
-  color: #a9b8dc;
+.saved-schedule-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c4d1f0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.saved-schedule-tag.tag-normal {
+  background: rgba(124, 195, 255, 0.12);
+  border-color: rgba(124, 195, 255, 0.3);
+  color: #b9e0ff;
+}
+
+.saved-schedule-tag.tag-hard {
+  background: rgba(255, 110, 110, 0.14);
+  border-color: rgba(255, 128, 128, 0.34);
+  color: #ffc2c2;
+}
+
+.saved-schedule-tag.tag-absent {
+  background: rgba(255, 255, 255, 0.04);
+  border-style: dashed;
+  color: #8f9cbd;
+}
+
+/* 요일 줄: 왼쪽 요일 버튼(그 요일 전체 삭제) + 오른쪽 시간 칩(그 시간만 삭제) */
+.saved-slot-days {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 167, 255, 0.1);
+}
+
+.saved-slot-day {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.saved-slot-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.saved-slot-day-label,
+.saved-slot-chip {
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.saved-slot-day-label {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 167, 255, 0.2);
+  background: rgba(118, 136, 255, 0.1);
+  color: #edf5ff;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.saved-slot-day-label.is-sat {
+  color: #8fc4ff;
+}
+
+.saved-slot-day-label.is-sun {
+  color: #ff9b9b;
+}
+
+.saved-slot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(94, 224, 170, 0.26);
+  background: rgba(94, 224, 170, 0.1);
+  color: #dffcf2;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.saved-slot-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #9fb4d6;
   font-size: 0.8rem;
-  word-break: keep-all;
+  line-height: 1;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.saved-slot-day-label:hover,
+.saved-slot-day-label:focus-visible,
+.saved-slot-chip:hover,
+.saved-slot-chip:focus-visible {
+  background: rgba(255, 96, 96, 0.16);
+  border-color: rgba(255, 128, 128, 0.5);
+  color: #ffd6d6;
+  outline: none;
+}
+
+.saved-slot-chip:hover .saved-slot-chip-x,
+.saved-slot-chip:focus-visible .saved-slot-chip-x {
+  background: #ff6b6b;
+  color: #fff;
+}
+
+.save-confirm-modal p.save-confirm-note {
+  margin-top: -10px;
+  color: #ffb4b4;
+  font-size: 0.84rem;
 }
 
 .saved-schedule-delete {
   flex-shrink: 0;
-  border: 1px solid rgba(255, 128, 128, 0.35);
-  background: rgba(255, 96, 96, 0.1);
+  border: 1px solid rgba(255, 128, 128, 0.3);
+  background: transparent;
   color: #ffb4b4;
-  border-radius: 10px;
-  padding: 6px 12px;
+  border-radius: 9px;
+  padding: 4px 10px;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
-.saved-schedule-delete:hover {
-  background: rgba(255, 96, 96, 0.2);
+.saved-schedule-delete:hover,
+.saved-schedule-delete:focus-visible {
+  background: rgba(255, 96, 96, 0.16);
   border-color: rgba(255, 128, 128, 0.6);
+  outline: none;
 }
 
 .saved-schedule-empty {

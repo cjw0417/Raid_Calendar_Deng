@@ -311,6 +311,26 @@ function getScheduleKey(entry) {
   return `${entry.raidName}|${entry.difficulty}|${entry.mode}`
 }
 
+// members 쪽에 남은 같은 스케줄(닉네임 · 레이드 조합). 스케줄을 지우거나 줄일 때 같이 맞춰야 캘린더에 반영된다.
+function isScheduleMember(member, nickname, target) {
+  return member.nickname === nickname
+    && getRaidLabel(member.raidFocus) === target.raidName
+    && (member.difficulty ?? getDifficultyForRaid(target.raidName)) === target.difficulty
+    && (member.mode ?? '트라이') === target.mode
+}
+
+// 시간 삭제 대상 { entry, day, time }을 "목요일 19:00" / "목요일 전체" 형태로 표시한다. (time이 null이면 그 요일 전체)
+function describePendingSlot({ day, time }) {
+  return `${day}요일 ${time ?? '전체'}`
+}
+
+// 이 시간을 빼면 스케줄에 남는 시간이 없는지.
+function isLastSlotOfSchedule({ entry, day, time }) {
+  const dayTimes = entry.dayTimeSelection?.[day] ?? []
+  const removedCount = time ? (dayTimes.includes(time) ? 1 : 0) : dayTimes.length
+  return getDayTimePairs(entry.dayTimeSelection).length <= removedCount
+}
+
 // 요일별 시간 선택을 "목 19:00 / 금 20:00, 21:00" 형태로 표시한다.
 function formatDayTimeSelection(dayTimeSelection) {
   return weekdayNames
@@ -1957,13 +1977,6 @@ function App() {
     const targetKey = getScheduleKey(target)
     const isTargetSchedule = (entry) => entry.nickname === trimmedNickname && getScheduleKey(entry) === targetKey
 
-    // members 쪽에 남은 같은 스케줄도 비워야 캘린더에서 사라진다.
-    const isTargetMember = (member) =>
-      member.nickname === trimmedNickname
-      && getRaidLabel(member.raidFocus) === target.raidName
-      && (member.difficulty ?? getDifficultyForRaid(target.raidName)) === target.difficulty
-      && (member.mode ?? '트라이') === target.mode
-
     const clearedSelection = { days: [], times: [], dayTimeSelection: buildEmptyDayTimeSelection() }
 
     if (supabase && !(await runRemoteDelete(() => deleteMemberSchedule(trimmedNickname, sessionPassword, target)))) {
@@ -1971,12 +1984,93 @@ function App() {
     }
 
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => !isTargetSchedule(entry)))
-    setMembers((prevMembers) => prevMembers.map((member) => (isTargetMember(member) ? { ...member, ...clearedSelection } : member)))
+    setMembers((prevMembers) => prevMembers.map((member) => (isScheduleMember(member, trimmedNickname, target) ? { ...member, ...clearedSelection } : member)))
     setDayTimeDrafts((prev) => {
       const nextDrafts = { ...prev }
       delete nextDrafts[targetKey]
       return nextDrafts
     })
+  }
+
+  // 저장된 스케줄 한 건에서 요일 하나(time이 null) 또는 요일 · 시간 하나만 뺀다.
+  // 남은 시간이 없으면 스케줄을 통째로 삭제하고, 남아 있으면 줄인 선택으로 다시 저장한다.
+  const deleteScheduleSlot = async ({ entry, day, time }) => {
+    const trimmedNickname = currentNickname
+
+    if (!trimmedNickname) {
+      return
+    }
+
+    const removeSlot = (selection) => {
+      const nextSelection = normalizeDayTimeSelection(selection)
+      nextSelection[day] = time ? nextSelection[day].filter((value) => value !== time) : []
+      return nextSelection
+    }
+
+    const nextSelection = removeSlot(entry.dayTimeSelection)
+
+    if (getSelectedDayList(nextSelection).length === 0) {
+      await deleteSchedule(entry)
+      return
+    }
+
+    const targetKey = getScheduleKey(entry)
+    const nextDays = getSelectedDayList(nextSelection)
+    const nextTimes = getCombinedTimes(nextSelection)
+    let savedEntry = { ...entry, days: nextDays, times: nextTimes, dayTimeSelection: nextSelection, updatedAt: new Date().toISOString() }
+
+    if (supabase) {
+      // members 행은 캐릭터의 최근 정보라 그대로 다시 넣고, 스케줄 쪽만 시간을 줄인다.
+      const savedMember = storedMembers.find((member) => member.nickname === trimmedNickname) ?? entry
+      let result
+
+      try {
+        result = await saveMemberSchedule(
+          trimmedNickname,
+          sessionPassword,
+          {
+            attendance: savedMember.attendance,
+            class_name: savedMember.className,
+            power: savedMember.power,
+            lead_ready: savedMember.leadReady,
+          },
+          {
+            nickname: trimmedNickname,
+            raid_name: entry.raidName,
+            difficulty: entry.difficulty,
+            mode: entry.mode,
+            days: nextDays,
+            times: nextTimes,
+            day_time_selection: nextSelection,
+            attendance: entry.attendance,
+            class_name: entry.className,
+            power: entry.power,
+            lead_ready: entry.leadReady,
+          },
+        )
+      } catch (error) {
+        window.alert(`삭제에 실패했어요. (${error.message})`)
+        return
+      }
+
+      if (result?.error) {
+        window.alert(`삭제에 실패했어요. ${describeAuthResult(result.error)}`)
+        return
+      }
+
+      savedEntry = normalizeRaidScheduleEntry(result.schedule)
+    }
+
+    setRaidSchedules((prevSchedules) => prevSchedules.map((item) => (
+      item.nickname === trimmedNickname && getScheduleKey(item) === targetKey ? savedEntry : item
+    )))
+    setMembers((prevMembers) => prevMembers.map((member) => (
+      isScheduleMember(member, trimmedNickname, entry)
+        ? { ...member, days: nextDays, times: nextTimes, dayTimeSelection: nextSelection }
+        : member
+    )))
+    // 수정 중인 선택이 있으면 거기서도 같은 시간을 뺀다.
+    setDayTimeDrafts((prev) => (prev[targetKey] ? { ...prev, [targetKey]: removeSlot(prev[targetKey]) } : prev))
   }
 
   // DB 삭제 요청. 성공하면 true, 실패하면 알림을 띄우고 false.
@@ -2174,6 +2268,11 @@ function App() {
 
     if (target === 'all') {
       await clearCurrentSchedule()
+      return
+    }
+
+    if (target?.entry) {
+      await deleteScheduleSlot(target)
       return
     }
 
@@ -2689,13 +2788,24 @@ function App() {
       {pendingDelete && (
         <div className="save-confirm-backdrop" onClick={() => setPendingDelete(null)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>{pendingDelete === 'all' ? '내 스케줄을 전부 삭제할까요?' : '이 스케줄을 삭제할까요?'}</h3>
+            <h3>
+              {pendingDelete === 'all'
+                ? '내 스케줄을 전부 삭제할까요?'
+                : pendingDelete.entry
+                  ? `${describePendingSlot(pendingDelete)} 시간을 삭제할까요?`
+                  : '이 스케줄을 삭제할까요?'}
+            </h3>
             <p>
               <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
               {pendingDelete === 'all'
                 ? '의 모든 레이드 시간 정보를 삭제하시겠습니까'
-                : `의 ${pendingDelete.raidName} · ${pendingDelete.difficulty} · ${pendingDelete.mode} 레이드 시간 정보를 삭제하시겠습니까`}
+                : pendingDelete.entry
+                  ? `의 ${pendingDelete.entry.raidName} · ${pendingDelete.entry.difficulty} · ${pendingDelete.entry.mode} 스케줄에서 ${describePendingSlot(pendingDelete)} 시간을 삭제하시겠습니까`
+                  : `의 ${pendingDelete.raidName} · ${pendingDelete.difficulty} · ${pendingDelete.mode} 레이드 시간 정보를 삭제하시겠습니까`}
             </p>
+            {pendingDelete.entry && isLastSlotOfSchedule(pendingDelete) && (
+              <p className="save-confirm-note">남은 시간이 없어 이 스케줄이 통째로 삭제돼요.</p>
+            )}
             <div className="save-confirm-actions">
               <button type="button" className="secondary-button" onClick={() => setPendingDelete(null)}>
                 취소
@@ -2995,24 +3105,72 @@ function App() {
           </div>
 
           <div className="selected-summary saved-schedule-list">
-            <h3>내 저장된 스케줄</h3>
+            <div className="saved-schedule-head">
+              <h3>내 저장된 스케줄</h3>
+              {mySavedSchedules.length > 0 && <span className="saved-schedule-count">{mySavedSchedules.length}건</span>}
+            </div>
             {mySavedSchedules.length > 0 ? (
-              <ul>
-                {mySavedSchedules.map((entry) => (
-                  <li key={`${entry.raidName}-${entry.difficulty}-${entry.mode}`} className="saved-schedule-item">
-                    <div className="saved-schedule-info">
-                      <strong>
-                        {entry.raidName} · {entry.difficulty} · {entry.mode}
-                        {entry.attendance !== '참' && ' (불참)'}
-                      </strong>
-                      <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
-                    </div>
-                    <button type="button" className="saved-schedule-delete" onClick={() => setPendingDelete(entry)}>
-                      삭제
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <p className="saved-schedule-hint">시간을 누르면 그 시간만, 요일을 누르면 그 요일 전체를 지울 수 있어요.</p>
+                <ul>
+                  {mySavedSchedules.map((entry) => (
+                    <li
+                      key={`${entry.raidName}-${entry.difficulty}-${entry.mode}`}
+                      className={`saved-schedule-item ${entry.raidName === '비탄의 설원' ? 'raid-snow' : 'raid-muspel'}${entry.attendance !== '참' ? ' is-absent' : ''}`}
+                    >
+                      <div className="saved-schedule-top">
+                        <div className="saved-schedule-title">
+                          <strong>{entry.raidName}</strong>
+                          <span className={`saved-schedule-tag ${entry.difficulty === '어려움' ? 'tag-hard' : 'tag-normal'}`}>{entry.difficulty}</span>
+                          <span className="saved-schedule-tag">{entry.mode}</span>
+                          {entry.attendance !== '참' && <span className="saved-schedule-tag tag-absent">불참</span>}
+                        </div>
+                        <button
+                          type="button"
+                          className="saved-schedule-delete"
+                          onClick={() => setPendingDelete(entry)}
+                          aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 삭제`}
+                        >
+                          삭제
+                        </button>
+                      </div>
+                      <div className="saved-slot-days">
+                        {weekdayNames
+                          .filter((day) => (entry.dayTimeSelection?.[day] ?? []).length > 0)
+                          .map((day) => (
+                            <div key={day} className="saved-slot-day">
+                              <button
+                                type="button"
+                                className={`saved-slot-day-label${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
+                                onClick={() => setPendingDelete({ entry, day, time: null })}
+                                title={`${day}요일 시간 전체 삭제`}
+                                aria-label={`${day}요일 시간 전체 삭제`}
+                              >
+                                {day}
+                              </button>
+                              <div className="saved-slot-times">
+                                {[...entry.dayTimeSelection[day]]
+                                  .sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b))
+                                  .map((time) => (
+                                    <button
+                                      key={time}
+                                      type="button"
+                                      className="saved-slot-chip"
+                                      onClick={() => setPendingDelete({ entry, day, time })}
+                                      aria-label={`${day}요일 ${time} 삭제`}
+                                    >
+                                      <span className="saved-slot-chip-time">{time}</span>
+                                      <span className="saved-slot-chip-x" aria-hidden="true">×</span>
+                                    </button>
+                                  ))}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : (
               <p className="saved-schedule-empty">저장된 스케줄이 없어요.</p>
             )}
