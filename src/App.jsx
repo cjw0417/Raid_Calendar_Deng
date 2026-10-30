@@ -251,8 +251,6 @@ function timeToMinutes(time) {
   return hours * 60 + minutes
 }
 
-const sampleSlotData = []
-
 function buildEmptyDayTimeSelection() {
   return Object.fromEntries(weekdayNames.map((day) => [day, []]))
 }
@@ -317,6 +315,16 @@ function isScheduleMember(member, nickname, target) {
     && getRaidLabel(member.raidFocus) === target.raidName
     && (member.difficulty ?? getDifficultyForRaid(target.raidName)) === target.difficulty
     && (member.mode ?? '트라이') === target.mode
+}
+
+// 시간 목록을 순서와 상관없이 비교할 수 있는 문자열로 만든다. (빈 목록이면 '')
+function getSortedTimesKey(times) {
+  return [...(times ?? [])].sort().join(',')
+}
+
+// 스케줄 키 "무스펠|어려움|트라이"를 "무스펠 · 어려움 · 트라이"로 표시한다.
+function formatScheduleKey(key) {
+  return key.split('|').join(' · ')
 }
 
 // 시간 삭제 대상 { entry, day, time }을 "목요일 19:00" / "목요일 전체" 형태로 표시한다. (time이 null이면 그 요일 전체)
@@ -605,6 +613,15 @@ function LeadMark({ value }) {
   )
 }
 
+// 탭 옆 신청 인원 수. 0명이면 흐리게 보여 준다.
+function TabCount({ count }) {
+  return (
+    <span className={`tab-count ${count > 0 ? '' : 'is-zero'}`} aria-label={`${count}명`}>
+      {count}
+    </span>
+  )
+}
+
 function App() {
   const [currentTime, setCurrentTime] = useState(new Date())
   // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
@@ -615,6 +632,8 @@ function App() {
   const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 보통')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
+  // 로그인 직후 주간 슬롯 탭을 내 스케줄로 맞춰 둔 닉네임 (한 번만 맞춘다)
+  const [calendarTabAutoNickname, setCalendarTabAutoNickname] = useState('')
   const [helpOpen, setHelpOpen] = useState(false)
   const [calendarHelpOpen, setCalendarHelpOpen] = useState(false)
   const [mobileSection, setMobileSection] = useState(MOBILE_SECTIONS[0].id)
@@ -945,6 +964,9 @@ function App() {
     ?? savedCurrentSchedule?.dayTimeSelection
     ?? buildEmptyDayTimeSelection()
   const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
+  // 시간 복사: 지금 고르고 있는 요일의 시간 (비어 있으면 복사 줄을 숨긴다)과 복사할 수 있는 나머지 요일
+  const selectedDayTimesKey = getSortedTimesKey(currentDayTimeSelection[selectedDayForTimes])
+  const copyTargetDays = weekdayNames.filter((day) => day !== selectedDayForTimes)
 
   // 같은 계정(본캐 + 부캐)이 이번 주에 이미 참여로 신청한 시간 ("요일|시간" → 그 신청).
   // 지금 고치고 있는 스케줄(같은 캐릭터 · 같은 레이드 조합)은 덮어쓸 것이라 뺀다. DB의 _schedule_time_conflict와 같은 기준이다.
@@ -1347,6 +1369,150 @@ function App() {
       )
   }, [currentNickname, raidSchedules])
 
+  // 탭별 신청 인원 ("무스펠 어려움 트라이" → 닉네임 Set). 레이드 · 공략 방식 탭에 인원 수로 보여 준다.
+  const tabNicknames = useMemo(() => {
+    const map = new Map()
+
+    memberByRaidDateTime.forEach((peopleByTab) => {
+      Object.entries(peopleByTab).forEach(([tabKey, people]) => {
+        const nicknames = map.get(tabKey) ?? new Set()
+        people.forEach((person) => nicknames.add(person.nickname))
+        map.set(tabKey, nicknames)
+      })
+    })
+
+    return map
+  }, [memberByRaidDateTime])
+
+  const countTabMembers = (raid, difficulty, modes) => (
+    new Set(modes.flatMap((mode) => [...(tabNicknames.get(`${raid} ${difficulty} ${mode}`) ?? [])])).size
+  )
+
+  // 주간 레이드 슬롯 탭을 레이드 조합 하나에 맞춘다.
+  const showScheduleInCalendar = ({ raidName, difficulty, mode }) => {
+    const tab = raidTabOptions.find((option) => option.raid === raidName && option.difficulty === difficulty)
+
+    if (tab) {
+      setActiveRaidTab(tab.label)
+    }
+
+    if (modeOptions.includes(mode)) {
+      setActiveModeTab(mode)
+    }
+  }
+
+  // 폼에서 레이드 조합을 고르면 주간 슬롯도 같은 탭을 보여 준다. (내 시간 표시가 바로 보이도록)
+  useEffect(() => {
+    if (currentScheduleKey) {
+      const [raidName, difficulty, mode] = currentScheduleKey.split('|')
+      showScheduleInCalendar({ raidName, difficulty, mode })
+    }
+  }, [currentScheduleKey])
+
+  // 로그인하면 주간 슬롯을 내가 저장한 첫 스케줄 탭으로 연다. 닉네임마다 한 번만 맞추고 이후엔 사용자가 고른 탭을 둔다.
+  useEffect(() => {
+    if (!loggedInNickname || calendarTabAutoNickname === loggedInNickname || mySavedSchedules.length === 0) {
+      return
+    }
+
+    setCalendarTabAutoNickname(loggedInNickname)
+
+    if (!currentScheduleKey) {
+      showScheduleInCalendar(mySavedSchedules[0])
+    }
+  }, [loggedInNickname, mySavedSchedules])
+
+  // 저장하지 않은 요일/시간 변경이 있는 레이드 조합 키 목록 (지금 캐릭터 기준)
+  const unsavedScheduleKeys = useMemo(
+    () => Object.entries(dayTimeDrafts)
+      .filter(([key, draft]) => {
+        const saved = raidSchedules.find((entry) => entry.nickname === currentNickname && getScheduleKey(entry) === key)
+        return formatDayTimeSelection(normalizeDayTimeSelection(draft)) !== formatDayTimeSelection(saved?.dayTimeSelection)
+      })
+      .map(([key]) => key),
+    [dayTimeDrafts, raidSchedules, currentNickname],
+  )
+  const hasUnsavedChanges = unsavedScheduleKeys.length > 0
+
+  // 저장하지 않은 변경이 있으면 새로고침 · 창 닫기 전에 브라우저가 한 번 묻는다.
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return undefined
+    }
+
+    const warnBeforeUnload = (event) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [hasUnsavedChanges])
+
+  // 저장하지 않은 변경이 사라지는 동작(로그아웃 · 캐릭터 변경) 전에 확인한다. 진행해도 되면 true.
+  const confirmDiscardUnsaved = () => (
+    !hasUnsavedChanges
+    || window.confirm(`저장하지 않은 시간 변경이 있어요.\n\n${unsavedScheduleKeys.map(formatScheduleKey).join('\n')}\n\n저장하지 않고 넘어갈까요?`)
+  )
+
+  // 저장된 스케줄을 폼에 불러와 바로 고칠 수 있게 한다.
+  const editSavedSchedule = (entry) => {
+    const raid = raidOptions.find((option) => option.label === entry.raidName)
+
+    setProfile((prev) => ({
+      ...prev,
+      raidFocus: raid?.id ?? entry.raidName,
+      difficulty: entry.difficulty,
+      mode: entry.mode,
+      attendance: entry.attendance,
+      className: entry.className,
+      power: entry.power,
+      leadReady: entry.leadReady,
+    }))
+    setSelectedDayForTimes(getSelectedDayList(entry.dayTimeSelection)[0] ?? '')
+
+    // 주말 낮시간(12~16시)이 들어 있으면 고칠 수 있게 낮시간을 켠다.
+    if (getDayTimePairs(entry.dayTimeSelection).some(([, time]) => hiddenWeekdayTimeSlots.includes(time))) {
+      setShowDaytimeSlots(true)
+    }
+
+    document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  // 고르고 있는 요일의 시간을 다른 요일에 그대로 복사한다. (그 요일의 기존 선택은 바뀐다)
+  // 그 요일에 없는 시간대이거나 같은 계정이 이미 신청한 시간은 빼고 알려 준다.
+  const copyTimesToDays = (targetDays) => {
+    const sourceDay = selectedDayForTimes
+
+    if (!currentScheduleKey || !sourceDay) {
+      return
+    }
+
+    const sourceTimes = currentDayTimeSelection[sourceDay] ?? []
+    const nextSelection = normalizeDayTimeSelection(currentDayTimeSelection)
+    const skipped = []
+
+    targetDays.forEach((day) => {
+      const selectableTimes = getSelectableTimesForSelectedDay(day)
+
+      nextSelection[day] = sourceTimes.filter((time) => {
+        const canSelect = selectableTimes.includes(time) && !takenSlots.has(`${day}|${time}`)
+
+        if (!canSelect) {
+          skipped.push(`${day} ${time}`)
+        }
+
+        return canSelect
+      })
+    })
+
+    setDayTimeDrafts((prev) => ({ ...prev, [currentScheduleKey]: nextSelection }))
+
+    if (skipped.length > 0) {
+      window.alert(`아래 시간은 그 요일에 없는 시간대이거나 이미 신청한 시간이라 빼고 복사했어요.\n\n${skipped.join(', ')}`)
+    }
+  }
+
   const activeRaidScheduleEntries = useMemo(() => {
     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
 
@@ -1597,7 +1763,12 @@ function App() {
   }
 
   const handleLogout = () => {
+    if (!confirmDiscardUnsaved()) {
+      return
+    }
+
     setLoggedInNickname('')
+    setCalendarTabAutoNickname('')
     setActiveCharacter('')
     setAltManagerOpen(false)
     setLoginNickname('')
@@ -2932,7 +3103,7 @@ function App() {
                 <select
                   id="nickname"
                   value={currentNickname}
-                  onChange={(event) => switchCharacter(event.target.value)}
+                  onChange={(event) => confirmDiscardUnsaved() && switchCharacter(event.target.value)}
                   title="신청할 캐릭터를 골라요. 부캐도 본캐 비밀번호로 저장돼요."
                 >
                   {myCharacters.map((nickname) => (
@@ -2965,7 +3136,7 @@ function App() {
             </div>
           </div>
 
-          <div className="field-group">
+          <div className="field-group" id="schedule-day-field">
             <label>요일 선택</label>
             {!isScheduleTargetSelected && (
               <p className="field-hint">레이드, 난이도, 공략 방식을 먼저 선택해 주세요.</p>
@@ -3039,6 +3210,33 @@ function App() {
                 )
               })}
             </div>
+            {/* 고른 요일의 시간을 다른 요일에 그대로 복사한다. 이미 같은 시간인 요일은 ✓로 보여 준다. */}
+            {isScheduleTargetSelected && selectedDayTimesKey && (
+              <div className="copy-times-row">
+                <span className="copy-times-label">{selectedDayForTimes}요일 시간을 다른 요일에 복사</span>
+                <div className="copy-times-days">
+                  {copyTargetDays.map((day) => {
+                    const isSame = getSortedTimesKey(currentDayTimeSelection[day]) === selectedDayTimesKey
+
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        className={`copy-day-chip ${isSame ? 'is-same' : ''}`}
+                        onClick={() => copyTimesToDays([day])}
+                        title={isSame ? `${day}요일은 이미 같은 시간이에요.` : `${day}요일을 ${selectedDayForTimes}요일과 같은 시간으로 바꿔요.`}
+                      >
+                        {isSame && <span aria-hidden="true">✓</span>}
+                        {day}
+                      </button>
+                    )
+                  })}
+                  <button type="button" className="copy-day-chip is-all" onClick={() => copyTimesToDays(copyTargetDays)}>
+                    전체
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="two-column">
@@ -3113,68 +3311,94 @@ function App() {
               <>
                 <p className="saved-schedule-hint">시간을 누르면 그 시간만, 요일을 누르면 그 요일 전체를 지울 수 있어요.</p>
                 <ul>
-                  {mySavedSchedules.map((entry) => (
-                    <li
-                      key={`${entry.raidName}-${entry.difficulty}-${entry.mode}`}
-                      className={`saved-schedule-item ${entry.raidName === '비탄의 설원' ? 'raid-snow' : 'raid-muspel'}${entry.attendance !== '참' ? ' is-absent' : ''}`}
-                    >
-                      <div className="saved-schedule-top">
-                        <div className="saved-schedule-title">
-                          <strong>{entry.raidName}</strong>
-                          <span className={`saved-schedule-tag ${entry.difficulty === '어려움' ? 'tag-hard' : 'tag-normal'}`}>{entry.difficulty}</span>
-                          <span className="saved-schedule-tag">{entry.mode}</span>
-                          {entry.attendance !== '참' && <span className="saved-schedule-tag tag-absent">불참</span>}
+                  {mySavedSchedules.map((entry) => {
+                    const entryKey = getScheduleKey(entry)
+                    const isEditing = entryKey === currentScheduleKey
+                    const isUnsaved = unsavedScheduleKeys.includes(entryKey)
+
+                    return (
+                      <li
+                        key={entryKey}
+                        className={`saved-schedule-item ${entry.raidName === '비탄의 설원' ? 'raid-snow' : 'raid-muspel'}${entry.attendance !== '참' ? ' is-absent' : ''}${isEditing ? ' is-editing' : ''}`}
+                      >
+                        <div className="saved-schedule-top">
+                          <div className="saved-schedule-title">
+                            <strong>{entry.raidName}</strong>
+                            <span className={`saved-schedule-tag ${entry.difficulty === '어려움' ? 'tag-hard' : 'tag-normal'}`}>{entry.difficulty}</span>
+                            <span className="saved-schedule-tag">{entry.mode}</span>
+                            {entry.attendance !== '참' && <span className="saved-schedule-tag tag-absent">불참</span>}
+                            {isUnsaved && <span className="saved-schedule-tag tag-unsaved">저장 안 됨</span>}
+                          </div>
+                          <div className="saved-schedule-actions">
+                            <button
+                              type="button"
+                              className="saved-schedule-edit"
+                              onClick={() => editSavedSchedule(entry)}
+                              disabled={isEditing}
+                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 수정`}
+                            >
+                              {isEditing ? '수정 중' : '수정'}
+                            </button>
+                            <button
+                              type="button"
+                              className="saved-schedule-delete"
+                              onClick={() => setPendingDelete(entry)}
+                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 삭제`}
+                            >
+                              삭제
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          className="saved-schedule-delete"
-                          onClick={() => setPendingDelete(entry)}
-                          aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 삭제`}
-                        >
-                          삭제
-                        </button>
-                      </div>
-                      <div className="saved-slot-days">
-                        {weekdayNames
-                          .filter((day) => (entry.dayTimeSelection?.[day] ?? []).length > 0)
-                          .map((day) => (
-                            <div key={day} className="saved-slot-day">
-                              <button
-                                type="button"
-                                className={`saved-slot-day-label${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
-                                onClick={() => setPendingDelete({ entry, day, time: null })}
-                                title={`${day}요일 시간 전체 삭제`}
-                                aria-label={`${day}요일 시간 전체 삭제`}
-                              >
-                                {day}
-                              </button>
-                              <div className="saved-slot-times">
-                                {[...entry.dayTimeSelection[day]]
-                                  .sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b))
-                                  .map((time) => (
-                                    <button
-                                      key={time}
-                                      type="button"
-                                      className="saved-slot-chip"
-                                      onClick={() => setPendingDelete({ entry, day, time })}
-                                      aria-label={`${day}요일 ${time} 삭제`}
-                                    >
-                                      <span className="saved-slot-chip-time">{time}</span>
-                                      <span className="saved-slot-chip-x" aria-hidden="true">×</span>
-                                    </button>
-                                  ))}
+                        <div className="saved-slot-days">
+                          {weekdayNames
+                            .filter((day) => (entry.dayTimeSelection?.[day] ?? []).length > 0)
+                            .map((day) => (
+                              <div key={day} className="saved-slot-day">
+                                <button
+                                  type="button"
+                                  className={`saved-slot-day-label${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
+                                  onClick={() => setPendingDelete({ entry, day, time: null })}
+                                  title={`${day}요일 시간 전체 삭제`}
+                                  aria-label={`${day}요일 시간 전체 삭제`}
+                                >
+                                  {day}
+                                </button>
+                                <div className="saved-slot-times">
+                                  {[...entry.dayTimeSelection[day]]
+                                    .sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b))
+                                    .map((time) => (
+                                      <button
+                                        key={time}
+                                        type="button"
+                                        className="saved-slot-chip"
+                                        onClick={() => setPendingDelete({ entry, day, time })}
+                                        aria-label={`${day}요일 ${time} 삭제`}
+                                      >
+                                        <span className="saved-slot-chip-time">{time}</span>
+                                        <span className="saved-slot-chip-x" aria-hidden="true">×</span>
+                                      </button>
+                                    ))}
+                                </div>
                               </div>
-                            </div>
-                          ))}
-                      </div>
-                    </li>
-                  ))}
+                            ))}
+                        </div>
+                      </li>
+                    )
+                  })}
                 </ul>
               </>
             ) : (
               <p className="saved-schedule-empty">저장된 스케줄이 없어요.</p>
             )}
           </div>
+
+          {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
+          {hasUnsavedChanges && (
+            <div className="unsaved-notice" role="status">
+              <strong>저장하지 않은 변경이 있어요</strong>
+              <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
+            </div>
+          )}
 
           <div className="member-actions">
             <button type="button" className="primary-button" onClick={openSaveConfirm}>
@@ -3542,6 +3766,7 @@ function App() {
                   aria-selected={activeRaidTab === tab.label}
                 >
                   {tab.label}
+                  <TabCount count={countTabMembers(tab.raid, tab.difficulty, modeOptions)} />
                 </button>
               ))}
             </div>
@@ -3557,6 +3782,7 @@ function App() {
                   aria-selected={activeModeTab === mode}
                 >
                   {mode}
+                  <TabCount count={countTabMembers(activeTabMeta.raid, activeTabMeta.difficulty, [mode])} />
                 </button>
               ))}
             </div>
@@ -3576,51 +3802,51 @@ function App() {
             })}
 
             {timeSlots.map((time) => {
-              const shouldCollapseRow = !showDaytimeSlots && hiddenWeekdayTimeSlots.includes(time)
+              // 낮시간을 숨기면 그 줄을 아예 그리지 않는다. (그리면 빈 줄 사이 간격이 남는다)
+              if (!showDaytimeSlots && hiddenWeekdayTimeSlots.includes(time)) {
+                return null
+              }
 
               return (
                 <Fragment key={time}>
-                  <div className={`time-label ${shouldCollapseRow ? 'accordion-collapsed' : ''}`}>{time}</div>
-                  {weekDates.map((date, dayIndex) => {
+                  <div className="time-label">{time}</div>
+                  {weekDates.map((date) => {
                     const currentDaySlots = getDayTimeSlots(date)
                     const isVisibleTime = currentDaySlots.includes(time)
                     const dayLabel = date.toLocaleDateString('ko-KR', { weekday: 'short' })
-                    const slot = sampleSlotData.find(
-                      (entry) => entry.dayIndex === dayIndex && entry.time === time,
-                    )
                     const raidPeople = memberByRaidDateTime.get(`${dayLabel}-${time}`) ?? {}
                     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
                     const people = raidPeople[tabKey] ?? []
                     const partyA = people.slice(0, 5)
                     const partyB = people.slice(5, 10)
+                    const isMySlot = myScheduleSet.has(`${dayLabel}-${time}`)
 
-                    if (!isVisibleTime || shouldCollapseRow) {
-                      return <div key={`${date.toISOString()}-${time}-empty`} className={`slot-cell empty muted-slot ${shouldCollapseRow ? 'accordion-collapsed' : ''}`} />
+                    if (!isVisibleTime) {
+                      return <div key={`${date.toISOString()}-${time}-empty`} className="slot-cell empty muted-slot" />
+                    }
+
+                    // 신청이 없는 칸은 흐린 '-'만 남겨 신청이 있는 칸이 눈에 띄게 한다.
+                    if (people.length === 0) {
+                      return (
+                        <div
+                          key={`${date.toISOString()}-${time}`}
+                          className={`slot-cell empty is-vacant ${isMySlot ? 'my-schedule-slot' : ''}`}
+                        >
+                          {isMySlot && <span className="my-slot-badge">내 시간</span>}
+                          <span className="empty-text">-</span>
+                        </div>
+                      )
                     }
 
                     return (
                       <div
                         key={`${date.toISOString()}-${time}`}
-                        className={`slot-cell ${slot ? 'occupied' : 'empty'} ${myScheduleSet.has(`${dayLabel}-${time}`) ? 'my-schedule-slot' : ''}`}
+                        className={`slot-cell occupied ${isMySlot ? 'my-schedule-slot' : ''}`}
                       >
-                        {myScheduleSet.has(`${dayLabel}-${time}`) && (
-                          <span className="my-slot-badge">내 시간</span>
-                        )}
-                        {slot ? (
-                          <>
-                            <strong>{activeTabMeta.raid}</strong>
-                            <span>{activeTabMeta.difficulty} · {activeModeTab}</span>
-                            <small>
-                              A {partyA.length}/5 · B {partyB.length}/5
-                            </small>
-                          </>
-                        ) : (
-                          <span className="empty-text">비어 있음</span>
-                        )}
+                        {isMySlot && <span className="my-slot-badge">내 시간</span>}
 
                         <div className="raid-group-list">
                           <div className="raid-group-item selected-raid-item">
-                            <span className="raid-group-label">{activeTabMeta.label}</span>
                             <div className="party-split">
                               <div className="party-column">
                                 <span className="party-label">A</span>
