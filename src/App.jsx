@@ -42,6 +42,10 @@ const RAID_FULL_SIZE = 10
 const RAID_ONGOING_MS = 60 * 60 * 1000
 // 토스트 알림이 떠 있는 시간 (ms)
 const TOAST_DURATION = { info: 3500, success: 3000, error: 6000 }
+// 되돌리기 같은 버튼이 달린 알림은 누를 시간을 넉넉히 준다.
+const TOAST_ACTION_DURATION = 8000
+// '내 레이드만 보기' 설정을 이 브라우저에 기억해 둔다.
+const ONLY_MINE_STORAGE_KEY = 'raid-calendar-only-mine-v1'
 // 준비 확인 동작이 끝났을 때 알림 문구
 const RALLY_SUCCESS_MESSAGES = {
   call: '준비 확인을 시작했어요.',
@@ -341,13 +345,6 @@ function describePendingSlot({ day, time }) {
   return `${day}요일 ${time ?? '전체'}`
 }
 
-// 이 시간을 빼면 스케줄에 남는 시간이 없는지.
-function isLastSlotOfSchedule({ entry, day, time }) {
-  const dayTimes = entry.dayTimeSelection?.[day] ?? []
-  const removedCount = time ? (dayTimes.includes(time) ? 1 : 0) : dayTimes.length
-  return getDayTimePairs(entry.dayTimeSelection).length <= removedCount
-}
-
 // 요일별 시간 선택을 "목 19:00 / 금 20:00, 21:00" 형태로 표시한다.
 function formatDayTimeSelection(dayTimeSelection) {
   return weekdayNames
@@ -393,6 +390,41 @@ function formatTimeUntil(diffMs) {
   }
 
   return hours > 0 ? `${hours}시간 ${minutes}분 후` : `${minutes}분 후`
+}
+
+// 전투력 구간 "600~700k"를 비교할 수 있는 숫자(아래쪽 값)로 바꾼다. 알 수 없으면 0.
+function getPowerValue(power) {
+  const matched = String(power ?? '').match(/\d+/)
+  return matched ? Number(matched[0]) : 0
+}
+
+// 한 타임 인원을 A/B 파티로 나눈다. 리딩 가능자를 양쪽에 번갈아 먼저 넣고, 나머지는 전투력이 높은 순으로
+// 전투력 합이 낮은 파티에 넣는다. 정원(10명)을 넘는 인원은 신청 순서대로 대기로 둔다.
+function buildBalancedParties(people) {
+  const partySize = RAID_FULL_SIZE / 2
+  const ordered = people
+    .slice(0, RAID_FULL_SIZE)
+    .sort((a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power))
+  const parties = [[], []]
+  const powerTotals = [0, 0]
+  const leaderCounts = [0, 0]
+
+  ordered.forEach((member) => {
+    const isLeader = member.leadReady === 'O'
+    let index = isLeader
+      ? (leaderCounts[0] <= leaderCounts[1] ? 0 : 1)
+      : (powerTotals[0] <= powerTotals[1] ? 0 : 1)
+
+    if (parties[index].length >= partySize) {
+      index = 1 - index
+    }
+
+    parties[index].push(member)
+    powerTotals[index] += getPowerValue(member.power)
+    leaderCounts[index] += isLeader ? 1 : 0
+  })
+
+  return { partyA: parties[0], partyB: parties[1], waiting: people.slice(RAID_FULL_SIZE) }
 }
 
 // 레이드 · 난이도 · 공략 방식 순으로 정렬한다.
@@ -673,6 +705,42 @@ function TabCount({ count }) {
   )
 }
 
+// 1초마다 바뀌는 표시는 이 작은 컴포넌트들만 다시 그린다. (화면 전체는 1분마다만 다시 계산한다)
+function useSecondTicker() {
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  return now
+}
+
+function LiveClock() {
+  const now = useSecondTicker()
+  return <strong>{now.toLocaleString('ko-KR')}</strong>
+}
+
+function ResetCountdown() {
+  const now = useSecondTicker()
+  const nextReset = getNextResetDate()
+  const totalSeconds = Math.max(0, Math.floor((nextReset.getTime() - now.getTime()) / 1000))
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  return (
+    <>
+      <strong>{nextReset.toLocaleString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })}</strong>
+      <small>
+        {days}일 {hours}시간 {minutes}분 {seconds}초 후
+      </small>
+    </>
+  )
+}
+
 // 멤버 칩에 마우스를 올리면 보이는 상세 정보. (터치 기기에서는 칩을 누르면 같은 내용을 팝업으로 보여 준다)
 function MemberTooltip({ member, ownerNickname, showLead = false }) {
   return (
@@ -689,12 +757,12 @@ function MemberTooltip({ member, ownerNickname, showLead = false }) {
 }
 
 function App() {
-  const [currentTime, setCurrentTime] = useState(new Date())
+  // 화면 계산에 쓰는 현재 시각. 1분마다만 바뀐다. (초 단위 시계는 LiveClock · ResetCountdown이 따로 그린다)
+  const [currentTime, setCurrentTime] = useState(() => new Date())
   // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
   const weekStartTime = getWeekStart(currentTime).getTime()
   const weekDates = useMemo(() => getWeekDates(weekStartTime), [weekStartTime])
   const todayStartTime = new Date(currentTime).setHours(0, 0, 0, 0)
-  const [nextReset, setNextReset] = useState(() => getNextResetDate())
   const [holidaySet, setHolidaySet] = useState(() => buildFallbackHolidaySet(new Date().getFullYear()))
   const [activeRaidTab, setActiveRaidTab] = useState('무스펠 보통')
   const [activeModeTab, setActiveModeTab] = useState('트라이')
@@ -764,8 +832,20 @@ function App() {
     [storedRaidSchedules, weekStartTime],
   )
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
-  // 삭제 확인 팝업 대상: 'all'(전체 삭제) 또는 삭제할 스케줄 한 건
-  const [pendingDelete, setPendingDelete] = useState(null)
+  // '내 스케줄 전체 삭제' 확인 팝업 (한 건 · 한 시간 삭제는 확인 없이 지우고 되돌리기를 띄운다)
+  const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false)
+  // 요일별 신청 현황에서 내가 신청한 시간대만 보기 (이 브라우저에 기억)
+  const [showOnlyMine, setShowOnlyMine] = useState(() => {
+    try {
+      return localStorage.getItem(ONLY_MINE_STORAGE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  // 모바일 주간 캘린더에서 보고 있는 요일 (weekdayNames 순서, 기본은 오늘)
+  const [mobileCalendarDayIndex, setMobileCalendarDayIndex] = useState(() => (new Date().getDay() + 4) % 7)
+  // 추천 시간을 눌러 잠깐 강조할 캘린더 칸 ("요일-시간")
+  const [highlightedSlotKey, setHighlightedSlotKey] = useState('')
   // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
   const [dayTimeDrafts, setDayTimeDrafts] = useState({})
   // 이번 주(수요일 시작) 시간대별 준비 / 클리어 기록
@@ -948,10 +1028,12 @@ function App() {
   }, [weekStartKey])
 
   useEffect(() => {
+    // 분이 바뀌었을 때만 새 시각을 넣는다. (같은 값이면 다시 그리지 않는다)
     const timer = setInterval(() => {
-      setCurrentTime(new Date())
-      setNextReset(getNextResetDate())
-    }, 1000)
+      setCurrentTime((prev) => (
+        Math.floor(prev.getTime() / 60000) === Math.floor(Date.now() / 60000) ? prev : new Date()
+      ))
+    }, 5000)
 
     return () => clearInterval(timer)
   }, [])
@@ -971,14 +1053,15 @@ function App() {
   }, [])
 
   // key를 주면 같은 key의 알림은 쌓지 않고 새 알림으로 바꾼다. (나중에 key로 한꺼번에 지울 수도 있다)
-  const showToast = (message, type = 'info', key = '') => {
+  // action: { label, onClick } 을 주면 알림 안에 버튼(예: 되돌리기)을 달고 조금 더 오래 띄운다.
+  const showToast = (message, type = 'info', key = '', action = null) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 
     // 한꺼번에 많이 쌓이지 않게 최근 3개만 둔다.
-    setToasts((prev) => [...prev.filter((toast) => !key || toast.key !== key).slice(-2), { id, message, type, key }])
+    setToasts((prev) => [...prev.filter((toast) => !key || toast.key !== key).slice(-2), { id, message, type, key, action }])
     setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
-    }, TOAST_DURATION[type] ?? TOAST_DURATION.info)
+    }, action ? TOAST_ACTION_DURATION : (TOAST_DURATION[type] ?? TOAST_DURATION.info))
   }
 
   const dismissToast = (id) => {
@@ -1010,17 +1093,6 @@ function App() {
       setActiveRaidTab(visibleRaidTabs[0]?.label ?? '무스펠 보통')
     }
   }, [activeRaidTab, visibleRaidTabs])
-
-  const countdown = useMemo(() => {
-    const diff = nextReset.getTime() - currentTime.getTime()
-    const totalSeconds = Math.max(0, Math.floor(diff / 1000))
-    const days = Math.floor(totalSeconds / 86400)
-    const hours = Math.floor((totalSeconds % 86400) / 3600)
-    const minutes = Math.floor((totalSeconds % 3600) / 60)
-    const seconds = totalSeconds % 60
-
-    return { days, hours, minutes, seconds }
-  }, [currentTime, nextReset])
 
   const getSelectableTimesForSelectedDay = (day) => {
     if (!day || !weekdayNames.includes(day)) {
@@ -1339,40 +1411,7 @@ function App() {
     return weekendTimeSlots
   }
 
-  const isWeekendOrHoliday = (date) => {
-    const day = date.getDay()
-    const isoKey = formatIsoDate(date)
-    return day === 0 || day === 6 || holidaySet.has(isoKey)
-  }
-
   const isSharedMode = Boolean(supabase)
-
-  const memberByDay = useMemo(() => {
-    const map = Object.fromEntries(weekdayNames.map((day) => [day, []]))
-
-    allScheduleEntries.forEach((entry) => {
-      if (!hasActiveScheduleSelection(entry)) return
-
-      entry.days.forEach((day) => {
-        if (!map[day]) return
-
-        const exists = map[day].some(
-          (member) => member.nickname === entry.nickname && member.className === entry.className,
-        )
-
-        if (!exists) {
-          map[day].push({
-            nickname: entry.nickname,
-            className: entry.className,
-            power: entry.power,
-            leadReady: entry.leadReady,
-          })
-        }
-      })
-    })
-
-    return map
-  }, [allScheduleEntries])
 
   const memberByRaidDifficulty = useMemo(() => {
     const map = new Map()
@@ -1582,6 +1621,11 @@ function App() {
       .sort(compareSchedules)
   }, [currentNickname, raidSchedules, storedRaidSchedules, weekStartTime])
 
+  // 이번 주에서 이미 지난 시간대인지 (시작하고 RAID_ONGOING_MS가 지나면 지난 것으로 본다)
+  const isPastSlot = (day, time) => (
+    getSlotStartDate(weekDates, day, time).getTime() + RAID_ONGOING_MS <= currentTime.getTime()
+  )
+
   // 내 캐릭터(본캐 + 부캐)가 참여로 신청한 이번 주 시간대 중 아직 끝나지 않은 것 (가까운 순).
   // 1초마다 다시 계산하지 않도록 분 단위로만 갱신한다.
   const currentMinute = Math.floor(currentTime.getTime() / 60000)
@@ -1712,17 +1756,6 @@ function App() {
 
     document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
-
-  const activeRaidScheduleEntries = useMemo(() => {
-    const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
-
-    return weekdayNames.flatMap((day) =>
-      timeSlots.map((time) => {
-        const people = memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []
-        return people.length > 0 ? { day, time, people } : null
-      }).filter(Boolean),
-    )
-  }, [activeModeTab, activeTabMeta, memberByRaidDateTime])
 
   const handleLogin = async (event) => {
     event.preventDefault()
@@ -2304,6 +2337,9 @@ function App() {
       return
     }
 
+    // 직업 · 전투력 · 리딩이 바뀌었으면 이 캐릭터의 다른 신청에도 함께 반영한다.
+    const outdatedSchedules = getOutdatedCharacterSchedules([scheduleKey])
+
     setIsSaving(true)
 
     try {
@@ -2319,9 +2355,129 @@ function App() {
         delete nextDrafts[scheduleKey]
         return nextDrafts
       })
-      showToast(`${nickname} · ${formatScheduleKey(scheduleKey)} 저장했어요.`, 'success')
+
+      const syncedCount = await syncCharacterInfo(nickname, outdatedSchedules)
+      showToast(
+        `${nickname} · ${formatScheduleKey(scheduleKey)} 저장했어요.${syncedCount > 0 ? `\n다른 신청 ${syncedCount}건에도 캐릭터 정보를 반영했어요.` : ''}`,
+        'success',
+      )
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  // '내 캐릭터' 칸(직업 · 전투력 · 리딩)을 다 골랐는지
+  const isCharacterInfoComplete = Boolean(profile.className && profile.power && profile.leadReady)
+
+  // 이 캐릭터의 저장된 신청 중 직업 · 전투력 · 리딩이 '내 캐릭터' 칸과 다른 것 (exceptKeys 조합은 뺀다)
+  const getOutdatedCharacterSchedules = (exceptKeys = []) => (
+    isCharacterInfoComplete
+      ? mySavedSchedules.filter((entry) => (
+        !exceptKeys.includes(getScheduleKey(entry))
+        && (entry.className !== profile.className
+          || entry.power !== profile.power
+          || entry.leadReady !== normalizeLeadReady(profile.leadReady))
+      ))
+      : []
+  )
+  const outdatedCharacterSchedules = getOutdatedCharacterSchedules()
+
+  // 저장된 신청에 지금 '내 캐릭터' 정보를 반영한다. (요일 · 시간과 참여 여부는 그대로) 반영한 건수를 돌려준다.
+  const syncCharacterInfo = async (nickname, entries) => {
+    let syncedCount = 0
+
+    for (const entry of entries) {
+      const info = { attendance: entry.attendance, className: profile.className, power: profile.power, leadReady: profile.leadReady }
+
+      // 실패하면 이미 알림을 띄웠으니 나머지는 멈춘다.
+      if (!(await persistSchedule(nickname, info, entry, entry.dayTimeSelection))) {
+        break
+      }
+
+      syncedCount += 1
+    }
+
+    return syncedCount
+  }
+
+  const handleCharacterSyncClick = async () => {
+    const nickname = currentNickname
+
+    if (!nickname || isSaving || outdatedCharacterSchedules.length === 0) {
+      return
+    }
+
+    setIsSaving(true)
+
+    try {
+      const syncedCount = await syncCharacterInfo(nickname, outdatedCharacterSchedules)
+
+      if (syncedCount > 0) {
+        showToast(`저장된 신청 ${syncedCount}건에 캐릭터 정보를 반영했어요.`, 'success')
+      }
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  // 저장하지 않은 레이드 조합을 한꺼번에 저장한다.
+  // 참여 여부는 지금 폼의 조합이면 폼 값, 아니면 그 조합에 저장돼 있던 값(없으면 폼 값)을 쓴다.
+  const handleSaveAllClick = async () => {
+    const nickname = currentNickname
+
+    if (!nickname || isSaving) {
+      return
+    }
+
+    if (!isCharacterInfoComplete) {
+      showToast('내 캐릭터의 직업 · 전투력 · 리딩 여부를 먼저 골라 주세요.', 'error')
+      return
+    }
+
+    const targetKeys = [...unsavedScheduleKeys]
+    const skipped = []
+    let savedCount = 0
+
+    setIsSaving(true)
+
+    try {
+      for (const key of targetKeys) {
+        const [raidName, difficulty, mode] = key.split('|')
+        const selection = normalizeDayTimeSelection(dayTimeDrafts[key])
+        const savedEntry = raidSchedules.find((entry) => entry.nickname === nickname && getScheduleKey(entry) === key)
+        const attendance = key === currentScheduleKey ? profile.attendance : (savedEntry?.attendance ?? profile.attendance)
+
+        // 시간을 모두 뺀 조합은 저장 대신 삭제를 해야 해서 건너뛴다.
+        if (getSelectedDayList(selection).length === 0 || !attendance) {
+          skipped.push(formatScheduleKey(key))
+          continue
+        }
+
+        const info = { attendance, className: profile.className, power: profile.power, leadReady: profile.leadReady }
+
+        if (!(await persistSchedule(nickname, info, { raidName, difficulty, mode }, selection))) {
+          break
+        }
+
+        savedCount += 1
+        setDayTimeDrafts((prev) => {
+          const nextDrafts = { ...prev }
+          delete nextDrafts[key]
+          return nextDrafts
+        })
+      }
+
+      const syncedCount = savedCount > 0 ? await syncCharacterInfo(nickname, getOutdatedCharacterSchedules(targetKeys)) : 0
+
+      if (savedCount > 0) {
+        showToast(`${savedCount}건 저장했어요.${syncedCount > 0 ? `\n다른 신청 ${syncedCount}건에도 캐릭터 정보를 반영했어요.` : ''}`, 'success')
+      }
+    } finally {
+      setIsSaving(false)
+    }
+
+    if (skipped.length > 0) {
+      showToast(`시간이 비어 있거나 참여 여부가 없어 건너뛰었어요: ${skipped.join(' / ')}`, 'info')
     }
   }
 
@@ -2418,7 +2574,7 @@ function App() {
     showToast(`${trimmedNickname}의 스케줄을 모두 삭제했어요.`, 'success')
   }
 
-  // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다.
+  // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다. 성공하면 true.
   const deleteSchedule = async (target) => {
     const trimmedNickname = currentNickname
 
@@ -2442,11 +2598,11 @@ function App() {
       delete nextDrafts[targetKey]
       return nextDrafts
     })
-    showToast(`${formatScheduleKey(targetKey)} 스케줄을 삭제했어요.`, 'success')
+    return true
   }
 
   // 저장된 스케줄 한 건에서 요일 하나(time이 null) 또는 요일 · 시간 하나만 뺀다.
-  // 남은 시간이 없으면 스케줄을 통째로 삭제하고, 남아 있으면 줄인 선택으로 다시 저장한다.
+  // 남은 시간이 없으면 스케줄을 통째로 삭제하고, 남아 있으면 줄인 선택으로 다시 저장한다. 성공하면 true.
   const deleteScheduleSlot = async ({ entry, day, time }) => {
     const trimmedNickname = currentNickname
 
@@ -2463,8 +2619,7 @@ function App() {
     const nextSelection = removeSlot(entry.dayTimeSelection)
 
     if (getSelectedDayList(nextSelection).length === 0) {
-      await deleteSchedule(entry)
-      return
+      return deleteSchedule(entry)
     }
 
     const targetKey = getScheduleKey(entry)
@@ -2524,7 +2679,37 @@ function App() {
     )))
     // 수정 중인 선택이 있으면 거기서도 같은 시간을 뺀다.
     setDayTimeDrafts((prev) => (prev[targetKey] ? { ...prev, [targetKey]: removeSlot(prev[targetKey]) } : prev))
-    showToast(`${formatScheduleKey(targetKey)}에서 ${describePendingSlot({ day, time })} 시간을 삭제했어요.`, 'success')
+    return true
+  }
+
+  // 스케줄 한 건(target) 또는 그 안의 요일 · 시간({ entry, day, time })을 확인 창 없이 지우고,
+  // 알림의 [되돌리기]로 지우기 전 스케줄을 그대로 다시 저장할 수 있게 한다.
+  const deleteWithUndo = async (target) => {
+    const nickname = currentNickname
+    const entry = target.entry ?? target
+    const scheduleLabel = formatScheduleKey(getScheduleKey(entry))
+    const isDeleted = target.entry ? await deleteScheduleSlot(target) : await deleteSchedule(target)
+
+    if (!isDeleted) {
+      return
+    }
+
+    const undoDelete = async () => {
+      const info = { attendance: entry.attendance, className: entry.className, power: entry.power, leadReady: entry.leadReady }
+
+      if (await persistSchedule(nickname, info, entry, entry.dayTimeSelection)) {
+        showToast(`${scheduleLabel} 스케줄을 되돌렸어요.`, 'success', 'undo-delete')
+      }
+    }
+
+    showToast(
+      target.entry
+        ? `${scheduleLabel}에서 ${describePendingSlot(target)} 시간을 삭제했어요.`
+        : `${scheduleLabel} 스케줄을 삭제했어요.`,
+      'success',
+      'undo-delete',
+      { label: '되돌리기', onClick: undoDelete },
+    )
   }
 
   // DB 삭제 요청. 성공하면 true, 실패하면 알림을 띄우고 false.
@@ -2721,23 +2906,9 @@ function App() {
     applyRaidRally(target.run, target.action, target.slotVoterNicknames)
   }
 
-  const confirmPendingDelete = async () => {
-    const target = pendingDelete
-    setPendingDelete(null)
-
-    if (target === 'all') {
-      await clearCurrentSchedule()
-      return
-    }
-
-    if (target?.entry) {
-      await deleteScheduleSlot(target)
-      return
-    }
-
-    if (target) {
-      await deleteSchedule(target)
-    }
+  const confirmClearAll = async () => {
+    setClearAllConfirmOpen(false)
+    await clearCurrentSchedule()
   }
 
   if (!loggedInNickname && passwordSetup) {
@@ -3004,6 +3175,86 @@ function App() {
       isMeChecked: rallyCheckins.includes(slot.nickname),
     }
   })
+  // '내 레이드만 보기'를 켜면 내 캐릭터(본캐 + 부캐)가 투표한 시간대만 남긴다.
+  const visibleDayRaidSummary = showOnlyMine
+    ? dayRaidSummary.map(({ day, raidGroups }) => ({
+      day,
+      raidGroups: raidGroups
+        .map((group) => ({
+          ...group,
+          times: group.times.filter((time) => (
+            (group.timeMembers[time] ?? []).some((memberKey) => myCharacters.includes(memberKey.split('|')[0]))
+          )),
+        }))
+        .filter((group) => group.times.length > 0),
+    }))
+    : dayRaidSummary
+
+  const toggleShowOnlyMine = () => {
+    setShowOnlyMine((prev) => {
+      try {
+        localStorage.setItem(ONLY_MINE_STORAGE_KEY, prev ? '0' : '1')
+      } catch {
+        // Ignore storage errors.
+      }
+
+      return !prev
+    })
+  }
+
+  // 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. (targets: 볼 레이드 조합 목록)
+  // 리딩 가능자가 있는 시간을 먼저, 그다음 인원이 많은 순, 같으면 이른 시간 순이다.
+  const buildRecommendedSlots = (targets) => targets
+    .flatMap(({ raidName, difficulty, mode }) => weekdayNames.flatMap((day) => timeSlots.map((time) => {
+      const people = memberByRaidDateTime.get(`${day}-${time}`)?.[`${raidName} ${difficulty} ${mode}`] ?? []
+      return { raidName, difficulty, mode, day, time, people, leaderCount: people.filter((person) => person.leadReady === 'O').length }
+    })))
+    .filter((slot) => slot.people.length > 0 && !isPastSlot(slot.day, slot.time))
+    .sort((a, b) => (
+      (b.leaderCount > 0) - (a.leaderCount > 0)
+      || b.people.length - a.people.length
+      || getSlotStartDate(weekDates, a.day, a.time) - getSlotStartDate(weekDates, b.day, b.time)
+    ))
+    .slice(0, 3)
+
+  // 주간 레이드 슬롯 제목 아래에 보여 줄 추천 시간. 모든 레이드 조합을 통틀어 고른다.
+  const recommendedSlots = buildRecommendedSlots(
+    visibleRaidTabs.flatMap((tab) => modeOptions.map((mode) => ({ raidName: tab.raid, difficulty: tab.difficulty, mode }))),
+  )
+
+  // 추천 시간을 누르면 그 레이드 탭으로 바꾸고 캘린더의 그 칸으로 스크롤해 잠깐 강조한다. (모바일은 캘린더 화면 · 그 요일로 넘어간다)
+  const focusCalendarSlot = ({ raidName, difficulty, mode, day, time }) => {
+    const slotKey = `${day}-${time}`
+
+    showScheduleInCalendar({ raidName, difficulty, mode })
+    setMobileSection('calendar')
+    setMobileCalendarDayIndex(weekdayNames.indexOf(day))
+
+    if (hiddenWeekdayTimeSlots.includes(time)) {
+      setShowDaytimeSlots(true)
+    }
+
+    setHighlightedSlotKey(slotKey)
+    // 페이지는 세로로만 움직이고, 가로는 캘린더 안에서만 스크롤한다. (scrollIntoView는 페이지까지 옆으로 밀 수 있다)
+    setTimeout(() => {
+      const cell = document.getElementById(`calendar-slot-${slotKey}`)
+      const grid = cell?.closest('.calendar-grid')
+
+      if (!cell || !grid) {
+        return
+      }
+
+      const cellRect = cell.getBoundingClientRect()
+      const gridRect = grid.getBoundingClientRect()
+
+      window.scrollTo({ top: window.scrollY + cellRect.top - Math.max(0, (window.innerHeight - cellRect.height) / 2), behavior: 'smooth' })
+      grid.scrollTo({ left: grid.scrollLeft + cellRect.left - gridRect.left - (grid.clientWidth - cellRect.width) / 2, behavior: 'smooth' })
+    }, 0)
+    setTimeout(() => {
+      setHighlightedSlotKey((prev) => (prev === slotKey ? '' : prev))
+    }, 2500)
+  }
+
   // 내가 준비 완료를 눌러야 하는 시간대가 있으면 그것을 먼저, 없으면 가장 가까운 시간대를 보여 준다.
   const isWaitingForMe = (slot) => slot.isRallyCalled && !slot.isGathered && !slot.isMeChecked
   const nextRaidSlot = myUpcomingSlotDetails.find(isWaitingForMe) ?? myUpcomingSlotDetails[0] ?? null
@@ -3037,7 +3288,7 @@ function App() {
           )}
           <div className="live-clock">
             <span>실시간</span>
-            <strong>{currentTime.toLocaleString('ko-KR')}</strong>
+            <LiveClock />
           </div>
           <div className="user-badge-wrap">
             <span className="user-badge" title={loggedInNickname}>
@@ -3064,7 +3315,7 @@ function App() {
             </div>
             <div className="mobile-nav-clock">
               <span>실시간</span>
-              <strong>{currentTime.toLocaleString('ko-KR')}</strong>
+              <LiveClock />
             </div>
             {!isSharedMode && (
               <div className="shared-mode-warning">
@@ -3291,7 +3542,21 @@ function App() {
             role={toast.type === 'error' ? 'alert' : 'status'}
             onClick={() => dismissToast(toast.id)}
           >
-            {toast.message}
+            <span className="toast-message">{toast.message}</span>
+            {toast.action && (
+              <button
+                type="button"
+                className="toast-action"
+                disabled={isSaving}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  dismissToast(toast.id)
+                  toast.action.onClick()
+                }}
+              >
+                {toast.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -3332,32 +3597,19 @@ function App() {
         </div>
       )}
 
-      {pendingDelete && (
-        <div className="save-confirm-backdrop" onClick={() => setPendingDelete(null)}>
+      {clearAllConfirmOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setClearAllConfirmOpen(false)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>
-              {pendingDelete === 'all'
-                ? '내 스케줄을 전부 삭제할까요?'
-                : pendingDelete.entry
-                  ? `${describePendingSlot(pendingDelete)} 시간을 삭제할까요?`
-                  : '이 스케줄을 삭제할까요?'}
-            </h3>
+            <h3>내 스케줄을 전부 삭제할까요?</h3>
             <p>
               <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
-              {pendingDelete === 'all'
-                ? '의 모든 레이드 시간 정보를 삭제하시겠습니까'
-                : pendingDelete.entry
-                  ? `의 ${pendingDelete.entry.raidName} · ${pendingDelete.entry.difficulty} · ${pendingDelete.entry.mode} 스케줄에서 ${describePendingSlot(pendingDelete)} 시간을 삭제하시겠습니까`
-                  : `의 ${pendingDelete.raidName} · ${pendingDelete.difficulty} · ${pendingDelete.mode} 레이드 시간 정보를 삭제하시겠습니까`}
+              의 모든 레이드 시간 정보를 삭제하시겠습니까
             </p>
-            {pendingDelete.entry && isLastSlotOfSchedule(pendingDelete) && (
-              <p className="save-confirm-note">남은 시간이 없어 이 스케줄이 통째로 삭제돼요.</p>
-            )}
             <div className="save-confirm-actions">
-              <button type="button" className="secondary-button" onClick={() => setPendingDelete(null)}>
+              <button type="button" className="secondary-button" onClick={() => setClearAllConfirmOpen(false)}>
                 취소
               </button>
-              <button type="button" className="primary-button" onClick={confirmPendingDelete}>
+              <button type="button" className="primary-button" onClick={confirmClearAll}>
                 삭제
               </button>
             </div>
@@ -3368,10 +3620,7 @@ function App() {
       <section className="summary-grid">
         <article className="summary-card accent" data-section="form">
           <span className="label">다음 리셋</span>
-          <strong>{nextReset.toLocaleString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })}</strong>
-          <small>
-            {countdown.days}일 {countdown.hours}시간 {countdown.minutes}분 {countdown.seconds}초 후
-          </small>
+          <ResetCountdown />
         </article>
 
         <article className={`summary-card next-raid-card ${nextRaidNeedsMe ? 'needs-action' : ''}`}>
@@ -3460,7 +3709,7 @@ function App() {
               <p>1. '내 캐릭터'에서 직업 · 전투력 · 리딩 여부를 정해요. 캐릭터마다 한 번 정해 두면 계속 쓰여요.</p>
               <p>2. 신청할 레이드 · 난이도 · 공략 방식과 참여 여부를 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
               <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요.</p>
-              <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요.</p>
+              <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
               <p>5. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 한 번에 다시 등록할 수 있어요.</p>
             </div>
           )}
@@ -3569,6 +3818,23 @@ function App() {
                 ))}
               </div>
             </div>
+
+            {/* 신청마다 직업 · 전투력 · 리딩이 따로 저장되므로, 바꾼 값이 아직 안 들어간 신청이 있으면 한 번에 반영할 수 있게 한다. */}
+            {outdatedCharacterSchedules.length > 0 && (
+              <div className="character-sync-notice">
+                <span>
+                  저장된 신청 {outdatedCharacterSchedules.length}건이 예전 캐릭터 정보예요.
+                </span>
+                <button
+                  type="button"
+                  className="secondary-button small-toggle"
+                  onClick={handleCharacterSyncClick}
+                  disabled={isSaving}
+                >
+                  모두 반영
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="form-section" id="schedule-target-field">
@@ -3700,7 +3966,7 @@ function App() {
                       <button
                         key={`${day}-${time}`}
                         type="button"
-                        className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}`}
+                        className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}`}
                         aria-pressed={isSelected}
                         aria-label={`${day}요일 ${time}`}
                         disabled={isDisabled}
@@ -3726,8 +3992,21 @@ function App() {
           {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
           {hasUnsavedChanges && (
             <div className="unsaved-notice" role="status">
-              <strong>저장하지 않은 변경이 있어요</strong>
-              <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
+              <div className="unsaved-notice-text">
+                <strong>저장하지 않은 변경이 있어요</strong>
+                <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
+              </div>
+              {/* 저장 버튼은 지금 폼의 조합만 저장하므로, 다른 조합도 고쳐 뒀으면 한꺼번에 저장할 수 있게 한다. */}
+              {unsavedScheduleKeys.some((key) => key !== currentScheduleKey) && (
+                <button
+                  type="button"
+                  className="secondary-button small-toggle"
+                  onClick={handleSaveAllClick}
+                  disabled={isSaving}
+                >
+                  모두 저장
+                </button>
+              )}
             </div>
           )}
 
@@ -3777,7 +4056,7 @@ function App() {
                             <button
                               type="button"
                               className="saved-schedule-delete"
-                              onClick={() => setPendingDelete(entry)}
+                              onClick={() => deleteWithUndo(entry)}
                               aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 삭제`}
                             >
                               삭제
@@ -3792,7 +4071,7 @@ function App() {
                                 <button
                                   type="button"
                                   className={`saved-slot-day-label${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
-                                  onClick={() => setPendingDelete({ entry, day, time: null })}
+                                  onClick={() => deleteWithUndo({ entry, day, time: null })}
                                   title={`${day}요일 시간 전체 삭제`}
                                   aria-label={`${day}요일 시간 전체 삭제`}
                                 >
@@ -3806,7 +4085,7 @@ function App() {
                                         key={time}
                                         type="button"
                                         className="saved-slot-chip"
-                                        onClick={() => setPendingDelete({ entry, day, time })}
+                                        onClick={() => deleteWithUndo({ entry, day, time })}
                                         aria-label={`${day}요일 ${time} 삭제`}
                                       >
                                         <span className="saved-slot-chip-time">{time}</span>
@@ -3821,7 +4100,7 @@ function App() {
                     )
                   })}
                 </ul>
-                <button type="button" className="secondary-button saved-schedule-clear" onClick={() => setPendingDelete('all')}>
+                <button type="button" className="secondary-button saved-schedule-clear" onClick={() => setClearAllConfirmOpen(true)}>
                   내 스케줄 전체 삭제
                 </button>
               </>
@@ -3859,10 +4138,38 @@ function App() {
             </div>
           </div>
 
+          {/* 모든 레이드 조합에서 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. 누르면 그 탭 · 그 칸으로 간다. */}
+          <div className="recommend-row" data-section="calendar">
+            <span className="recommend-label">추천 레이드 시간 TOP 3</span>
+            {recommendedSlots.length > 0 ? (
+              <div className="recommend-list">
+                {recommendedSlots.map((slot, index) => (
+                  <button
+                    key={`${slot.raidName}-${slot.difficulty}-${slot.mode}-${slot.day}-${slot.time}`}
+                    type="button"
+                    className={`recommend-card ${slot.leaderCount === 0 ? 'no-leader' : ''}`}
+                    onClick={() => focusCalendarSlot(slot)}
+                    title="주간 캘린더에서 이 시간 보기"
+                  >
+                    <span className="recommend-rank">{index + 1}</span>
+                    <span className="recommend-raid">{slot.raidName} {slot.difficulty} {slot.mode}</span>
+                    <strong className="recommend-time">{slot.day}요일 {slot.time}</strong>
+                    <span className="recommend-meta">
+                      {slot.people.length}/{RAID_FULL_SIZE}명 · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="recommend-empty">이번 주에 아직 남은 신청이 없어요</span>
+            )}
+          </div>
+
           {calendarHelpOpen && (
             <div className="help-panel compact" data-section="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
-              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여주고, A/B 파티로 나뉘어 집계됩니다.</p>
+              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. A/B 파티는 리딩 가능자를 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요. 10명을 넘는 인원은 대기로 표시돼요.</p>
+              <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 리딩 가능자가 있고 인원이 많은 순서예요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
               <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
               <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
             </div>
@@ -3871,6 +4178,14 @@ function App() {
           <div className="day-raid-summary-panel" data-section="day">
             <div className="day-raid-summary-head">
               <h3>요일별 레이드 신청 현황</h3>
+              <button
+                type="button"
+                className={`day-raid-past-toggle ${showOnlyMine ? 'active' : ''}`}
+                aria-pressed={showOnlyMine}
+                onClick={toggleShowOnlyMine}
+              >
+                {showOnlyMine ? '✓ 내 레이드만' : '내 레이드만'}
+              </button>
               {pastDayNames.length > 0 && (
                 <button
                   type="button"
@@ -3884,7 +4199,7 @@ function App() {
               )}
             </div>
             <div className="day-raid-summary-grid">
-              {dayRaidSummary.map(({ day, raidGroups }, dayIndex) => {
+              {visibleDayRaidSummary.map(({ day, raidGroups }, dayIndex) => {
                 // weekdayNames와 weekDates는 둘 다 수요일부터 시작한다.
                 const isPastCard = weekDates[dayIndex].getTime() < todayStartTime
                 const isCardCollapsed = isPastCard && !expandedPastDays[day]
@@ -4156,7 +4471,7 @@ function App() {
                       })}
                     </div>
                   ) : (
-                    <div className="empty-role">신청 인원 없음</div>
+                    <div className="empty-role">{showOnlyMine ? '내 신청 없음' : '신청 인원 없음'}</div>
                   )}
                 </div>
                 )
@@ -4203,13 +4518,37 @@ function App() {
             </div>
           </div>
 
-          <div className="calendar-grid" data-section="calendar">
+          {/* 모바일은 7일을 가로로 넘기는 대신 요일 하나씩 본다. */}
+          <div className="mobile-day-tabs" data-section="calendar" role="tablist" aria-label="요일 선택">
+            {weekDates.map((date, dayIndex) => {
+              const day = weekdayNames[dayIndex]
+              const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
+              const hasPeople = timeSlots.some((time) => (memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []).length > 0)
+
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  role="tab"
+                  aria-selected={mobileCalendarDayIndex === dayIndex}
+                  className={`mobile-day-tab${mobileCalendarDayIndex === dayIndex ? ' active' : ''}${date.getTime() < todayStartTime ? ' is-past' : ''}`}
+                  onClick={() => setMobileCalendarDayIndex(dayIndex)}
+                >
+                  <span>{day}</span>
+                  <small>{date.getDate()}</small>
+                  {hasPeople && <span className="mobile-day-tab-dot" aria-hidden="true" />}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="calendar-grid" data-section="calendar" data-mobile-day={mobileCalendarDayIndex}>
             <div className="calendar-corner">시간</div>
-            {weekDates.map((date) => {
+            {weekDates.map((date, dayIndex) => {
               const label = date.toLocaleDateString('ko-KR', { weekday: 'short' })
 
               return (
-                <div key={date.toISOString()} className="day-header">
+                <div key={date.toISOString()} className="day-header" data-day-index={dayIndex}>
                   <span className="day-name">{label}</span>
                   <strong>{date.getDate()}일</strong>
                 </div>
@@ -4225,19 +4564,20 @@ function App() {
               return (
                 <Fragment key={time}>
                   <div className="time-label">{time}</div>
-                  {weekDates.map((date) => {
+                  {weekDates.map((date, dayIndex) => {
                     const currentDaySlots = getDayTimeSlots(date)
                     const isVisibleTime = currentDaySlots.includes(time)
                     const dayLabel = date.toLocaleDateString('ko-KR', { weekday: 'short' })
                     const raidPeople = memberByRaidDateTime.get(`${dayLabel}-${time}`) ?? {}
                     const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
                     const people = raidPeople[tabKey] ?? []
-                    const partyA = people.slice(0, 5)
-                    const partyB = people.slice(5, 10)
                     const isMySlot = myScheduleSet.has(`${dayLabel}-${time}`)
+                    const slotKey = `${dayLabel}-${time}`
+                    // 이미 지난 시간은 흐리게, 추천 시간을 눌러 온 칸은 잠깐 강조한다.
+                    const slotStateClass = `${isVisibleTime && isPastSlot(dayLabel, time) ? ' is-past' : ''}${highlightedSlotKey === slotKey ? ' is-highlighted' : ''}`
 
                     if (!isVisibleTime) {
-                      return <div key={`${date.toISOString()}-${time}-empty`} className="slot-cell empty muted-slot" />
+                      return <div key={`${date.toISOString()}-${time}-empty`} className="slot-cell empty muted-slot" data-day-index={dayIndex} />
                     }
 
                     // 신청이 없는 칸은 흐린 '-'만 남겨 신청이 있는 칸이 눈에 띄게 한다.
@@ -4245,7 +4585,9 @@ function App() {
                       return (
                         <div
                           key={`${date.toISOString()}-${time}`}
-                          className={`slot-cell empty is-vacant ${isMySlot ? 'my-schedule-slot' : ''}`}
+                          id={`calendar-slot-${slotKey}`}
+                          data-day-index={dayIndex}
+                          className={`slot-cell empty is-vacant ${isMySlot ? 'my-schedule-slot' : ''}${slotStateClass}`}
                         >
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
                           <span className="empty-text">-</span>
@@ -4256,11 +4598,14 @@ function App() {
                     // 인원이 많을수록 진하게 칠하고, 정원이 찼는지 · 리딩 가능자가 있는지 칸 위쪽에 표시한다.
                     const fillLevel = people.length >= RAID_FULL_SIZE ? 3 : people.length >= RAID_FULL_SIZE / 2 ? 2 : 1
                     const hasLeader = people.some((member) => member.leadReady === 'O')
+                    const { partyA, partyB, waiting } = buildBalancedParties(people)
 
                     return (
                       <div
                         key={`${date.toISOString()}-${time}`}
-                        className={`slot-cell occupied fill-${fillLevel} ${isMySlot ? 'my-schedule-slot' : ''}`}
+                        id={`calendar-slot-${slotKey}`}
+                        data-day-index={dayIndex}
+                        className={`slot-cell occupied fill-${fillLevel} ${isMySlot ? 'my-schedule-slot' : ''}${slotStateClass}`}
                       >
                         <div className="slot-cell-head">
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
@@ -4273,51 +4618,36 @@ function App() {
                         <div className="raid-group-list">
                           <div className="raid-group-item selected-raid-item">
                             <div className="party-split">
-                              <div className="party-column">
-                                <span className="party-label">A</span>
-                                {partyA.length > 0 ? (
-                                  <div className="time-member-list vertical">
-                                    {partyA.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
-                                        <span className="nickname-with-icon">
-                                          <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                          <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
-                                            <span>{member.nickname}</span>
-                                            <span className="member-power-inline">{member.power}</span>
+                              {[['A', partyA], ['B', partyB]].map(([partyName, partyMembers]) => (
+                                <div key={partyName} className="party-column">
+                                  <span className="party-label">{partyName}</span>
+                                  {partyMembers.length > 0 ? (
+                                    <div className="time-member-list vertical">
+                                      {partyMembers.map((member) => (
+                                        <span key={`${slotKey}-${tabKey}-${partyName}-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
+                                          <span className="nickname-with-icon">
+                                            <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                                            <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
+                                              <span>{member.nickname}</span>
+                                              <span className="member-power-inline">{member.power}</span>
+                                            </span>
+                                            {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                           </span>
-                                          {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
+                                          <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                                         </span>
-                                        <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="empty-raid-text">-</span>
-                                )}
-                              </div>
-                              <div className="party-column">
-                                <span className="party-label">B</span>
-                                {partyB.length > 0 ? (
-                                  <div className="time-member-list vertical">
-                                    {partyB.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
-                                        <span className="nickname-with-icon">
-                                          <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                          <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
-                                            <span>{member.nickname}</span>
-                                            <span className="member-power-inline">{member.power}</span>
-                                          </span>
-                                          {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
-                                        </span>
-                                        <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="empty-raid-text">-</span>
-                                )}
-                              </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="empty-raid-text">-</span>
+                                  )}
+                                </div>
+                              ))}
                             </div>
+                            {waiting.length > 0 && (
+                              <div className="party-waiting" title={waiting.map((member) => member.nickname).join(', ')}>
+                                대기 {waiting.length}명: {waiting.map((member) => member.nickname).join(', ')}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -4332,7 +4662,7 @@ function App() {
             <h3>보스 난이도별 선택인원</h3>
             <div className="weekday-list">
               {memberByRaidDifficulty.length ? (
-                memberByRaidDifficulty.map(({ raidName, difficulty, mode, members, days, times }) => (
+                memberByRaidDifficulty.map(({ raidName, difficulty, mode, members }) => (
                   <div key={`${raidName}-${difficulty}-${mode}`} className="weekday-card">
                     <span className="weekday-title">{raidName} · {difficulty} · {mode}</span>
                     <div className="member-tags">
