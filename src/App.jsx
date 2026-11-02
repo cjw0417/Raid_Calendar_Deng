@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 import {
   HINT_QUESTIONS,
@@ -36,6 +36,20 @@ const raidOptions = [
 const difficultyOptions = ['보통', '어려움']
 // 요일별 신청 현황에서 접힌 시간 줄에 미리 보여줄 직업 아이콘 수
 const SUMMARY_ICON_PREVIEW_LIMIT = 4
+// 한 타임 정원 (한 파티 5명 × 2파티)
+const RAID_FULL_SIZE = 10
+// 시작한 뒤에도 이 시간 동안은 '내 다음 레이드'에 진행 중으로 남겨 둔다.
+const RAID_ONGOING_MS = 60 * 60 * 1000
+// 토스트 알림이 떠 있는 시간 (ms)
+const TOAST_DURATION = { info: 3500, success: 3000, error: 6000 }
+// 준비 확인 동작이 끝났을 때 알림 문구
+const RALLY_SUCCESS_MESSAGES = {
+  call: '준비 확인을 시작했어요.',
+  check: '준비 완료로 표시했어요.',
+  uncheck: '준비를 취소했어요.',
+  cancel: '준비 확인을 취소했어요.',
+  remind: '디스코드로 다시 알렸어요.',
+}
 const modeOptions = ['트라이', '반숙이상']
 const raidTabOptions = [
   { id: 'muspel-normal', label: '무스펠 보통', raid: '무스펠', difficulty: '보통' },
@@ -317,11 +331,6 @@ function isScheduleMember(member, nickname, target) {
     && (member.mode ?? '트라이') === target.mode
 }
 
-// 시간 목록을 순서와 상관없이 비교할 수 있는 문자열로 만든다. (빈 목록이면 '')
-function getSortedTimesKey(times) {
-  return [...(times ?? [])].sort().join(',')
-}
-
 // 스케줄 키 "무스펠|어려움|트라이"를 "무스펠 · 어려움 · 트라이"로 표시한다.
 function formatScheduleKey(key) {
   return key.split('|').join(' · ')
@@ -352,6 +361,48 @@ function getDayTimePairs(dayTimeSelection) {
   return Object.entries(dayTimeSelection ?? {}).flatMap(([day, times]) =>
     Array.isArray(times) ? times.map((time) => [day, time]) : [],
   )
+}
+
+// 이번 주 요일 · 시간을 실제 시각으로 바꾼다. 00:00은 그 요일 밤 12시(다음 날 0시)로 본다.
+function getSlotStartDate(weekDates, day, time) {
+  const date = new Date(weekDates[weekdayNames.indexOf(day)])
+
+  if (time === '00:00') {
+    date.setDate(date.getDate() + 1)
+    return date
+  }
+
+  const [hours, minutes] = time.split(':').map(Number)
+  date.setHours(hours, minutes, 0, 0)
+  return date
+}
+
+// 남은 시간을 "2시간 10분 후" / "15분 후" / "진행 중" 으로 표시한다.
+function formatTimeUntil(diffMs) {
+  if (diffMs <= 0) {
+    return '진행 중'
+  }
+
+  const totalMinutes = Math.ceil(diffMs / 60000)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+
+  if (days > 0) {
+    return `${days}일 ${hours}시간 후`
+  }
+
+  return hours > 0 ? `${hours}시간 ${minutes}분 후` : `${minutes}분 후`
+}
+
+// 레이드 · 난이도 · 공략 방식 순으로 정렬한다.
+function compareSchedules(a, b) {
+  const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
+  const difficultyOrder = { 보통: 0, 어려움: 1 }
+
+  return (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
+    || (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
+    || (a.mode ?? '').localeCompare(b.mode ?? '')
 }
 
 function buildDefaultMember(overrides = {}) {
@@ -622,6 +673,21 @@ function TabCount({ count }) {
   )
 }
 
+// 멤버 칩에 마우스를 올리면 보이는 상세 정보. (터치 기기에서는 칩을 누르면 같은 내용을 팝업으로 보여 준다)
+function MemberTooltip({ member, ownerNickname, showLead = false }) {
+  return (
+    <span className="member-hover-tooltip" aria-hidden="true">
+      <span className="tooltip-header-row">
+        <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
+        <strong>{member.nickname}</strong>
+        {showLead && member.leadReady === 'O' && <span className="tooltip-lead-label">리딩 가능</span>}
+      </span>
+      <span className="tooltip-power">{member.power}</span>
+      {ownerNickname && <span className="tooltip-alt-owner">{ownerNickname}의 부캐</span>}
+    </span>
+  )
+}
+
 function App() {
   const [currentTime, setCurrentTime] = useState(new Date())
   // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
@@ -666,7 +732,20 @@ function App() {
   // 개인 비밀번호 설정 · 변경 · 찾기 폼 (세 화면이 같이 쓴다)
   const [passwordForm, setPasswordForm] = useState(() => buildEmptyPasswordForm())
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
-  const [selectedDayForTimes, setSelectedDayForTimes] = useState('')
+  // 화면 아래에 잠깐 띄우는 알림: [{ id, message, type: 'info' | 'success' | 'error' }]
+  const [toasts, setToasts] = useState([])
+  // 터치 기기에서 멤버 칩을 눌렀을 때 띄우는 상세 정보
+  const [memberDetail, setMemberDetail] = useState(null)
+  // 레이드 조합을 고르기 전에 시간표를 눌렀으면 빠진 항목에 테두리를 두른다.
+  const [showTargetWarning, setShowTargetWarning] = useState(false)
+  // 지난 신청 불러오기 확인 팝업
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
+  // 저장 · 불러오기 요청 중 (중복 클릭 방지)
+  const [isSaving, setIsSaving] = useState(false)
+  // 시간표를 끌어서 고르는 중이면 true(고르기) / false(지우기), 아니면 null
+  const timeDragModeRef = useRef(null)
+  // 시간표 칸을 마지막으로 누른 입력 장치 ('mouse' | 'touch' | 'pen')
+  const timePointerTypeRef = useRef('')
   const [profile, setProfile] = useState(() => buildDefaultMember({ nickname: '나의닉네임' }))
   const [storedMembers, setMembers] = useState(() => loadLocalMembers())
   const [storedRaidSchedules, setRaidSchedules] = useState(() => loadLocalRaidSchedules())
@@ -684,18 +763,7 @@ function App() {
     () => storedRaidSchedules.filter((entry) => isSavedThisWeek(entry, weekStartTime)),
     [storedRaidSchedules, weekStartTime],
   )
-  // 현재 집계: 이번 주에 참여로 신청한 인원 (한 사람이 여러 레이드를 신청해도 1명)
-  const participantCount = useMemo(
-    () =>
-      new Set(
-        raidSchedules
-          .filter((entry) => entry.attendance === '참' && entry.days.length > 0)
-          .map((entry) => entry.nickname),
-      ).size,
-    [raidSchedules],
-  )
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
-  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false)
   // 삭제 확인 팝업 대상: 'all'(전체 삭제) 또는 삭제할 스케줄 한 건
   const [pendingDelete, setPendingDelete] = useState(null)
   // 저장 전 수정 중인 요일/시간 선택 (레이드 · 난이도 · 공략 방식 조합별)
@@ -888,6 +956,46 @@ function App() {
     return () => clearInterval(timer)
   }, [])
 
+  // 시간표를 끌다가 어디서든 손을 떼면 끌기를 끝낸다.
+  useEffect(() => {
+    const stopTimeDrag = () => {
+      timeDragModeRef.current = null
+    }
+
+    window.addEventListener('pointerup', stopTimeDrag)
+    window.addEventListener('pointercancel', stopTimeDrag)
+    return () => {
+      window.removeEventListener('pointerup', stopTimeDrag)
+      window.removeEventListener('pointercancel', stopTimeDrag)
+    }
+  }, [])
+
+  // key를 주면 같은 key의 알림은 쌓지 않고 새 알림으로 바꾼다. (나중에 key로 한꺼번에 지울 수도 있다)
+  const showToast = (message, type = 'info', key = '') => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+
+    // 한꺼번에 많이 쌓이지 않게 최근 3개만 둔다.
+    setToasts((prev) => [...prev.filter((toast) => !key || toast.key !== key).slice(-2), { id, message, type, key }])
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id))
+    }, TOAST_DURATION[type] ?? TOAST_DURATION.info)
+  }
+
+  const dismissToast = (id) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id))
+  }
+
+  // 멤버 칩을 누르면 터치 기기에서만 상세 팝업을 연다. (마우스는 올리기만 해도 툴팁이 보인다)
+  const getMemberPillProps = (member) => ({
+    role: 'button',
+    tabIndex: 0,
+    onClick: () => {
+      if (window.matchMedia?.('(hover: none)').matches) {
+        setMemberDetail(member)
+      }
+    },
+  })
+
   const visibleRaidTabs = useMemo(
     () =>
       raidTabOptions.filter((tab) => {
@@ -926,7 +1034,8 @@ function App() {
     return weekdayTimeSlots
   }
 
-  const visibleTimeSlots = getSelectableTimesForSelectedDay(selectedDayForTimes)
+  // 입력 폼 시간표의 시간 줄. 낮시간(12~16시)은 켰을 때만 보여 준다.
+  const formTimeRows = timeSlots.filter((time) => showDaytimeSlots || !hiddenWeekdayTimeSlots.includes(time))
 
   // 폼에서 고른 레이드 · 난이도 · 공략 방식. 요일/시간 선택은 이 조합마다 따로 관리한다.
   // 지금 신청 · 삭제하는 캐릭터 (본캐 또는 고른 부캐)
@@ -964,9 +1073,6 @@ function App() {
     ?? savedCurrentSchedule?.dayTimeSelection
     ?? buildEmptyDayTimeSelection()
   const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
-  // 시간 복사: 지금 고르고 있는 요일의 시간 (비어 있으면 복사 줄을 숨긴다)과 복사할 수 있는 나머지 요일
-  const selectedDayTimesKey = getSortedTimesKey(currentDayTimeSelection[selectedDayForTimes])
-  const copyTargetDays = weekdayNames.filter((day) => day !== selectedDayForTimes)
 
   // 같은 계정(본캐 + 부캐)이 이번 주에 이미 참여로 신청한 시간 ("요일|시간" → 그 신청).
   // 지금 고치고 있는 스케줄(같은 캐릭터 · 같은 레이드 조합)은 덮어쓸 것이라 뺀다. DB의 _schedule_time_conflict와 같은 기준이다.
@@ -999,26 +1105,123 @@ function App() {
     `${entry.nickname === currentNickname ? '이 캐릭터' : entry.nickname} · ${entry.raidName} ${entry.difficulty} ${entry.mode}`
   )
 
-  const toggleTimeSelection = (time) => {
-    const targetDay = selectedDayForTimes
-
-    if (!currentScheduleKey || !targetDay || !getSelectableTimesForSelectedDay(targetDay).includes(time)) {
+  // 시간표 칸 여러 개를 한꺼번에 고르거나(shouldSelect) 지운다.
+  // 그 요일에 없는 시간대이거나 같은 계정이 이미 신청한 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
+  // 끌어서 빠르게 여러 칸을 바꿀 수 있어 이전 수정 상태(prev)를 기준으로 바꾼다.
+  const setSlotSelection = (pairs, shouldSelect) => {
+    if (!currentScheduleKey) {
       return
     }
 
-    const nextSelection = normalizeDayTimeSelection(currentDayTimeSelection)
-    const currentTimes = nextSelection[targetDay] ?? []
+    const scheduleKey = currentScheduleKey
+    const savedSelection = savedCurrentSchedule?.dayTimeSelection
 
-    // 이미 다른 신청이 있는 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
-    if (!currentTimes.includes(time) && takenSlots.has(`${targetDay}|${time}`)) {
+    setDayTimeDrafts((prev) => {
+      const nextSelection = normalizeDayTimeSelection(prev[scheduleKey] ?? savedSelection)
+
+      pairs.forEach(([day, time]) => {
+        const dayTimes = nextSelection[day]
+
+        if (!shouldSelect) {
+          nextSelection[day] = dayTimes.filter((item) => item !== time)
+          return
+        }
+
+        if (!dayTimes.includes(time) && getSelectableTimesForSelectedDay(day).includes(time) && !takenSlots.has(`${day}|${time}`)) {
+          nextSelection[day] = [...dayTimes, time]
+        }
+      })
+
+      return { ...prev, [scheduleKey]: nextSelection }
+    })
+  }
+
+  // 레이드 조합을 다 고르기 전에 시간표를 누르면 무엇을 먼저 골라야 하는지 알려 주고, 빠진 항목에 테두리를 두른다.
+  const warnScheduleTargetMissing = () => {
+    const missingLabels = [
+      [selectedRaidLabel, '레이드'],
+      [profile.difficulty, '난이도'],
+      [profile.mode, '공략 방식'],
+    ]
+      .filter(([value]) => !value)
+      .map(([, label]) => label)
+
+    setShowTargetWarning(true)
+    showToast(`${missingLabels.join(', ')}을(를) 먼저 골라 주세요.`, 'error', 'target-missing')
+    // 빠진 항목이 화면 밖에 있을 때만 보이는 곳까지 스크롤한다. (시간표가 크게 밀려나지 않게)
+    document.getElementById('schedule-target-field')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+
+  // 레이드 조합을 다 고르면 '먼저 골라 주세요' 알림과 테두리를 바로 없앤다. (남아 있으면 시간표가 안 눌리는 것처럼 보인다)
+  useEffect(() => {
+    if (!isScheduleTargetSelected) {
       return
     }
 
-    nextSelection[targetDay] = currentTimes.includes(time)
-      ? currentTimes.filter((item) => item !== time)
-      : [...currentTimes, time]
+    setShowTargetWarning(false)
+    setToasts((prev) => prev.filter((toast) => toast.key !== 'target-missing'))
+  }, [isScheduleTargetSelected])
 
-    setDayTimeDrafts((prev) => ({ ...prev, [currentScheduleKey]: nextSelection }))
+  // 마우스로 시간표 칸을 누르면 그 칸을 바꾸고, 누른 채 끌면 지나가는 칸에도 같은 동작을 한다.
+  // 터치는 화면을 스크롤하다 칸이 바뀌지 않도록 손을 뗀 탭(click)에서만 바꾼다.
+  const startTimeDrag = (event, day, time, isSelected) => {
+    timePointerTypeRef.current = event.pointerType
+
+    if (event.pointerType !== 'mouse' || event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+
+    if (!isScheduleTargetSelected) {
+      warnScheduleTargetMissing()
+      return
+    }
+
+    timeDragModeRef.current = !isSelected
+    setSlotSelection([[day, time]], !isSelected)
+  }
+
+  const handleTimeCellClick = (event, day, time, isSelected) => {
+    // 마우스는 누를 때 이미 바꿨다. (키보드로 누르면 detail이 0)
+    if (event.detail !== 0 && timePointerTypeRef.current === 'mouse') {
+      return
+    }
+
+    if (!isScheduleTargetSelected) {
+      warnScheduleTargetMissing()
+      return
+    }
+
+    setSlotSelection([[day, time]], !isSelected)
+  }
+
+  const continueTimeDrag = (event, day, time) => {
+    if (timeDragModeRef.current === null || event.buttons !== 1) {
+      return
+    }
+
+    setSlotSelection([[day, time]], timeDragModeRef.current)
+  }
+
+  // 요일 · 시간 머리를 누르면 그 줄에서 고를 수 있는 칸을 모두 고른다. 이미 다 골라져 있으면 모두 지운다.
+  const toggleTimeLine = (pairs) => {
+    if (!isScheduleTargetSelected) {
+      warnScheduleTargetMissing()
+      return
+    }
+
+    const selectablePairs = pairs.filter(([day, time]) => (
+      getSelectableTimesForSelectedDay(day).includes(time)
+      && ((currentDayTimeSelection[day] ?? []).includes(time) || !takenSlots.has(`${day}|${time}`))
+    ))
+
+    if (selectablePairs.length === 0) {
+      return
+    }
+
+    const isAllSelected = selectablePairs.every(([day, time]) => (currentDayTimeSelection[day] ?? []).includes(time))
+    setSlotSelection(selectablePairs, !isAllSelected)
   }
   const activeTabMeta = visibleRaidTabs.find((tab) => tab.label === activeRaidTab) ?? visibleRaidTabs[0] ?? raidTabOptions[0]
 
@@ -1355,19 +1558,50 @@ function App() {
   }, [members, raidSchedules])
 
   // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
-  const mySavedSchedules = useMemo(() => {
-    const trimmedNickname = currentNickname
-    const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
-    const difficultyOrder = { 보통: 0, 어려움: 1 }
+  const mySavedSchedules = useMemo(
+    () => raidSchedules
+      .filter((entry) => entry.nickname === currentNickname && entry.days.length > 0)
+      .sort(compareSchedules),
+    [currentNickname, raidSchedules],
+  )
+
+  // 지난주 이전에 저장해 둔 내 신청 중 이번 주에 같은 레이드 조합을 아직 저장하지 않은 것.
+  // 수요일 리셋 뒤 한 번에 다시 등록할 수 있게 한다. (DB에는 지난 기록이 그대로 남아 있다)
+  const restorableSchedules = useMemo(() => {
+    const thisWeekKeys = new Set(
+      raidSchedules.filter((entry) => entry.nickname === currentNickname).map((entry) => getScheduleKey(entry)),
+    )
+
+    return storedRaidSchedules
+      .filter((entry) => (
+        entry.nickname === currentNickname
+        && entry.days.length > 0
+        && !isSavedThisWeek(entry, weekStartTime)
+        && !thisWeekKeys.has(getScheduleKey(entry))
+      ))
+      .sort(compareSchedules)
+  }, [currentNickname, raidSchedules, storedRaidSchedules, weekStartTime])
+
+  // 내 캐릭터(본캐 + 부캐)가 참여로 신청한 이번 주 시간대 중 아직 끝나지 않은 것 (가까운 순).
+  // 1초마다 다시 계산하지 않도록 분 단위로만 갱신한다.
+  const currentMinute = Math.floor(currentTime.getTime() / 60000)
+  const myUpcomingSlots = useMemo(() => {
+    const nowTime = currentMinute * 60000
 
     return raidSchedules
-      .filter((entry) => entry.nickname === trimmedNickname && entry.days.length > 0)
-      .sort((a, b) =>
-        (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
-        || (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
-        || (a.mode ?? '').localeCompare(b.mode ?? ''),
-      )
-  }, [currentNickname, raidSchedules])
+      .filter((entry) => entry.attendance === '참' && myCharacters.includes(entry.nickname))
+      .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => ({
+        nickname: entry.nickname,
+        raidName: entry.raidName,
+        difficulty: entry.difficulty,
+        mode: entry.mode,
+        day,
+        time,
+        startTime: getSlotStartDate(weekDates, day, time).getTime(),
+      })))
+      .filter((slot) => slot.startTime + RAID_ONGOING_MS > nowTime)
+      .sort((a, b) => a.startTime - b.startTime || compareSchedules(a, b))
+  }, [currentMinute, myCharacters, raidSchedules, weekDates])
 
   // 탭별 신청 인원 ("무스펠 어려움 트라이" → 닉네임 Set). 레이드 · 공략 방식 탭에 인원 수로 보여 준다.
   const tabNicknames = useMemo(() => {
@@ -1420,6 +1654,9 @@ function App() {
     if (!currentScheduleKey) {
       showScheduleInCalendar(mySavedSchedules[0])
     }
+
+    // 이번 주에 이미 신청한 사람은 모바일에서 등록 폼 대신 요일별 신청 현황부터 보여 준다.
+    setMobileSection((prev) => (prev === 'form' ? 'day' : prev))
   }, [loggedInNickname, mySavedSchedules])
 
   // 저장하지 않은 요일/시간 변경이 있는 레이드 조합 키 목록 (지금 캐릭터 기준)
@@ -1456,6 +1693,7 @@ function App() {
   )
 
   // 저장된 스케줄을 폼에 불러와 바로 고칠 수 있게 한다.
+  // 직업 · 전투력 · 리딩은 '내 캐릭터' 칸의 값을 그대로 쓰고, 레이드 조합과 참여 여부만 불러온다.
   const editSavedSchedule = (entry) => {
     const raid = raidOptions.find((option) => option.label === entry.raidName)
 
@@ -1465,11 +1703,7 @@ function App() {
       difficulty: entry.difficulty,
       mode: entry.mode,
       attendance: entry.attendance,
-      className: entry.className,
-      power: entry.power,
-      leadReady: entry.leadReady,
     }))
-    setSelectedDayForTimes(getSelectedDayList(entry.dayTimeSelection)[0] ?? '')
 
     // 주말 낮시간(12~16시)이 들어 있으면 고칠 수 있게 낮시간을 켠다.
     if (getDayTimePairs(entry.dayTimeSelection).some(([, time]) => hiddenWeekdayTimeSlots.includes(time))) {
@@ -1477,40 +1711,6 @@ function App() {
     }
 
     document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
-
-  // 고르고 있는 요일의 시간을 다른 요일에 그대로 복사한다. (그 요일의 기존 선택은 바뀐다)
-  // 그 요일에 없는 시간대이거나 같은 계정이 이미 신청한 시간은 빼고 알려 준다.
-  const copyTimesToDays = (targetDays) => {
-    const sourceDay = selectedDayForTimes
-
-    if (!currentScheduleKey || !sourceDay) {
-      return
-    }
-
-    const sourceTimes = currentDayTimeSelection[sourceDay] ?? []
-    const nextSelection = normalizeDayTimeSelection(currentDayTimeSelection)
-    const skipped = []
-
-    targetDays.forEach((day) => {
-      const selectableTimes = getSelectableTimesForSelectedDay(day)
-
-      nextSelection[day] = sourceTimes.filter((time) => {
-        const canSelect = selectableTimes.includes(time) && !takenSlots.has(`${day}|${time}`)
-
-        if (!canSelect) {
-          skipped.push(`${day} ${time}`)
-        }
-
-        return canSelect
-      })
-    })
-
-    setDayTimeDrafts((prev) => ({ ...prev, [currentScheduleKey]: nextSelection }))
-
-    if (skipped.length > 0) {
-      window.alert(`아래 시간은 그 요일에 없는 시간대이거나 이미 신청한 시간이라 빼고 복사했어요.\n\n${skipped.join(', ')}`)
-    }
   }
 
   const activeRaidScheduleEntries = useMemo(() => {
@@ -1586,7 +1786,6 @@ function App() {
     writeStoredLoginPassword(savePassword ? password : '')
 
     setProfile(buildDefaultMember({ nickname }))
-    setSelectedDayForTimes('')
     await loadCurrentProfileByNickname(nickname)
   }
 
@@ -1783,7 +1982,6 @@ function App() {
     writeStoredLoginNickname('')
     writeStoredLoginPassword('')
     setProfile(buildDefaultMember({ nickname: '' }))
-    setSelectedDayForTimes('')
     setDayTimeDrafts({})
     setMobileMenuOpen(false)
   }
@@ -1792,6 +1990,19 @@ function App() {
     setMobileSection(sectionId)
     setMobileMenuOpen(false)
     window.scrollTo({ top: 0 })
+  }
+
+  // '내 다음 레이드'에서 그 시간대를 요일별 신청 현황에 펼쳐 보여 준다. (모바일은 그 영역으로 넘어간다)
+  const openSlotInDaySummary = ({ day, time, raidName, difficulty, mode }) => {
+    const rowKey = `${day}-${raidName} / ${difficulty} / ${mode}-${time}`
+
+    setMobileSection('day')
+    setExpandedPastDays((prev) => ({ ...prev, [day]: true }))
+    setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: true }))
+    // 펼친 줄이 그려진 뒤에 스크롤한다.
+    setTimeout(() => {
+      document.getElementById(`day-raid-row-${rowKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 0)
   }
 
   const openPasswordChangeFromMenu = () => {
@@ -1849,7 +2060,6 @@ function App() {
 
     setActiveCharacter(nextCharacter)
     setDayTimeDrafts({})
-    setSelectedDayForTimes('')
     setProfile((prev) => buildDefaultMember({
       nickname,
       raidFocus: prev.raidFocus,
@@ -1925,54 +2135,26 @@ function App() {
     }
   }
 
-  const saveCurrentProfile = async () => {
-    const trimmedNickname = currentNickname
-
-    if (!trimmedNickname) {
-      return
-    }
-
-    // 부캐로 저장할 때 로그인 닉네임(본캐)이 부캐로 바뀌지 않게 한다.
-    if (!loggedInNickname) {
-      setLoggedInNickname(trimmedNickname)
-      writeStoredLoginNickname(trimmedNickname)
-    }
-
-    const savedScheduleKey = currentScheduleKey
-    const savedSelection = normalizeDayTimeSelection(currentDayTimeSelection)
-
-    const nextMember = {
-      ...profile,
-      nickname: trimmedNickname,
-      className: profile.className,
-      raidFocus: profile.raidFocus,
-      leadReady: normalizeLeadReady(profile.leadReady),
-      days: getSelectedDayList(savedSelection),
-      times: getCombinedTimes(savedSelection),
-      dayTimeSelection: savedSelection,
-    }
-
-    // 저장이 끝나면 이 레이드의 수정 중 선택을 비운다 (이후엔 저장된 선택이 보인다).
-    const clearSavedDraft = () => {
-      setDayTimeDrafts((prev) => {
-        const nextDrafts = { ...prev }
-        delete nextDrafts[savedScheduleKey]
-        return nextDrafts
-      })
-    }
+  // 스케줄 한 건(캐릭터 · 레이드 조합)을 저장하고 화면에 반영한다. 성공하면 true, 실패하면 알림을 띄우고 false.
+  // info: 참여 여부 · 직업 · 전투력 · 리딩, target: 레이드 · 난이도 · 공략 방식
+  const persistSchedule = async (nickname, info, target, dayTimeSelection) => {
+    const selection = normalizeDayTimeSelection(dayTimeSelection)
+    const days = getSelectedDayList(selection)
+    const times = getCombinedTimes(selection)
+    const leadReady = normalizeLeadReady(info.leadReady)
 
     const scheduleEntry = {
-      nickname: trimmedNickname,
-      raid_name: currentScheduleTarget.raidName,
-      difficulty: currentScheduleTarget.difficulty,
-      mode: currentScheduleTarget.mode,
-      days: nextMember.days,
-      times: nextMember.times,
-      day_time_selection: normalizeDayTimeSelection(nextMember.dayTimeSelection),
-      attendance: nextMember.attendance,
-      class_name: nextMember.className,
-      power: nextMember.power,
-      lead_ready: nextMember.leadReady,
+      nickname,
+      raid_name: target.raidName,
+      difficulty: target.difficulty,
+      mode: target.mode,
+      days,
+      times,
+      day_time_selection: selection,
+      attendance: info.attendance,
+      class_name: info.className,
+      power: info.power,
+      lead_ready: leadReady,
     }
 
     if (supabase) {
@@ -1980,35 +2162,35 @@ function App() {
 
       try {
         result = await saveMemberSchedule(
-          trimmedNickname,
+          nickname,
           sessionPassword,
           {
-            attendance: nextMember.attendance,
-            class_name: nextMember.className,
-            power: nextMember.power,
-            lead_ready: nextMember.leadReady,
+            attendance: info.attendance,
+            class_name: info.className,
+            power: info.power,
+            lead_ready: leadReady,
           },
           scheduleEntry,
         )
       } catch (error) {
-        window.alert(`스케줄 저장에 실패했어요. (${error.message})`)
-        return
+        showToast(`스케줄 저장에 실패했어요. (${error.message})`, 'error')
+        return false
       }
 
       if (result?.error) {
         const conflict = result.conflict
         const conflictDetail = conflict
-          ? `\n\n${conflict.day}요일 ${conflict.time}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
+          ? `\n${conflict.day}요일 ${conflict.time}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
           : ''
-        window.alert(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}${conflictDetail}`)
-        return
+        showToast(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}${conflictDetail}`, 'error')
+        return false
       }
 
       const savedMember = normalizeMemberRecord(result.member)
       const savedEntry = normalizeRaidScheduleEntry(result.schedule)
 
       setMembers((prevMembers) => {
-        const index = prevMembers.findIndex((member) => member.nickname === trimmedNickname)
+        const index = prevMembers.findIndex((member) => member.nickname === nickname)
 
         if (index >= 0) {
           const nextMembers = [...prevMembers]
@@ -2020,7 +2202,7 @@ function App() {
       })
 
       setRaidSchedules((prevSchedules) => {
-        const index = prevSchedules.findIndex((entry) => entry.nickname === trimmedNickname && getScheduleKey(entry) === getScheduleKey(savedEntry))
+        const index = prevSchedules.findIndex((entry) => entry.nickname === nickname && getScheduleKey(entry) === getScheduleKey(savedEntry))
 
         if (index >= 0) {
           const nextSchedules = [...prevSchedules]
@@ -2030,29 +2212,35 @@ function App() {
 
         return [...prevSchedules, savedEntry]
       })
-      clearSavedDraft()
-      return
+      return true
     }
 
+    const updatedAt = new Date().toISOString()
     const nextLocalMember = {
-      ...nextMember,
+      nickname,
       id: `member-${Date.now()}`,
-      days: nextMember.days,
-      times: nextMember.times,
-      raidFocus: getRaidLabel(nextMember.raidFocus),
-      difficulty: nextMember.difficulty ?? getDifficultyForRaid(getRaidLabel(nextMember.raidFocus)),
-      mode: nextMember.mode ?? '트라이',
+      days,
+      times,
+      dayTimeSelection: selection,
+      attendance: info.attendance,
+      className: info.className,
+      power: info.power,
+      leadReady,
+      raidFocus: target.raidName,
+      difficulty: target.difficulty,
+      mode: target.mode,
+      updatedAt,
     }
     setMembers((prevMembers) => {
-      const targetIndex = prevMembers.findIndex((member) => member.nickname === trimmedNickname)
+      const targetIndex = prevMembers.findIndex((member) => member.nickname === nickname)
 
       if (targetIndex >= 0) {
         const nextMembers = [...prevMembers]
-        nextMembers[targetIndex] = { ...nextMembers[targetIndex], ...nextLocalMember, nickname: trimmedNickname }
+        nextMembers[targetIndex] = { ...nextMembers[targetIndex], ...nextLocalMember }
         return nextMembers
       }
 
-      return [...prevMembers, { ...nextLocalMember, nickname: trimmedNickname }]
+      return [...prevMembers, nextLocalMember]
     })
 
     const localEntry = normalizeRaidScheduleEntry({
@@ -2060,12 +2248,12 @@ function App() {
       className: scheduleEntry.class_name,
       leadReady: scheduleEntry.lead_ready,
       raidName: scheduleEntry.raid_name,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     })
 
     setRaidSchedules((prevSchedules) => {
       const nextSchedules = [...prevSchedules]
-      const index = nextSchedules.findIndex((entry) => entry.nickname === trimmedNickname && entry.raidName === localEntry.raidName && entry.difficulty === localEntry.difficulty && entry.mode === localEntry.mode)
+      const index = nextSchedules.findIndex((entry) => entry.nickname === nickname && getScheduleKey(entry) === getScheduleKey(localEntry))
 
       if (index >= 0) {
         nextSchedules[index] = localEntry
@@ -2074,26 +2262,26 @@ function App() {
 
       return [...nextSchedules, localEntry]
     })
-    clearSavedDraft()
+    return true
   }
 
-  // 저장 전에 선택하지 않은 항목이 있으면 알려준다.
-  const openSaveConfirm = () => {
+  // 저장 전에 선택하지 않은 항목이나 겹치는 시간이 있으면 알려 주고, 없으면 바로 저장한다.
+  const handleSaveClick = async () => {
     const missingFields = [
-      [selectedRaidLabel, '주요 레이드'],
+      [profile.className, '직업'],
+      [profile.power, '전투력'],
+      [profile.leadReady, '리딩 여부'],
+      [selectedRaidLabel, '레이드'],
       [profile.difficulty, '난이도'],
       [profile.mode, '공략 방식'],
-      [profile.leadReady, '리딩 여부'],
-      [currentSelectedDays.length > 0, '요일 · 시간대'],
-      [profile.attendance, '참여 가능 여부'],
-      [profile.className, '본인 직업'],
-      [profile.power, '전투력'],
+      [profile.attendance, '참여 여부'],
+      [currentSelectedDays.length > 0, '요일 · 시간'],
     ]
       .filter(([value]) => !value)
       .map(([, label]) => label)
 
     if (missingFields.length > 0) {
-      window.alert(`다음 항목을 선택해 주세요.\n\n${missingFields.join(', ')}`)
+      showToast(`다음 항목을 선택해 주세요: ${missingFields.join(', ')}`, 'error')
       return
     }
 
@@ -2105,16 +2293,108 @@ function App() {
       : []
 
     if (conflictLines.length > 0) {
-      window.alert(`같은 시간에 이미 신청한 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n\n${conflictLines.join('\n')}`)
+      showToast(`같은 시간에 이미 신청한 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n${conflictLines.join('\n')}`, 'error')
       return
     }
 
-    setSaveConfirmOpen(true)
+    const nickname = currentNickname
+    const scheduleKey = currentScheduleKey
+
+    if (!nickname || isSaving) {
+      return
+    }
+
+    setIsSaving(true)
+
+    try {
+      const isSaved = await persistSchedule(nickname, profile, currentScheduleTarget, currentDayTimeSelection)
+
+      if (!isSaved) {
+        return
+      }
+
+      // 저장이 끝나면 이 레이드의 수정 중 선택을 비운다 (이후엔 저장된 선택이 보인다).
+      setDayTimeDrafts((prev) => {
+        const nextDrafts = { ...prev }
+        delete nextDrafts[scheduleKey]
+        return nextDrafts
+      })
+      showToast(`${nickname} · ${formatScheduleKey(scheduleKey)} 저장했어요.`, 'success')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
-  const confirmSaveCurrentProfile = async () => {
-    setSaveConfirmOpen(false)
-    await saveCurrentProfile()
+  // 지난 신청을 이번 주 신청으로 다시 등록한다. 직업 · 전투력 · 리딩은 지금 '내 캐릭터' 칸 값을 쓴다.
+  // 이번 주 다른 신청과 겹치는 시간은 빼고 등록한다. (앞에서 등록한 것과도 겹치지 않게 차례로 쌓는다)
+  const restoreSchedules = async () => {
+    setRestoreConfirmOpen(false)
+
+    const nickname = currentNickname
+
+    if (!nickname || isSaving) {
+      return
+    }
+
+    const takenKeys = new Set(
+      raidSchedules
+        .filter((entry) => entry.attendance === '참' && myCharacters.includes(entry.nickname))
+        .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${day}|${time}`)),
+    )
+    const skipped = []
+    let restoredCount = 0
+
+    setIsSaving(true)
+
+    try {
+      for (const entry of restorableSchedules) {
+        const selection = normalizeDayTimeSelection(entry.dayTimeSelection)
+
+        if (entry.attendance === '참') {
+          weekdayNames.forEach((day) => {
+            selection[day] = selection[day].filter((time) => {
+              const slotKey = `${day}|${time}`
+
+              if (takenKeys.has(slotKey)) {
+                skipped.push(`${day} ${time}`)
+                return false
+              }
+
+              takenKeys.add(slotKey)
+              return true
+            })
+          })
+        }
+
+        if (getSelectedDayList(selection).length === 0) {
+          continue
+        }
+
+        const info = {
+          attendance: entry.attendance,
+          className: profile.className || entry.className,
+          power: profile.power || entry.power,
+          leadReady: profile.leadReady || entry.leadReady,
+        }
+
+        // 실패하면 이미 알림을 띄웠으니 나머지는 멈춘다.
+        if (!(await persistSchedule(nickname, info, entry, selection))) {
+          break
+        }
+
+        restoredCount += 1
+      }
+    } finally {
+      setIsSaving(false)
+    }
+
+    if (restoredCount > 0) {
+      showToast(`지난 신청 ${restoredCount}건을 이번 주로 다시 등록했어요.`, 'success')
+    }
+
+    if (skipped.length > 0) {
+      showToast(`이번 주 다른 신청과 겹쳐서 뺀 시간: ${skipped.join(', ')}`, 'info')
+    }
   }
 
   const clearCurrentSchedule = async () => {
@@ -2135,6 +2415,7 @@ function App() {
     saveLocalRaidSchedules(
       loadLocalRaidSchedules().filter((entry) => entry.nickname !== trimmedNickname),
     )
+    showToast(`${trimmedNickname}의 스케줄을 모두 삭제했어요.`, 'success')
   }
 
   // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다.
@@ -2161,6 +2442,7 @@ function App() {
       delete nextDrafts[targetKey]
       return nextDrafts
     })
+    showToast(`${formatScheduleKey(targetKey)} 스케줄을 삭제했어요.`, 'success')
   }
 
   // 저장된 스케줄 한 건에서 요일 하나(time이 null) 또는 요일 · 시간 하나만 뺀다.
@@ -2220,12 +2502,12 @@ function App() {
           },
         )
       } catch (error) {
-        window.alert(`삭제에 실패했어요. (${error.message})`)
+        showToast(`삭제에 실패했어요. (${error.message})`, 'error')
         return
       }
 
       if (result?.error) {
-        window.alert(`삭제에 실패했어요. ${describeAuthResult(result.error)}`)
+        showToast(`삭제에 실패했어요. ${describeAuthResult(result.error)}`, 'error')
         return
       }
 
@@ -2242,6 +2524,7 @@ function App() {
     )))
     // 수정 중인 선택이 있으면 거기서도 같은 시간을 뺀다.
     setDayTimeDrafts((prev) => (prev[targetKey] ? { ...prev, [targetKey]: removeSlot(prev[targetKey]) } : prev))
+    showToast(`${formatScheduleKey(targetKey)}에서 ${describePendingSlot({ day, time })} 시간을 삭제했어요.`, 'success')
   }
 
   // DB 삭제 요청. 성공하면 true, 실패하면 알림을 띄우고 false.
@@ -2250,13 +2533,13 @@ function App() {
       const result = await request()
 
       if (result?.error) {
-        window.alert(`삭제에 실패했어요. ${describeAuthResult(result.error)}`)
+        showToast(`삭제에 실패했어요. ${describeAuthResult(result.error)}`, 'error')
         return false
       }
 
       return true
     } catch (error) {
-      window.alert(`삭제에 실패했어요. (${error.message})`)
+      showToast(`삭제에 실패했어요. (${error.message})`, 'error')
       return false
     }
   }
@@ -2280,7 +2563,7 @@ function App() {
     const nickname = loggedInNickname ? getMySlotNickname(run) : ''
 
     if (!nickname) {
-      window.alert('로그인한 뒤에 클리어 여부를 표시할 수 있어요.')
+      showToast('로그인한 뒤에 클리어 여부를 표시할 수 있어요.', 'error')
       return
     }
 
@@ -2294,18 +2577,19 @@ function App() {
       try {
         result = await setRaidRunStatus(nickname, sessionPassword, run, field, value)
       } catch (error) {
-        window.alert(`표시를 저장하지 못했어요. (${error.message})`)
+        showToast(`표시를 저장하지 못했어요. (${error.message})`, 'error')
         return
       } finally {
         setSavingRunKey('')
       }
 
       if (result?.error) {
-        window.alert(`표시를 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+        showToast(`표시를 저장하지 못했어요. ${describeAuthResult(result.error)}`, 'error')
         return
       }
 
       setRaidRuns((prev) => upsertRaidRun(prev, normalizeRaidRun(result.run)))
+      showToast(value ? `클리어 ${value}로 표시했어요.` : '클리어 표시를 지웠어요.', 'success')
       return
     }
 
@@ -2313,11 +2597,12 @@ function App() {
     const current = raidRunByKey.get(runKey)
 
     if (!current?.gatheredAt) {
-      window.alert(describeAuthResult('not_gathered'))
+      showToast(describeAuthResult('not_gathered'), 'error')
       return
     }
 
     setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null }))
+    showToast(value ? `클리어 ${value}로 표시했어요.` : '클리어 표시를 지웠어요.', 'success')
   }
 
   // 준비 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
@@ -2325,7 +2610,7 @@ function App() {
     const nickname = loggedInNickname ? getMySlotNickname(run) : ''
 
     if (!nickname) {
-      window.alert('로그인한 뒤에 준비를 표시할 수 있어요.')
+      showToast('로그인한 뒤에 준비를 표시할 수 있어요.', 'error')
       return
     }
 
@@ -2339,7 +2624,7 @@ function App() {
       try {
         result = await setRaidRally(nickname, sessionPassword, run, action)
       } catch (error) {
-        window.alert(`준비 상태를 저장하지 못했어요. (${error.message})`)
+        showToast(`준비 상태를 저장하지 못했어요. (${error.message})`, 'error')
         return
       } finally {
         setSavingRunKey('')
@@ -2351,9 +2636,11 @@ function App() {
       }
 
       if (result?.error) {
-        window.alert(`준비 상태를 저장하지 못했어요. ${describeAuthResult(result.error)}`)
+        showToast(`준비 상태를 저장하지 못했어요. ${describeAuthResult(result.error)}`, 'error')
       } else if (action === 'remind' && !result?.notified) {
-        window.alert('디스코드 알림이 연결되어 있지 않아 다시 알림을 보내지 못했어요.')
+        showToast('디스코드 알림이 연결되어 있지 않아 다시 알림을 보내지 못했어요.', 'error')
+      } else {
+        showToast(RALLY_SUCCESS_MESSAGES[action], 'success')
       }
 
       return
@@ -2366,7 +2653,7 @@ function App() {
 
     if (action === 'call') {
       if (current.rallyCalledAt) {
-        window.alert(describeAuthResult('already_called'))
+        showToast(describeAuthResult('already_called'), 'error')
         return
       }
 
@@ -2375,12 +2662,12 @@ function App() {
       nextRun = { ...current, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null }
     } else {
       if (!current.rallyCalledAt) {
-        window.alert(describeAuthResult('not_called'))
+        showToast(describeAuthResult('not_called'), 'error')
         return
       }
 
       if (action === 'uncheck' && current.gatheredAt) {
-        window.alert(describeAuthResult('already_gathered'))
+        showToast(describeAuthResult('already_gathered'), 'error')
         return
       }
 
@@ -2394,6 +2681,7 @@ function App() {
     }
 
     setRaidRuns((prev) => upsertRaidRun(prev, nextRun))
+    showToast(RALLY_SUCCESS_MESSAGES[action], 'success')
   }
 
   // 같은 값을 다시 누르면 표시를 지운다. O로 바꿀 때는 알림이 가므로 한 번 확인한다.
@@ -2694,6 +2982,34 @@ function App() {
     )
   }
 
+  // '내 다음 레이드' 카드에 보여 줄 시간대 정보 (인원 · 리딩 · 준비 확인 상태)
+  const myUpcomingSlotDetails = myUpcomingSlots.map((slot) => {
+    const run = { weekStart: weekStartKey, day: slot.day, time: slot.time, raidName: slot.raidName, difficulty: slot.difficulty, mode: slot.mode }
+    const runKey = getRaidRunKey(run)
+    const runRecord = raidRunByKey.get(runKey)
+    const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
+    const voterNicknames = [...new Set(people.map((person) => person.nickname))]
+    const rallyCheckins = runRecord?.rallyCheckins ?? []
+
+    return {
+      ...slot,
+      run,
+      runKey,
+      people,
+      voterNicknames,
+      leaderCount: people.filter((person) => person.leadReady === 'O').length,
+      isRallyCalled: Boolean(runRecord?.rallyCalledAt),
+      isGathered: Boolean(runRecord?.gatheredAt),
+      checkedCount: voterNicknames.filter((name) => rallyCheckins.includes(name)).length,
+      isMeChecked: rallyCheckins.includes(slot.nickname),
+    }
+  })
+  // 내가 준비 완료를 눌러야 하는 시간대가 있으면 그것을 먼저, 없으면 가장 가까운 시간대를 보여 준다.
+  const isWaitingForMe = (slot) => slot.isRallyCalled && !slot.isGathered && !slot.isMeChecked
+  const nextRaidSlot = myUpcomingSlotDetails.find(isWaitingForMe) ?? myUpcomingSlotDetails[0] ?? null
+  const nextRaidNeedsMe = Boolean(nextRaidSlot && isWaitingForMe(nextRaidSlot))
+  const laterRaidSlots = myUpcomingSlotDetails.filter((slot) => slot !== nextRaidSlot)
+
   return (
     <div className="app-shell" data-mobile-section={mobileSection}>
       <header className="topbar">
@@ -2900,25 +3216,85 @@ function App() {
         </div>
       )}
 
-      {saveConfirmOpen && (
-        <div className="save-confirm-backdrop" onClick={() => setSaveConfirmOpen(false)}>
+      {restoreConfirmOpen && (
+        <div className="save-confirm-backdrop" onClick={() => setRestoreConfirmOpen(false)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>캘린더에 저장할까요?</h3>
+            <h3>지난 신청을 다시 등록할까요?</h3>
             <p>
-              <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
-              의 레이드 시간 정보를 저장하시겠습니까
+              <span className="save-confirm-nickname">{currentNickname}</span>
+              의 지난 신청을 이번 주 신청으로 저장해요. 이번 주 다른 신청과 겹치는 시간은 빼고 등록해요.
             </p>
+            <ul className="restore-list">
+              {restorableSchedules.map((entry) => {
+                const savedDate = new Date(entry.updatedAt)
+
+                return (
+                  <li key={getScheduleKey(entry)}>
+                    <strong>
+                      {formatScheduleKey(getScheduleKey(entry))}
+                      {entry.attendance !== '참' && ' (불참)'}
+                    </strong>
+                    <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
+                    {!Number.isNaN(savedDate.getTime()) && (
+                      <small>{savedDate.getMonth() + 1}/{savedDate.getDate()} 저장</small>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
             <div className="save-confirm-actions">
-              <button type="button" className="secondary-button" onClick={() => setSaveConfirmOpen(false)}>
+              <button type="button" className="secondary-button" onClick={() => setRestoreConfirmOpen(false)}>
                 취소
               </button>
-              <button type="button" className="primary-button" onClick={confirmSaveCurrentProfile}>
-                저장
+              <button type="button" className="primary-button" onClick={restoreSchedules}>
+                다시 등록
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {memberDetail && (
+        <div className="save-confirm-backdrop" onClick={() => setMemberDetail(null)}>
+          <div className="save-confirm-modal member-detail-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="member-detail-head">
+              <img src={getClassIconPath(memberDetail.className)} alt="" className="member-detail-icon" />
+              <div>
+                <h3>{memberDetail.nickname}</h3>
+                <span>{memberDetail.className}</span>
+              </div>
+            </div>
+            <dl className="member-detail-list">
+              <dt>전투력</dt>
+              <dd>{memberDetail.power}</dd>
+              <dt>리딩</dt>
+              <dd>{memberDetail.leadReady === 'O' ? '가능' : '불가'}</dd>
+              {altOwnerByNickname.has(memberDetail.nickname) && (
+                <>
+                  <dt>본캐</dt>
+                  <dd>{altOwnerByNickname.get(memberDetail.nickname)}</dd>
+                </>
+              )}
+            </dl>
+            <button type="button" className="secondary-button member-detail-close" onClick={() => setMemberDetail(null)}>
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`toast is-${toast.type}`}
+            role={toast.type === 'error' ? 'alert' : 'status'}
+            onClick={() => dismissToast(toast.id)}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </div>
 
       {pendingRunStatus && (
         <div className="save-confirm-backdrop" onClick={() => setPendingRunStatus(null)}>
@@ -2989,8 +3365,8 @@ function App() {
         </div>
       )}
 
-      <section className="summary-grid" data-section="form">
-        <article className="summary-card accent">
+      <section className="summary-grid">
+        <article className="summary-card accent" data-section="form">
           <span className="label">다음 리셋</span>
           <strong>{nextReset.toLocaleString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })}</strong>
           <small>
@@ -2998,16 +3374,69 @@ function App() {
           </small>
         </article>
 
-        <article className="summary-card">
-          <span className="label">현재 집계</span>
-          <strong>{participantCount}명 참여</strong>
-          <small>{getDayTimePairs(currentDayTimeSelection).length}개 타임 선택 · {currentSelectedDays.length}개 요일</small>
-        </article>
-
-        <article className="summary-card">
-          <span className="label">파티 조건</span>
-          <strong>2파티 / 10명</strong>
-          <small>각 파티 5명 기준</small>
+        <article className={`summary-card next-raid-card ${nextRaidNeedsMe ? 'needs-action' : ''}`}>
+          <span className="label">{nextRaidNeedsMe ? '준비 확인 요청이 왔어요' : '내 다음 레이드'}</span>
+          {nextRaidSlot ? (
+            <>
+              <strong>
+                {nextRaidSlot.day}요일 {nextRaidSlot.time} · {nextRaidSlot.raidName} {nextRaidSlot.difficulty} {nextRaidSlot.mode}
+              </strong>
+              <small>
+                {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())}
+                {` · ${nextRaidSlot.people.length}/${RAID_FULL_SIZE}명 · 리딩 ${nextRaidSlot.leaderCount}명`}
+                {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
+              </small>
+              <div className="next-raid-actions">
+                {!nextRaidSlot.isRallyCalled ? (
+                  <button
+                    type="button"
+                    className="day-raid-rally-button"
+                    disabled={savingRunKey === nextRaidSlot.runKey}
+                    onClick={() => handleRallyClick(nextRaidSlot.run, 'call', nextRaidSlot.voterNicknames)}
+                  >
+                    📣 준비 확인 시작
+                  </button>
+                ) : nextRaidSlot.isGathered ? (
+                  <span className="next-raid-status is-yes">
+                    전원 준비 {nextRaidSlot.checkedCount}/{nextRaidSlot.voterNicknames.length}
+                  </span>
+                ) : (
+                  <>
+                    <span className="next-raid-status is-pending">
+                      준비 {nextRaidSlot.checkedCount}/{nextRaidSlot.voterNicknames.length}
+                    </span>
+                    <button
+                      type="button"
+                      className={`day-raid-rally-button ${nextRaidSlot.isMeChecked ? 'active' : 'is-primary'}`}
+                      aria-pressed={nextRaidSlot.isMeChecked}
+                      disabled={savingRunKey === nextRaidSlot.runKey}
+                      onClick={() => handleRallyClick(nextRaidSlot.run, nextRaidSlot.isMeChecked ? 'uncheck' : 'check', nextRaidSlot.voterNicknames)}
+                    >
+                      {nextRaidSlot.isMeChecked ? '준비 취소' : '✓ 준비 완료'}
+                    </button>
+                  </>
+                )}
+                <button type="button" className="next-raid-link" onClick={() => openSlotInDaySummary(nextRaidSlot)}>
+                  현황 보기
+                </button>
+              </div>
+              {laterRaidSlots.length > 0 && (
+                <small className="next-raid-later">
+                  이후: {laterRaidSlots.slice(0, 2).map((slot) => `${slot.day} ${slot.time} ${slot.raidName} ${slot.difficulty}`).join(' / ')}
+                  {laterRaidSlots.length > 2 && ` 외 ${laterRaidSlots.length - 2}건`}
+                </small>
+              )}
+            </>
+          ) : (
+            <>
+              <strong>이번 주 남은 신청 없음</strong>
+              <small>
+                {restorableSchedules.length > 0
+                  ? '내 시간 등록에서 지난 신청을 불러와 다시 등록할 수 있어요.'
+                  : '내 시간 등록에서 가능한 시간을 골라 주세요.'}
+              </small>
+            </>
+          )}
         </article>
       </section>
 
@@ -3028,77 +3457,43 @@ function App() {
 
           {helpOpen && (
             <div className="help-panel">
-              <p>1. 레이드와 난이도/공략 방식을 먼저 선택해요. 요일·시간은 레이드마다 따로 저장돼요.</p>
-              <p>2. 닉네임과 리딩 여부를 입력해요.</p>
-              <p>3. 가능한 요일과 시간대를 선택해요.</p>
-              <p>4. 저장하면 주간 캘린더에서 해당 시간대에 자동으로 집계돼요.</p>
-              <p>5. 레이드 탭과 난이도/공략 방식을 선택하면 파티 인원을 확인할 수 있어요.</p>
+              <p>1. '내 캐릭터'에서 직업 · 전투력 · 리딩 여부를 정해요. 캐릭터마다 한 번 정해 두면 계속 쓰여요.</p>
+              <p>2. 신청할 레이드 · 난이도 · 공략 방식과 참여 여부를 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
+              <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요.</p>
+              <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요.</p>
+              <p>5. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 한 번에 다시 등록할 수 있어요.</p>
             </div>
           )}
 
-          <div className="field-group">
-            <label>주요 레이드</label>
-            <div className="chip-grid raid-option-grid">
-              {raidOptions.map((raid) => (
-                <button
-                  key={raid.id}
-                  type="button"
-                  className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
-                  onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
-                >
-                  <span>{raid.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="two-column">
-            <div className="field-group">
-              <label htmlFor="difficulty">난이도</label>
-              <select
-                id="difficulty"
-                value={profile.difficulty}
-                onChange={(event) => setProfile((prev) => ({ ...prev, difficulty: event.target.value }))}
+          {restorableSchedules.length > 0 && (
+            <div className="restore-callout">
+              <div className="restore-callout-text">
+                <strong>지난 신청 {restorableSchedules.length}건이 있어요</strong>
+                <span>{restorableSchedules.map((entry) => formatScheduleKey(getScheduleKey(entry))).join(' / ')}</span>
+              </div>
+              <button
+                type="button"
+                className="secondary-button small-toggle"
+                onClick={() => setRestoreConfirmOpen(true)}
+                disabled={isSaving}
               >
-                <option value="" disabled>선택</option>
-                {difficultyOptions.map((difficulty) => (
-                  <option key={difficulty} value={difficulty}>
-                    {difficulty}
-                  </option>
-                ))}
-              </select>
+                불러오기
+              </button>
             </div>
+          )}
+
+          <div className="form-section">
+            <h3 className="form-section-title">내 캐릭터</h3>
 
             <div className="field-group">
-              <label htmlFor="mode">공략 방식</label>
-              <select
-                id="mode"
-                value={profile.mode}
-                onChange={(event) => setProfile((prev) => ({ ...prev, mode: event.target.value }))}
-              >
-                <option value="" disabled>선택</option>
-                {modeOptions.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {mode}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="field-group">
-            <div className="field-label-row">
-              <span className="nickname-label-wrap">
+              <div className="field-label-row">
                 <label htmlFor="nickname">{myAltNicknames.length > 0 ? '캐릭터' : '닉네임'}</label>
                 {supabase && (
                   <button type="button" className="alt-manage-button" onClick={openAltManager}>
                     부캐 관리{myAltNicknames.length > 0 ? ` (${myAltNicknames.length})` : ''}
                   </button>
                 )}
-              </span>
-              <span className="lead-label-inline">리딩 여부</span>
-            </div>
-            <div className="nickname-row">
+              </div>
               {myAltNicknames.length > 0 ? (
                 <select
                   id="nickname"
@@ -3121,185 +3516,225 @@ function App() {
                   title="닉네임은 로그인한 닉네임으로 고정돼요."
                 />
               )}
-              <div className="lead-toggle" aria-label="리딩 가능 여부">
-                {['O', 'X'].map((value) => (
+            </div>
+
+            <div className="two-column">
+              <div className="field-group">
+                <label htmlFor="className">직업</label>
+                <select
+                  id="className"
+                  value={profile.className}
+                  onChange={(event) => setProfile((prev) => ({ ...prev, className: event.target.value }))}
+                >
+                  <option value="" disabled>선택</option>
+                  {classOptions.map((className) => (
+                    <option key={className} value={className}>
+                      {className}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field-group">
+                <label htmlFor="power">전투력</label>
+                <select
+                  id="power"
+                  value={profile.power}
+                  onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
+                >
+                  <option value="" disabled>선택</option>
+                  {powerOptions.map((power) => (
+                    <option key={power} value={power}>
+                      {power}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="field-group">
+              <label>리딩 여부</label>
+              <div className="chip-grid segmented" role="group" aria-label="리딩 여부">
+                {[['O', '리딩 가능'], ['X', '리딩 불가']].map(([value, label]) => (
                   <button
                     key={value}
                     type="button"
-                    className={profile.leadReady === value ? 'lead-button active' : 'lead-button'}
+                    className={profile.leadReady === value ? 'chip active' : 'chip'}
+                    aria-pressed={profile.leadReady === value}
                     onClick={() => setProfile((prev) => ({ ...prev, leadReady: value }))}
                   >
-                    {value}
+                    <span className="chip-lead-mark"><LeadMark value={value} /></span>
+                    {label}
                   </button>
                 ))}
               </div>
             </div>
           </div>
 
-          <div className="field-group" id="schedule-day-field">
-            <label>요일 선택</label>
-            {!isScheduleTargetSelected && (
-              <p className="field-hint">레이드, 난이도, 공략 방식을 먼저 선택해 주세요.</p>
-            )}
-            <div className="chip-grid">
-              {weekdayNames.map((day) => {
-                // active: 시간이 선택된 요일, editing: 지금 시간을 고르고 있는 요일
-                const hasTimes = (currentDayTimeSelection[day] ?? []).length > 0
-                const isEditing = isScheduleTargetSelected && selectedDayForTimes === day
+          <div className="form-section" id="schedule-target-field">
+            <h3 className="form-section-title">신청할 레이드</h3>
 
-                return (
+            <div className={`field-group ${showTargetWarning && !selectedRaidLabel ? 'is-missing' : ''}`}>
+              <label>레이드</label>
+              <div className="chip-grid segmented" role="group" aria-label="레이드">
+                {raidOptions.map((raid) => (
                   <button
-                    key={day}
+                    key={raid.id}
                     type="button"
-                    className={`chip ${hasTimes ? 'active' : ''} ${isEditing ? 'editing' : ''} ${isScheduleTargetSelected ? '' : 'disabled'}`}
-                    onClick={() => setSelectedDayForTimes(day)}
-                    disabled={!isScheduleTargetSelected}
+                    className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
+                    aria-pressed={selectedRaidLabel === raid.label}
+                    onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
                   >
-                    {day}
+                    {raid.label}
                   </button>
-                )
-              })}
+                ))}
+              </div>
+            </div>
+
+            <div className="two-column">
+              <div className={`field-group ${showTargetWarning && !profile.difficulty ? 'is-missing' : ''}`}>
+                <label>난이도</label>
+                <div className="chip-grid segmented" role="group" aria-label="난이도">
+                  {difficultyOptions.map((difficulty) => (
+                    <button
+                      key={difficulty}
+                      type="button"
+                      className={profile.difficulty === difficulty ? 'chip active' : 'chip'}
+                      aria-pressed={profile.difficulty === difficulty}
+                      onClick={() => setProfile((prev) => ({ ...prev, difficulty }))}
+                    >
+                      {difficulty}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`field-group ${showTargetWarning && !profile.mode ? 'is-missing' : ''}`}>
+                <label>공략 방식</label>
+                <div className="chip-grid segmented" role="group" aria-label="공략 방식">
+                  {modeOptions.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={profile.mode === mode ? 'chip active' : 'chip'}
+                      aria-pressed={profile.mode === mode}
+                      onClick={() => setProfile((prev) => ({ ...prev, mode }))}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="field-group">
+              <label>참여 여부</label>
+              <div className="chip-grid segmented" role="group" aria-label="참여 여부">
+                {[['참', '참여'], ['불참', '불참']].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={profile.attendance === value ? 'chip active' : 'chip'}
+                    aria-pressed={profile.attendance === value}
+                    onClick={() => setProfile((prev) => ({ ...prev, attendance: value }))}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="field-group">
+          <div className="form-section" id="schedule-day-field">
             <div className="field-label-row">
-              <label>{selectedDayForTimes ? `${selectedDayForTimes}요일 시간대 선택` : '시간대 선택'}</label>
-              {/* 주말은 낮시간(12~16시)을 켜야 선택할 수 있어서, 모바일에서도 보이도록 입력 폼에 토글을 둔다. */}
-              {(selectedDayForTimes === '토' || selectedDayForTimes === '일') && (
-                <button
-                  type="button"
-                  className="secondary-button small-toggle"
-                  onClick={() => setShowDaytimeSlots((prev) => !prev)}
-                  aria-pressed={showDaytimeSlots}
-                >
-                  {showDaytimeSlots ? '낮시간 숨기기' : '낮시간 보기'}
-                </button>
-              )}
+              <h3 className="form-section-title">요일 · 시간</h3>
+              {/* 주말 낮시간(12~16시)은 켰을 때만 시간표에 줄이 생긴다. */}
+              <button
+                type="button"
+                className="secondary-button small-toggle"
+                onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                aria-pressed={showDaytimeSlots}
+              >
+                {showDaytimeSlots ? '낮시간 숨기기' : '주말 낮시간 보기'}
+              </button>
             </div>
-            {isScheduleTargetSelected && !selectedDayForTimes && (
-              <p className="field-hint">요일을 먼저 선택해 주세요.</p>
-            )}
-            <div className="chip-grid time-grid">
-              {visibleTimeSlots.map((time) => {
-                const isSelected = (currentDayTimeSelection[selectedDayForTimes] ?? []).includes(time)
-                const isHiddenDaytime = !getSelectableTimesForSelectedDay(selectedDayForTimes).includes(time)
-                // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
-                const takenBy = selectedDayForTimes ? takenSlots.get(`${selectedDayForTimes}|${time}`) : null
-                const isTaken = Boolean(takenBy)
-                const isDisabled = !isScheduleTargetSelected || !selectedDayForTimes || isHiddenDaytime || (isTaken && !isSelected)
-
-                return (
+            <p className="field-hint">
+              {isScheduleTargetSelected
+                ? '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요.'
+                : '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'}
+            </p>
+            <div className={`time-pick-grid ${isScheduleTargetSelected ? '' : 'is-disabled'}`} aria-label="요일 · 시간 선택">
+              <span className="time-pick-corner" aria-hidden="true" />
+              {weekdayNames.map((day) => (
+                <button
+                  key={day}
+                  type="button"
+                  className={`time-pick-head${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
+                  onClick={() => toggleTimeLine(formTimeRows.map((time) => [day, time]))}
+                  title={`${day}요일 전체 고르기 / 지우기`}
+                >
+                  {day}
+                </button>
+              ))}
+              {formTimeRows.map((time) => (
+                <Fragment key={time}>
                   <button
-                    key={time}
                     type="button"
-                    className={`${isSelected ? 'chip active' : 'chip'} ${isDisabled ? 'disabled' : ''} ${isTaken ? 'is-taken' : ''}`}
-                    onClick={() => toggleTimeSelection(time)}
-                    disabled={isDisabled}
-                    title={isHiddenDaytime
-                      ? '낮시간을 숨기면 12:00~16:00은 선택할 수 없어요.'
-                      : isTaken ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : ''}
+                    className="time-pick-head is-row"
+                    onClick={() => toggleTimeLine(weekdayNames.map((day) => [day, time]))}
+                    title={`매일 ${time} 고르기 / 지우기`}
                   >
                     {time}
-                    {isTaken && (
-                      <span className="time-taken-label">
-                        {takenBy.nickname === currentNickname ? takenBy.raidName : takenBy.nickname}
-                      </span>
-                    )}
                   </button>
-                )
-              })}
-            </div>
-            {/* 고른 요일의 시간을 다른 요일에 그대로 복사한다. 이미 같은 시간인 요일은 ✓로 보여 준다. */}
-            {isScheduleTargetSelected && selectedDayTimesKey && (
-              <div className="copy-times-row">
-                <span className="copy-times-label">{selectedDayForTimes}요일 시간을 다른 요일에 복사</span>
-                <div className="copy-times-days">
-                  {copyTargetDays.map((day) => {
-                    const isSame = getSortedTimesKey(currentDayTimeSelection[day]) === selectedDayTimesKey
+                  {weekdayNames.map((day) => {
+                    if (!getSelectableTimesForSelectedDay(day).includes(time)) {
+                      return <span key={`${day}-${time}`} className="time-pick-cell is-unavailable" aria-hidden="true" />
+                    }
+
+                    const isSelected = (currentDayTimeSelection[day] ?? []).includes(time)
+                    // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
+                    const takenBy = takenSlots.get(`${day}|${time}`)
+                    const isDisabled = Boolean(takenBy) && !isSelected
 
                     return (
                       <button
-                        key={day}
+                        key={`${day}-${time}`}
                         type="button"
-                        className={`copy-day-chip ${isSame ? 'is-same' : ''}`}
-                        onClick={() => copyTimesToDays([day])}
-                        title={isSame ? `${day}요일은 이미 같은 시간이에요.` : `${day}요일을 ${selectedDayForTimes}요일과 같은 시간으로 바꿔요.`}
+                        className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}`}
+                        aria-pressed={isSelected}
+                        aria-label={`${day}요일 ${time}`}
+                        disabled={isDisabled}
+                        title={takenBy ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : `${day}요일 ${time}`}
+                        onPointerDown={(event) => startTimeDrag(event, day, time, isSelected)}
+                        onPointerEnter={(event) => continueTimeDrag(event, day, time)}
+                        onClick={(event) => handleTimeCellClick(event, day, time, isSelected)}
                       >
-                        {isSame && <span aria-hidden="true">✓</span>}
-                        {day}
+                        {isSelected ? '✓' : ''}
                       </button>
                     )
                   })}
-                  <button type="button" className="copy-day-chip is-all" onClick={() => copyTimesToDays(copyTargetDays)}>
-                    전체
-                  </button>
-                </div>
-              </div>
+                </Fragment>
+              ))}
+            </div>
+            {isScheduleTargetSelected && takenSlots.size > 0 && (
+              <p className="field-hint time-pick-legend">
+                <span className="time-pick-legend-swatch" aria-hidden="true" /> 다른 캐릭터 · 레이드로 이미 신청한 시간
+              </p>
             )}
           </div>
 
-          <div className="two-column">
-            <div className="field-group">
-              <label htmlFor="attendance">참여 가능 여부</label>
-              <select
-                id="attendance"
-                value={profile.attendance}
-                onChange={(event) => setProfile((prev) => ({ ...prev, attendance: event.target.value }))}
-              >
-                <option value="" disabled>선택</option>
-                <option value="참">참</option>
-                <option value="불참">불참</option>
-              </select>
+          {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
+          {hasUnsavedChanges && (
+            <div className="unsaved-notice" role="status">
+              <strong>저장하지 않은 변경이 있어요</strong>
+              <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
             </div>
+          )}
 
-            <div className="field-group">
-              <label htmlFor="className">본인 직업</label>
-              <select
-                id="className"
-                value={profile.className}
-                onChange={(event) => setProfile((prev) => ({ ...prev, className: event.target.value }))}
-              >
-                <option value="" disabled>선택</option>
-                {classOptions.map((className) => (
-                  <option key={className} value={className}>
-                    {className}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="field-group">
-            <label htmlFor="power">전투력</label>
-            <select
-              id="power"
-              value={profile.power}
-              onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
-            >
-              <option value="" disabled>선택</option>
-              {powerOptions.map((power) => (
-                <option key={power} value={power}>
-                  {power}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="selected-summary">
-            <h3>내 선택 요약</h3>
-            <ul>
-              <li>닉네임: {profile.nickname || '미입력'}</li>
-              <li>가능 시간: {formatDayTimeSelection(currentDayTimeSelection) || '선택 없음'}</li>
-              <li>참여 여부: {profile.attendance || '미선택'}</li>
-              <li>직업: {profile.className || '미선택'}</li>
-              <li>전투력: {profile.power || '미선택'}</li>
-              <li>리딩 가능 여부: {profile.leadReady || '미선택'}</li>
-              <li>
-                우선 레이드:{' '}
-                {[selectedRaidLabel, profile.difficulty, profile.mode].map((value) => value || '미선택').join(' · ')}
-              </li>
-            </ul>
+          <div className="member-actions">
+            <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving}>
+              {isSaving ? '저장 중…' : '캘린더에 저장'}
+            </button>
           </div>
 
           <div className="selected-summary saved-schedule-list">
@@ -3386,27 +3821,13 @@ function App() {
                     )
                   })}
                 </ul>
+                <button type="button" className="secondary-button saved-schedule-clear" onClick={() => setPendingDelete('all')}>
+                  내 스케줄 전체 삭제
+                </button>
               </>
             ) : (
               <p className="saved-schedule-empty">저장된 스케줄이 없어요.</p>
             )}
-          </div>
-
-          {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
-          {hasUnsavedChanges && (
-            <div className="unsaved-notice" role="status">
-              <strong>저장하지 않은 변경이 있어요</strong>
-              <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
-            </div>
-          )}
-
-          <div className="member-actions">
-            <button type="button" className="primary-button" onClick={openSaveConfirm}>
-              캘린더에 저장
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setPendingDelete('all')}>
-              내 스케줄 전체 삭제
-            </button>
           </div>
         </section>
 
@@ -3510,6 +3931,7 @@ function App() {
                           <span
                             key={`${keyPrefix}-${member.nickname}-${member.className}`}
                             className={`day-raid-member has-hover-tooltip ${member.leadReady === 'O' ? 'is-leader' : ''} ${rallyState ? `rally-${rallyState}` : ''}`}
+                            {...getMemberPillProps(member)}
                           >
                             {rallyState && (
                               <span className="day-raid-member-check" title={rallyState === 'checked' ? '준비 완료' : '아직 준비 안 함'}>
@@ -3521,17 +3943,7 @@ function App() {
                               <span>{member.nickname}</span>
                               <span className="member-power-inline">{member.power}</span>
                             </span>
-                            <span className="member-hover-tooltip" aria-hidden="true">
-                              <span className="tooltip-header-row">
-                                <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
-                                <strong>{member.nickname}</strong>
-                                {member.leadReady === 'O' && <span className="tooltip-lead-label">리딩 가능</span>}
-                              </span>
-                              <span className="tooltip-power">{member.power}</span>
-                              {altOwnerByNickname.has(member.nickname) && (
-                                <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>
-                              )}
-                            </span>
+                            <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} showLead />
                           </span>
                         )
 
@@ -3571,6 +3983,8 @@ function App() {
                                 const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
                                 const isMeChecked = rallyCheckins.includes(mySlotNickname)
+                                const isFullSlot = timeVoters.length >= RAID_FULL_SIZE
+                                const hasLeader = timeVoters.some((member) => member.leadReady === 'O')
                                 // 어제까지의 요일인데 준비 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
                                 const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
                                 const renderRally = () => {
@@ -3668,7 +4082,7 @@ function App() {
                                 }
 
                                 return (
-                                  <div key={rowKey} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''}`}>
+                                  <div key={rowKey} id={`day-raid-row-${rowKey}`} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''}`}>
                                     <button
                                       type="button"
                                       className="day-raid-time-toggle"
@@ -3676,10 +4090,11 @@ function App() {
                                       title={isExpanded ? '접기' : `${time} 인원 펼치기`}
                                       onClick={() => setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))}
                                     >
-                                      <span className="day-raid-time-tag">
+                                      <span className={`day-raid-time-tag ${isFullSlot ? 'is-full' : ''}`}>
                                         {time}
-                                        <span className="day-raid-time-count">{timeVoters.length}명</span>
+                                        <span className="day-raid-time-count">{timeVoters.length}/{RAID_FULL_SIZE}</span>
                                       </span>
+                                      {!hasLeader && <span className="slot-warn">리더 없음</span>}
                                       {!isExpanded && (
                                         <span className="day-raid-icon-stack" aria-hidden="true">
                                           {previewVoters.map((member) => (
@@ -3838,12 +4253,22 @@ function App() {
                       )
                     }
 
+                    // 인원이 많을수록 진하게 칠하고, 정원이 찼는지 · 리딩 가능자가 있는지 칸 위쪽에 표시한다.
+                    const fillLevel = people.length >= RAID_FULL_SIZE ? 3 : people.length >= RAID_FULL_SIZE / 2 ? 2 : 1
+                    const hasLeader = people.some((member) => member.leadReady === 'O')
+
                     return (
                       <div
                         key={`${date.toISOString()}-${time}`}
-                        className={`slot-cell occupied ${isMySlot ? 'my-schedule-slot' : ''}`}
+                        className={`slot-cell occupied fill-${fillLevel} ${isMySlot ? 'my-schedule-slot' : ''}`}
                       >
-                        {isMySlot && <span className="my-slot-badge">내 시간</span>}
+                        <div className="slot-cell-head">
+                          {isMySlot && <span className="my-slot-badge">내 시간</span>}
+                          <span className={`slot-count ${fillLevel === 3 ? 'is-full' : ''}`}>
+                            {people.length}/{RAID_FULL_SIZE}
+                          </span>
+                          {!hasLeader && <span className="slot-warn">리더 없음</span>}
+                        </div>
 
                         <div className="raid-group-list">
                           <div className="raid-group-item selected-raid-item">
@@ -3853,7 +4278,7 @@ function App() {
                                 {partyA.length > 0 ? (
                                   <div className="time-member-list vertical">
                                     {partyA.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill has-hover-tooltip">
+                                      <span key={`${dayLabel}-${time}-${tabKey}-A-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                           <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
@@ -3862,14 +4287,7 @@ function App() {
                                           </span>
                                           {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                         </span>
-                                        <span className="member-hover-tooltip" aria-hidden="true">
-                                          <span className="tooltip-header-row">
-                                            <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
-                                            <strong>{member.nickname}</strong>
-                                          </span>
-                                          <span className="tooltip-power">{member.power}</span>
-                                          {altOwnerByNickname.has(member.nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>}
-                                        </span>
+                                        <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                                       </span>
                                     ))}
                                   </div>
@@ -3882,7 +4300,7 @@ function App() {
                                 {partyB.length > 0 ? (
                                   <div className="time-member-list vertical">
                                     {partyB.map((member) => (
-                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill has-hover-tooltip">
+                                      <span key={`${dayLabel}-${time}-${tabKey}-B-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
                                         <span className="nickname-with-icon">
                                           <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
                                           <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
@@ -3891,14 +4309,7 @@ function App() {
                                           </span>
                                           {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                         </span>
-                                        <span className="member-hover-tooltip" aria-hidden="true">
-                                          <span className="tooltip-header-row">
-                                            <img src={getClassIconPath(member.className)} alt={member.className} className="tooltip-icon" />
-                                            <strong>{member.nickname}</strong>
-                                          </span>
-                                          <span className="tooltip-power">{member.power}</span>
-                                          {altOwnerByNickname.has(member.nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(member.nickname)}의 부캐</span>}
-                                        </span>
+                                        <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                                       </span>
                                     ))}
                                   </div>
@@ -3925,24 +4336,17 @@ function App() {
                   <div key={`${raidName}-${difficulty}-${mode}`} className="weekday-card">
                     <span className="weekday-title">{raidName} · {difficulty} · {mode}</span>
                     <div className="member-tags">
-                      {members.map(({ nickname, className, power, leadReady }) => (
-                        <span key={`${raidName}-${difficulty}-${mode}-${nickname}`} className="member-tag has-hover-tooltip">
+                      {members.map((member) => (
+                        <span key={`${raidName}-${difficulty}-${mode}-${member.nickname}`} className="member-tag has-hover-tooltip" {...getMemberPillProps(member)}>
                           <span className="nickname-with-icon small">
-                            <img src={getClassIconPath(className)} alt={className} className="nickname-icon" />
-                            <span className={`member-name-wrap ${getNicknameClassName(nickname)}`}>
-                              <span>{nickname}</span>
-                              <span className="member-power-inline">{power}</span>
+                            <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                            <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
+                              <span>{member.nickname}</span>
+                              <span className="member-power-inline">{member.power}</span>
                             </span>
-                            {leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
+                            {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                           </span>
-                          <span className="member-hover-tooltip" aria-hidden="true">
-                            <span className="tooltip-header-row">
-                              <img src={getClassIconPath(className)} alt={className} className="tooltip-icon" />
-                              <strong>{nickname}</strong>
-                            </span>
-                            <span className="tooltip-power">{power}</span>
-                            {altOwnerByNickname.has(nickname) && <span className="tooltip-alt-owner">{altOwnerByNickname.get(nickname)}의 부캐</span>}
-                          </span>
+                          <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                         </span>
                       ))}
                     </div>

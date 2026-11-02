@@ -274,7 +274,7 @@ select.login-input {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -537,39 +537,7 @@ select.login-input {
   font-size: 0.8rem;
 }
 
-.field-label-row label,
-.lead-label-inline {
-  margin: 0;
-  display: inline-block;
-}
-
-.lead-label-inline {
-  color: #a8bfe8;
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.nickname-row {
-  display: flex;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.nickname-row input,
-.nickname-row select {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 48px;
-  box-sizing: border-box;
-}
-
 /* 닉네임 라벨 옆 작은 '부캐 관리' 버튼 */
-.nickname-label-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .alt-manage-button {
   padding: 2px 8px;
   border: 1px solid rgba(150, 170, 255, 0.25);
@@ -630,37 +598,6 @@ select.login-input {
   background: rgba(255, 120, 120, 0.12);
 }
 
-.lead-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 96px;
-  min-width: 96px;
-  padding: 6px 6px;
-  border-radius: 12px;
-  background: rgba(20, 28, 42, 0.9);
-  border: 1px solid rgba(150, 170, 255, 0.18);
-  gap: 4px;
-}
-
-.lead-button {
-  width: 38px;
-  height: 31px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #cfe1ff;
-  font-weight: 800;
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-}
-
-.lead-button.active {
-  background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
-  border: 1px solid rgba(128, 170, 255, 0.55);
-}
-
 .chip-grid {
   display: flex;
   flex-wrap: wrap;
@@ -709,95 +646,6 @@ select.login-input {
   margin: 0 0 8px;
   color: #8fa3cf;
   font-size: 0.78rem;
-}
-
-.chip.editing {
-  border-color: rgba(147, 183, 255, 0.9);
-  box-shadow: 0 0 0 1px rgba(147, 183, 255, 0.6);
-}
-
-.time-grid .chip {
-  min-width: 74px;
-  text-align: center;
-}
-
-/* 같은 계정의 다른 캐릭터 · 다른 레이드로 이미 신청한 시간 */
-.time-grid .chip.is-taken {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  border-style: dashed;
-}
-
-.time-taken-label {
-  max-width: 72px;
-  overflow: hidden;
-  color: #f5c542;
-  font-size: 0.6rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 고른 요일의 시간을 다른 요일에 복사하는 줄 */
-.copy-times-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(124, 195, 255, 0.06);
-  border: 1px dashed rgba(124, 195, 255, 0.22);
-}
-
-.copy-times-label {
-  color: #9cc9ff;
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
-.copy-times-days {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.copy-day-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 30px;
-  height: 28px;
-  justify-content: center;
-  padding: 0 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 167, 255, 0.2);
-  background: rgba(17, 23, 36, 0.95);
-  color: #dfe8ff;
-  font: inherit;
-  font-size: 0.76rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-
-.copy-day-chip:hover,
-.copy-day-chip:focus-visible {
-  border-color: rgba(124, 195, 255, 0.6);
-  background: rgba(124, 195, 255, 0.14);
-  outline: none;
-}
-
-.copy-day-chip.is-same {
-  border-color: rgba(94, 224, 170, 0.32);
-  background: rgba(94, 224, 170, 0.1);
-  color: #9ff0cf;
-}
-
-.copy-day-chip.is-all {
-  color: #9cc9ff;
 }
 
 .two-column {
@@ -1451,6 +1299,11 @@ input::placeholder {
   font-size: 0.82rem;
   font-weight: 700;
   gap: 4px;
+}
+
+.day-raid-time-tag.is-full {
+  background: rgba(47, 191, 134, 0.32);
+  border-color: rgba(94, 224, 170, 0.7);
 }
 
 .day-raid-time-count {
@@ -2304,10 +2157,66 @@ input::placeholder {
   box-shadow: none;
 }
 
+/* 신청 인원이 많을수록 진하게 (1~4명 / 5~9명 / 10명 이상) */
+.slot-cell.occupied.fill-1 {
+  background: linear-gradient(135deg, rgba(75, 111, 255, 0.12), rgba(124, 155, 255, 0.05));
+}
+
+.slot-cell.occupied.fill-2 {
+  background: linear-gradient(135deg, rgba(75, 111, 255, 0.28), rgba(124, 155, 255, 0.12));
+  border-color: rgba(120, 159, 255, 0.4);
+}
+
+.slot-cell.occupied.fill-3 {
+  background: linear-gradient(135deg, rgba(47, 191, 134, 0.3), rgba(75, 111, 255, 0.18));
+  border-color: rgba(94, 224, 170, 0.6);
+}
+
+/* 내 시간: 배경은 인원 수 색을 그대로 두고 테두리로만 표시한다 */
 .slot-cell.my-schedule-slot {
-  background: linear-gradient(135deg, rgba(94, 224, 170, 0.2), rgba(67, 135, 255, 0.12));
-  border-color: rgba(94, 224, 170, 0.48);
-  box-shadow: inset 0 0 0 1px rgba(94, 224, 170, 0.34);
+  border-color: rgba(94, 224, 170, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(94, 224, 170, 0.45);
+}
+
+.slot-cell.is-vacant.my-schedule-slot {
+  background: linear-gradient(135deg, rgba(94, 224, 170, 0.14), rgba(67, 135, 255, 0.08));
+}
+
+.slot-cell-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.slot-cell-head .my-slot-badge {
+  margin-bottom: 0;
+}
+
+.slot-cell .slot-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(12, 18, 28, 0.6);
+  color: #bcd3ff;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.slot-cell .slot-count.is-full {
+  background: rgba(47, 191, 134, 0.85);
+  color: #ffffff;
+}
+
+/* 리딩 가능한 사람이 아무도 없는 시간대 */
+.slot-warn,
+.slot-cell .slot-warn {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 196, 77, 0.55);
+  color: #ffd27a;
+  font-size: 0.6rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .my-slot-badge {
@@ -2599,15 +2508,11 @@ input::placeholder {
     margin-top: auto;
   }
 
-  /* 요약 카드: 다음 리셋은 한 줄 전체, 나머지 둘은 나란히 */
+  /* 요약 카드: 다음 리셋(등록 화면에서만)과 내 다음 레이드를 한 줄씩 */
   .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     margin-bottom: 12px;
-  }
-
-  .summary-card.accent {
-    grid-column: 1 / -1;
   }
 
   .summary-card {
@@ -2671,11 +2576,6 @@ input::placeholder {
   .two-column {
     grid-template-columns: 1fr;
     gap: 0;
-  }
-
-  .nickname-row input,
-  .nickname-row select {
-    height: 46px;
   }
 
   .selected-summary {
@@ -2812,14 +2712,485 @@ input::placeholder {
   }
 }
 
-/* 터치 기기: 호버 툴팁은 화면 밖으로 나가고 닫기도 어려워서 숨긴다 (이름·전투력·리딩은 칩에 이미 표시됨) */
+/* 터치 기기: 호버 툴팁은 화면 밖으로 나가고 닫기도 어려워서 숨기고, 칩을 누르면 상세 팝업을 띄운다 */
 @media (hover: none) {
   .member-hover-tooltip {
     display: none;
   }
 
+  .has-hover-tooltip {
+    cursor: pointer;
+  }
+
   .primary-button:hover,
   .secondary-button:hover {
     transform: none;
+  }
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 토스트 알림: 화면 아래 가운데에 잠깐 떴다 사라진다. 누르면 바로 닫힌다. */
+.toast-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(440px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(14, 20, 31, 0.97);
+  border: 1px solid rgba(156, 178, 255, 0.3);
+  box-shadow: 0 12px 28px rgba(2, 6, 14, 0.5);
+  color: #edf4ff;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  pointer-events: auto;
+  cursor: pointer;
+  animation: toast-in 0.2s ease;
+}
+
+.toast.is-success {
+  border-color: rgba(94, 224, 170, 0.6);
+}
+
+.toast.is-success::before {
+  content: '✓ ';
+  color: #5ee0aa;
+  font-weight: 800;
+}
+
+.toast.is-error {
+  border-color: rgba(255, 120, 120, 0.6);
+  background: rgba(40, 16, 20, 0.97);
+}
+
+@keyframes toast-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+}
+
+/* 내 다음 레이드 카드 */
+.next-raid-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.next-raid-card strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.next-raid-card.needs-action {
+  border-color: rgba(255, 196, 77, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 196, 77, 0.35);
+}
+
+.next-raid-card.needs-action .label {
+  color: #ffd27a;
+}
+
+.next-raid-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.next-raid-actions .day-raid-rally-button {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+}
+
+.day-raid-rally-button.is-primary {
+  background: linear-gradient(135deg, rgba(83, 109, 255, 0.92), rgba(83, 168, 255, 0.78));
+  border-color: transparent;
+}
+
+.next-raid-status {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(136, 170, 255, 0.25);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.next-raid-status.is-pending {
+  border-color: rgba(255, 196, 77, 0.55);
+  color: #ffd27a;
+}
+
+.next-raid-status.is-yes {
+  border-color: rgba(94, 224, 170, 0.55);
+  color: #5ee0aa;
+}
+
+.next-raid-link {
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  color: #8cc5ff;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.summary-card small.next-raid-later {
+  margin-top: 8px;
+  color: #8fa3cf;
+  font-size: 0.74rem;
+}
+
+/* 지난 신청 불러오기 */
+.restore-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(124, 195, 255, 0.08);
+  border: 1px solid rgba(124, 195, 255, 0.32);
+}
+
+.restore-callout-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.restore-callout-text strong {
+  color: #cfe6ff;
+  font-size: 0.84rem;
+}
+
+.restore-callout-text span {
+  color: #9cb6dc;
+  font-size: 0.74rem;
+}
+
+.restore-callout .small-toggle {
+  flex-shrink: 0;
+  width: auto;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.restore-list {
+  display: grid;
+  gap: 6px;
+  max-height: 40vh;
+  margin: 0 0 16px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.restore-list li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(17, 23, 36, 0.95);
+  border: 1px solid rgba(150, 170, 255, 0.18);
+}
+
+.restore-list strong {
+  color: #edf3ff;
+  font-size: 0.84rem;
+}
+
+.restore-list span {
+  color: #bcd3ff;
+  font-size: 0.78rem;
+}
+
+.restore-list small {
+  color: #8fa3cf;
+  font-size: 0.7rem;
+}
+
+/* 입력 폼: 내 캐릭터 / 신청할 레이드 / 요일 · 시간 묶음 */
+.form-section {
+  margin-bottom: 14px;
+  padding: 12px 12px 2px;
+  border-radius: 14px;
+  background: rgba(20, 27, 42, 0.55);
+  border: 1px solid rgba(150, 170, 255, 0.1);
+}
+
+.form-section-title {
+  margin: 0 0 10px;
+  color: #9cc9ff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.field-label-row label,
+.field-label-row .form-section-title {
+  margin: 0;
+}
+
+/* 선택지가 몇 개 안 되는 항목: 버튼을 같은 폭으로 나란히 */
+.chip-grid.segmented {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 6px;
+}
+
+.chip-grid.segmented .chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 38px;
+  padding: 8px 6px;
+  white-space: nowrap;
+}
+
+/* 레이드 조합을 고르기 전에 시간표를 눌렀을 때 빠진 항목 */
+.field-group.is-missing > label {
+  color: #ff9a9a;
+}
+
+.field-group.is-missing .chip-grid {
+  border-radius: 12px;
+  outline: 2px solid rgba(255, 120, 120, 0.75);
+  outline-offset: 3px;
+}
+
+.chip-lead-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.chip-lead-mark .lead-mark {
+  width: 100%;
+  height: 100%;
+}
+
+/* 요일 × 시간 시간표 */
+.time-pick-grid {
+  display: grid;
+  grid-template-columns: 42px repeat(7, minmax(0, 1fr));
+  gap: 3px;
+  margin-bottom: 10px;
+  user-select: none;
+}
+
+.time-pick-grid.is-disabled {
+  opacity: 0.45;
+}
+
+.time-pick-corner {
+  display: block;
+}
+
+.time-pick-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(22, 29, 43, 0.9);
+  color: #dfeaff;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.time-pick-head.is-row {
+  justify-content: flex-end;
+  padding-right: 6px;
+  height: 30px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #a8bfe8;
+}
+
+.time-pick-head.is-sat {
+  color: #8cc5ff;
+}
+
+.time-pick-head.is-sun {
+  color: #ff9a9a;
+}
+
+.time-pick-head:hover:not(:disabled) {
+  background: rgba(104, 122, 255, 0.22);
+}
+
+.time-pick-head:disabled {
+  cursor: not-allowed;
+}
+
+.time-pick-cell {
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(148, 167, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(17, 23, 36, 0.95);
+  color: #ffffff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.time-pick-cell:hover:not(:disabled) {
+  border-color: rgba(138, 170, 255, 0.5);
+}
+
+.time-pick-cell.is-selected {
+  background: linear-gradient(135deg, rgba(83, 109, 255, 0.85), rgba(83, 168, 255, 0.65));
+  border-color: rgba(147, 183, 255, 0.8);
+}
+
+/* 같은 계정의 다른 캐릭터 · 다른 레이드로 이미 신청한 시간 */
+.time-pick-cell.is-taken {
+  border: 1px dashed rgba(245, 197, 66, 0.7);
+  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.12) 0 4px, transparent 4px 8px);
+}
+
+.time-pick-cell:disabled {
+  cursor: not-allowed;
+}
+
+/* 그 요일에는 없는 시간대 */
+.time-pick-cell.is-unavailable {
+  display: block;
+  border-color: transparent;
+  background: rgba(12, 18, 28, 0.35);
+  cursor: default;
+}
+
+.time-pick-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.time-pick-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 12px;
+  border: 1px dashed rgba(245, 197, 66, 0.7);
+  border-radius: 3px;
+  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.2) 0 3px, transparent 3px 6px);
+}
+
+.saved-schedule-clear {
+  margin-top: 12px;
+  font-size: 0.82rem;
+}
+
+/* 터치 기기에서 멤버 칩을 눌렀을 때의 상세 팝업 */
+.member-detail-modal {
+  width: min(320px, calc(100vw - 32px));
+}
+
+.member-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.member-detail-head h3 {
+  margin: 0 0 2px;
+}
+
+.member-detail-head span {
+  color: #a8bfe8;
+  font-size: 0.84rem;
+}
+
+.member-detail-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.member-detail-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 14px;
+  margin: 0 0 16px;
+  font-size: 0.9rem;
+}
+
+.member-detail-list dt {
+  color: #8fa3cf;
+}
+
+.member-detail-list dd {
+  margin: 0;
+  color: #edf3ff;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .toast-stack {
+    bottom: 16px;
+  }
+
+  .form-section {
+    padding: 10px 10px 2px;
+  }
+
+  /* 모바일 입력 폼은 한 칸씩 쌓지만, 몇 개 안 되는 선택 버튼은 나란히 둔다 */
+  .two-column .chip-grid.segmented .chip {
+    min-height: 42px;
+  }
+
+  .time-pick-grid {
+    grid-template-columns: 40px repeat(7, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  /* 손가락으로 누르기 쉽게 칸을 키운다 */
+  .time-pick-cell,
+  .time-pick-cell.is-unavailable,
+  .time-pick-head.is-row {
+    height: 36px;
+  }
+
+  .time-pick-head {
+    height: 30px;
   }
 }
