@@ -75,12 +75,29 @@ const SAVED_PASSWORD_STORAGE_KEY = 'raid-calendar-saved-password-v1'
 const RAID_RUNS_STORAGE_KEY = 'raid-calendar-raid-runs-v1'
 
 // 모바일에서 햄버거 메뉴로 한 번에 하나씩 보여주는 영역 (data-section 값과 맞춘다)
+// short: 모바일 하단 탭에 쓰는 짧은 이름
 const MOBILE_SECTIONS = [
-  { id: 'form', label: '내 시간 등록' },
-  { id: 'day', label: '요일별 신청 현황' },
-  { id: 'calendar', label: '주간 레이드 슬롯' },
-  { id: 'members', label: '난이도별 선택인원' },
+  { id: 'form', label: '내 시간 등록', short: '내 시간' },
+  { id: 'day', label: '요일별 신청 현황', short: '요일별' },
+  { id: 'calendar', label: '주간 레이드 슬롯', short: '주간 슬롯' },
+  { id: 'members', label: '난이도별 선택인원', short: '인원' },
 ]
+
+// 모바일 하단 탭 아이콘
+function MobileTabIcon({ id }) {
+  const paths = {
+    form: 'M5 4h14v16H5z M9 9h6 M9 13h6 M9 17h3',
+    day: 'M4 6h16 M4 12h16 M4 18h10',
+    calendar: 'M4 5h16v15H4z M4 10h16 M9 5v15 M15 5v15',
+    members: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6 M16 5.5a3 3 0 0 1 0 5.5 M18 14.5c1.8.9 3 2.9 3 5.5',
+  }
+
+  return (
+    <svg className="mobile-tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={paths[id]} />
+    </svg>
+  )
+}
 const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']
 const weekdayTimeSlots = [
   '19:00',
@@ -1695,8 +1712,10 @@ function App() {
 
     setCalendarTabAutoNickname(loggedInNickname)
 
+    // 이미 신청한 사람은 첫 신청을 폼에 불러와, 아래 목록까지 내려가 '수정'을 누르지 않아도 바로 고칠 수 있게 한다.
     if (!currentScheduleKey) {
       showScheduleInCalendar(mySavedSchedules[0])
+      loadScheduleIntoForm(mySavedSchedules[0])
     }
 
     // 이번 주에 이미 신청한 사람은 모바일에서 등록 폼 대신 요일별 신청 현황부터 보여 준다.
@@ -1738,7 +1757,7 @@ function App() {
 
   // 저장된 스케줄을 폼에 불러와 바로 고칠 수 있게 한다.
   // 직업 · 전투력 · 리딩은 '내 캐릭터' 칸의 값을 그대로 쓰고, 레이드 조합과 참여 여부만 불러온다.
-  const editSavedSchedule = (entry) => {
+  const loadScheduleIntoForm = (entry) => {
     const raid = raidOptions.find((option) => option.label === entry.raidName)
 
     setProfile((prev) => ({
@@ -1753,7 +1772,10 @@ function App() {
     if (getDayTimePairs(entry.dayTimeSelection).some(([, time]) => hiddenWeekdayTimeSlots.includes(time))) {
       setShowDaytimeSlots(true)
     }
+  }
 
+  const editSavedSchedule = (entry) => {
+    loadScheduleIntoForm(entry)
     document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
@@ -3304,6 +3326,24 @@ function App() {
         </div>
       </header>
 
+      {/* 모바일 하단 탭: 메뉴를 열지 않고 한 번에 화면을 바꾼다. (PC에서는 숨김) */}
+      <nav className="mobile-tabbar" aria-label="화면 이동">
+        {MOBILE_SECTIONS.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            className={`mobile-tab ${mobileSection === section.id ? 'active' : ''}`}
+            onClick={() => selectMobileSection(section.id)}
+            aria-current={mobileSection === section.id ? 'page' : undefined}
+            aria-label={section.id === 'form' && hasUnsavedChanges ? `${section.label} (저장하지 않은 변경 있음)` : section.label}
+          >
+            <MobileTabIcon id={section.id} />
+            <span>{section.short}</span>
+            {section.id === 'form' && hasUnsavedChanges && <i className="mobile-tab-dot" aria-hidden="true" />}
+          </button>
+        ))}
+      </nav>
+
       {mobileMenuOpen && (
         <div className="mobile-nav-backdrop" onClick={() => setMobileMenuOpen(false)}>
           <nav className="mobile-nav-drawer" aria-label="메뉴" onClick={(event) => event.stopPropagation()}>
@@ -3322,20 +3362,6 @@ function App() {
                 공유 저장소가 비활성화됨 · 다른 IP에서 보이지 않음
               </div>
             )}
-            <ul className="mobile-nav-list">
-              {MOBILE_SECTIONS.map((section) => (
-                <li key={section.id}>
-                  <button
-                    type="button"
-                    className={`mobile-nav-item ${mobileSection === section.id ? 'active' : ''}`}
-                    onClick={() => selectMobileSection(section.id)}
-                    aria-current={mobileSection === section.id ? 'page' : undefined}
-                  >
-                    {section.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
             <div className="mobile-nav-actions">
               <button type="button" className="secondary-button" onClick={openPasswordChangeFromMenu}>
                 비밀번호 변경
@@ -3840,6 +3866,30 @@ function App() {
           <div className="form-section" id="schedule-target-field">
             <h3 className="form-section-title">신청할 레이드</h3>
 
+            {/* 신청이 여러 개면 여기서 바로 바꿔 가며 고친다. (하나뿐이면 로그인할 때 이미 불러와 있다) */}
+            {mySavedSchedules.length > 1 && (
+              <div className="field-group">
+                <label>내 신청 불러오기</label>
+                <div className="chip-grid" role="group" aria-label="내 신청 불러오기">
+                  {mySavedSchedules.map((entry) => {
+                    const entryKey = getScheduleKey(entry)
+
+                    return (
+                      <button
+                        key={entryKey}
+                        type="button"
+                        className={entryKey === currentScheduleKey ? 'chip active' : 'chip'}
+                        aria-pressed={entryKey === currentScheduleKey}
+                        onClick={() => loadScheduleIntoForm(entry)}
+                      >
+                        {entry.raidName} {entry.difficulty} {entry.mode}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className={`field-group ${showTargetWarning && !selectedRaidLabel ? 'is-missing' : ''}`}>
               <label>레이드</label>
               <div className="chip-grid segmented" role="group" aria-label="레이드">
@@ -3929,91 +3979,108 @@ function App() {
                 ? '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요.'
                 : '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'}
             </p>
-            <div className={`time-pick-grid ${isScheduleTargetSelected ? '' : 'is-disabled'}`} aria-label="요일 · 시간 선택">
-              <span className="time-pick-corner" aria-hidden="true" />
-              {weekdayNames.map((day) => (
-                <button
-                  key={day}
-                  type="button"
-                  className={`time-pick-head${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
-                  onClick={() => toggleTimeLine(formTimeRows.map((time) => [day, time]))}
-                  title={`${day}요일 전체 고르기 / 지우기`}
-                >
-                  {day}
-                </button>
-              ))}
-              {formTimeRows.map((time) => (
-                <Fragment key={time}>
-                  <button
-                    type="button"
-                    className="time-pick-head is-row"
-                    onClick={() => toggleTimeLine(weekdayNames.map((day) => [day, time]))}
-                    title={`매일 ${time} 고르기 / 지우기`}
-                  >
-                    {time}
-                  </button>
-                  {weekdayNames.map((day) => {
-                    if (!getSelectableTimesForSelectedDay(day).includes(time)) {
-                      return <span key={`${day}-${time}`} className="time-pick-cell is-unavailable" aria-hidden="true" />
-                    }
-
-                    const isSelected = (currentDayTimeSelection[day] ?? []).includes(time)
-                    // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
-                    const takenBy = takenSlots.get(`${day}|${time}`)
-                    const isDisabled = Boolean(takenBy) && !isSelected
-
-                    return (
-                      <button
-                        key={`${day}-${time}`}
-                        type="button"
-                        className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}`}
-                        aria-pressed={isSelected}
-                        aria-label={`${day}요일 ${time}`}
-                        disabled={isDisabled}
-                        title={takenBy ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : `${day}요일 ${time}`}
-                        onPointerDown={(event) => startTimeDrag(event, day, time, isSelected)}
-                        onPointerEnter={(event) => continueTimeDrag(event, day, time)}
-                        onClick={(event) => handleTimeCellClick(event, day, time, isSelected)}
-                      >
-                        {isSelected ? '✓' : ''}
-                      </button>
-                    )
-                  })}
-                </Fragment>
-              ))}
-            </div>
-            {isScheduleTargetSelected && takenSlots.size > 0 && (
-              <p className="field-hint time-pick-legend">
-                <span className="time-pick-legend-swatch" aria-hidden="true" /> 다른 캐릭터 · 레이드로 이미 신청한 시간
-              </p>
-            )}
-          </div>
-
-          {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
-          {hasUnsavedChanges && (
-            <div className="unsaved-notice" role="status">
-              <div className="unsaved-notice-text">
-                <strong>저장하지 않은 변경이 있어요</strong>
-                <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
-              </div>
-              {/* 저장 버튼은 지금 폼의 조합만 저장하므로, 다른 조합도 고쳐 뒀으면 한꺼번에 저장할 수 있게 한다. */}
-              {unsavedScheduleKeys.some((key) => key !== currentScheduleKey) && (
-                <button
-                  type="button"
-                  className="secondary-button small-toggle"
-                  onClick={handleSaveAllClick}
-                  disabled={isSaving}
-                >
-                  모두 저장
+            <div className="time-pick-wrap">
+              {/* 레이드 조합을 고르기 전에는 시간표 위에 안내를 덮어, 눌러도 왜 안 되는지 바로 알 수 있게 한다. */}
+              {!isScheduleTargetSelected && (
+                <button type="button" className="time-pick-overlay" onClick={warnScheduleTargetMissing}>
+                  <span className="time-pick-overlay-card">
+                    <strong>레이드 · 난이도 · 공략 방식을 먼저 골라 주세요</strong>
+                    <span>누르면 고르는 곳으로 이동해요 ↑</span>
+                  </span>
                 </button>
               )}
-            </div>
-          )}
+              <div className={`time-pick-grid ${isScheduleTargetSelected ? '' : 'is-disabled'}`} aria-label="요일 · 시간 선택">
+                <span className="time-pick-corner" aria-hidden="true" />
+                {weekdayNames.map((day) => (
+                  <button
+                    key={day}
+                    type="button"
+                    className={`time-pick-head${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
+                    onClick={() => toggleTimeLine(formTimeRows.map((time) => [day, time]))}
+                    title={`${day}요일 전체 고르기 / 지우기`}
+                  >
+                    {day}
+                  </button>
+                ))}
+                {formTimeRows.map((time) => (
+                  <Fragment key={time}>
+                    <button
+                      type="button"
+                      className="time-pick-head is-row"
+                      onClick={() => toggleTimeLine(weekdayNames.map((day) => [day, time]))}
+                      title={`매일 ${time} 고르기 / 지우기`}
+                    >
+                      {time}
+                    </button>
+                    {weekdayNames.map((day) => {
+                      if (!getSelectableTimesForSelectedDay(day).includes(time)) {
+                        return <span key={`${day}-${time}`} className="time-pick-cell is-unavailable" aria-hidden="true" />
+                      }
 
-          <div className="member-actions">
-            <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving}>
-              {isSaving ? '저장 중…' : '캘린더에 저장'}
-            </button>
+                      const isSelected = (currentDayTimeSelection[day] ?? []).includes(time)
+                      // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
+                      const takenBy = takenSlots.get(`${day}|${time}`)
+                      const isDisabled = Boolean(takenBy) && !isSelected
+
+                      return (
+                        <button
+                          key={`${day}-${time}`}
+                          type="button"
+                          className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}`}
+                          aria-pressed={isSelected}
+                          aria-label={`${day}요일 ${time}`}
+                          disabled={isDisabled}
+                          title={takenBy ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : `${day}요일 ${time}`}
+                          onPointerDown={(event) => startTimeDrag(event, day, time, isSelected)}
+                          onPointerEnter={(event) => continueTimeDrag(event, day, time)}
+                          onClick={(event) => handleTimeCellClick(event, day, time, isSelected)}
+                        >
+                          {isSelected ? '✓' : ''}
+                        </button>
+                      )
+                    })}
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+            <div className="field-hint time-pick-legend">
+              <span><i className="time-pick-legend-swatch is-selected" aria-hidden="true" />고른 시간</span>
+              {takenSlots.size > 0 && (
+                <span><i className="time-pick-legend-swatch is-taken" aria-hidden="true" />다른 캐릭터 · 레이드로 신청함</span>
+              )}
+              <span><i className="time-pick-legend-swatch is-past" aria-hidden="true" />지난 시간</span>
+              <span><i className="time-pick-legend-swatch is-unavailable" aria-hidden="true" />없는 시간</span>
+            </div>
+          </div>
+
+          {/* 저장하지 않은 변경이 있으면 저장 영역을 화면 아래에 붙여, 스크롤해도 저장 버튼을 놓치지 않게 한다. */}
+          <div className={`save-bar${hasUnsavedChanges ? ' is-pending' : ''}`}>
+            {/* 저장 버튼은 지금 폼의 레이드 조합만 저장하므로, 저장 안 된 다른 조합이 있으면 함께 알려 준다. */}
+            {hasUnsavedChanges && (
+              <div className="unsaved-notice" role="status">
+                <div className="unsaved-notice-text">
+                  <strong>저장하지 않은 변경이 있어요</strong>
+                  <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
+                </div>
+                {/* 저장 버튼은 지금 폼의 조합만 저장하므로, 다른 조합도 고쳐 뒀으면 한꺼번에 저장할 수 있게 한다. */}
+                {unsavedScheduleKeys.some((key) => key !== currentScheduleKey) && (
+                  <button
+                    type="button"
+                    className="secondary-button small-toggle"
+                    onClick={handleSaveAllClick}
+                    disabled={isSaving}
+                  >
+                    모두 저장
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="member-actions">
+              <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving}>
+                {isSaving ? '저장 중…' : '캘린더에 저장'}
+              </button>
+            </div>
           </div>
 
           <div className="selected-summary saved-schedule-list">
@@ -4425,10 +4492,14 @@ function App() {
                                       )}
                                       <span className="day-raid-toggle-arrow" aria-hidden="true">{isExpanded ? '▴' : '▾'}</span>
                                     </button>
-                                    <div className="day-raid-run-row">
-                                      {renderRally()}
-                                      {renderRunStatus('cleared', '클리어')}
-                                    </div>
+                                    {/* 버튼은 내가 신청한 시간대에만 보인다. 남의 시간대는 이미 진행된 준비 · 클리어 기록만 보여 준다.
+                                        클리어는 전원 준비가 끝나야 고를 수 있어서 그 전에는 숨긴다. */}
+                                    {(isSlotVoter || isRallyCalled || runRecord?.cleared) && (
+                                      <div className="day-raid-run-row">
+                                        {(isSlotVoter || isRallyCalled) && renderRally()}
+                                        {(isGathered || runRecord?.cleared) && renderRunStatus('cleared', '클리어')}
+                                      </div>
+                                    )}
                                     {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
                                     {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
                                       <div className="day-raid-rally-waiting">
@@ -4561,9 +4632,14 @@ function App() {
                 return null
               }
 
+              // 모바일은 하루씩 보므로, 그 요일에 없는 시간 줄은 시간 칸까지 통째로 숨긴다. (off-day-N 클래스로 표시)
+              const offDayClasses = weekDates
+                .map((date, dayIndex) => (getDayTimeSlots(date).includes(time) ? '' : ` off-day-${dayIndex}`))
+                .join('')
+
               return (
                 <Fragment key={time}>
-                  <div className="time-label">{time}</div>
+                  <div className={`time-label${offDayClasses}`}>{time}</div>
                   {weekDates.map((date, dayIndex) => {
                     const currentDaySlots = getDayTimeSlots(date)
                     const isVisibleTime = currentDaySlots.includes(time)

@@ -952,6 +952,42 @@ input::placeholder {
   cursor: default;
 }
 
+/* 모바일 하단 탭 (모바일 미디어 쿼리에서 보이게 한다) */
+.mobile-tabbar {
+  display: none;
+}
+
+.mobile-tab-icon {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 저장하지 않은 변경이 있으면 저장 영역을 화면 아래에 붙인다 */
+.save-bar.is-pending {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+  margin-top: 14px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 -6px 20px rgba(10, 12, 18, 0.35);
+}
+
+.save-bar.is-pending .unsaved-notice {
+  margin-top: 0;
+}
+
+.save-bar.is-pending .member-actions {
+  margin-top: 10px;
+}
+
 /* 저장 버튼 위: 저장하지 않은 변경이 있는 레이드 조합 */
 .unsaved-notice {
   display: flex;
@@ -2292,8 +2328,60 @@ input::placeholder {
 @media (max-width: 640px) {
   .app-shell {
     width: 100%;
-    padding: 0 18px 32px;
+    padding: 0 18px calc(96px + env(safe-area-inset-bottom, 0px));
     border: none;
+  }
+
+  /* 하단 탭: 화면 아래에 고정 */
+  .mobile-tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px));
+    background: rgba(30, 34, 44, 0.96);
+    border-top: 1px solid var(--line-faint);
+    backdrop-filter: blur(8px);
+  }
+
+  .mobile-tab {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 54px;
+    padding: 6px 4px;
+    border: none;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .mobile-tab.active {
+    background: rgba(129, 136, 234, 0.2);
+    color: #ffffff;
+  }
+
+  .mobile-tab-dot {
+    position: absolute;
+    top: 7px;
+    left: calc(50% + 9px);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #f5c542;
+  }
+
+  .save-bar.is-pending {
+    bottom: calc(74px + env(safe-area-inset-bottom, 0px));
   }
 
   /* 햄버거 메뉴에서 고른 영역만 보여준다 (data-section이 없는 요소는 항상 보임) */
@@ -2342,7 +2430,7 @@ input::placeholder {
     padding: 10px 18px;
     gap: 10px;
     background: rgba(30, 34, 44, 0.94);
-    border-bottom: 1px solid rgba(179, 198, 255, 0.1);
+    border-bottom: 1px solid var(--line-faint);
     backdrop-filter: blur(8px);
   }
 
@@ -2473,32 +2561,6 @@ input::placeholder {
     white-space: normal;
     font-size: 0.74rem;
     line-height: 1.5;
-  }
-
-  .mobile-nav-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 0;
-    list-style: none;
-  }
-
-  .mobile-nav-item {
-    width: 100%;
-    padding: 13px 14px;
-    border-radius: 12px;
-    border: 1px solid var(--line-soft);
-    background: var(--bg-control);
-    color: #dfe8ff;
-    font-size: 0.95rem;
-    font-weight: 700;
-    text-align: left;
-  }
-
-  .mobile-nav-item.active {
-    background: linear-gradient(135deg, rgba(129, 136, 234, 0.32), rgba(76, 201, 240, 0.14));
-    border-color: var(--accent-line);
-    color: #f2f7ff;
   }
 
   .mobile-nav-actions {
@@ -3109,17 +3171,91 @@ input::placeholder {
 
 .time-pick-legend {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 6px 12px;
+}
+
+.time-pick-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .time-pick-legend-swatch {
   display: inline-block;
   width: 14px;
   height: 12px;
-  border: 1px dashed #f5c542;
+  border: 1px solid var(--line);
   border-radius: 3px;
+  background: var(--bg-control);
+}
+
+.time-pick-legend-swatch.is-selected {
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.time-pick-legend-swatch.is-taken {
+  border: 1px dashed #f5c542;
   background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.22) 0 3px, transparent 3px 6px), var(--bg-control);
+}
+
+.time-pick-legend-swatch.is-past {
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0 2px, transparent 2px 5px), var(--bg-inset);
+}
+
+.time-pick-legend-swatch.is-unavailable {
+  border-color: transparent;
+  background: var(--bg-void);
+}
+
+/* 레이드 조합을 고르기 전 시간표 위에 덮는 안내 */
+.time-pick-wrap {
+  position: relative;
+}
+
+.time-pick-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 16px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(23, 27, 36, 0.55);
+  color: var(--text);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.time-pick-overlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 260px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--bg-section);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(10, 12, 18, 0.4);
+  word-break: keep-all;
+}
+
+.time-pick-overlay-card strong {
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.time-pick-overlay-card span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .saved-schedule-clear {
@@ -3173,8 +3309,9 @@ input::placeholder {
 }
 
 @media (max-width: 640px) {
+  /* 하단 탭 위로 띄운다 */
   .toast-stack {
-    bottom: 16px;
+    bottom: calc(80px + env(safe-area-inset-bottom, 0px));
   }
 
   .form-section {
@@ -3413,8 +3550,10 @@ input::placeholder {
   opacity: 0.4;
 }
 
+/* 지난 시간: 빗금으로 표시해 원래 없는 시간(빈 칸)과 구분한다 */
 .time-pick-cell.is-past:not(.is-selected) {
-  opacity: 0.45;
+  border-color: var(--line-faint);
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 3px, transparent 3px 8px), var(--bg-inset);
 }
 
 /* 추천 시간을 눌러 온 칸 */
@@ -3513,6 +3652,24 @@ input::placeholder {
     display: none;
   }
 
+  /* 고른 요일에 없는 시간 줄은 숨긴다 (시간 칸 + 빈 칸) */
+  .calendar-grid[data-mobile-day] .slot-cell.muted-slot,
+  .calendar-grid[data-mobile-day='0'] .time-label.off-day-0,
+  .calendar-grid[data-mobile-day='1'] .time-label.off-day-1,
+  .calendar-grid[data-mobile-day='2'] .time-label.off-day-2,
+  .calendar-grid[data-mobile-day='3'] .time-label.off-day-3,
+  .calendar-grid[data-mobile-day='4'] .time-label.off-day-4,
+  .calendar-grid[data-mobile-day='5'] .time-label.off-day-5,
+  .calendar-grid[data-mobile-day='6'] .time-label.off-day-6 {
+    display: none;
+  }
+
+  /* 빈 시간 줄은 낮게 해서 한 화면에 더 많은 시간이 보이게 한다 */
+  .calendar-grid[data-mobile-day] .time-label,
+  .calendar-grid[data-mobile-day] .slot-cell.is-vacant {
+    min-height: 40px;
+  }
+
   /* 하루만 보면 칸이 넓어서 A/B 파티를 다시 좌우로 나란히 둔다 */
   .calendar-grid[data-mobile-day] .party-split {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3521,5 +3678,30 @@ input::placeholder {
   .unsaved-notice,
   .character-sync-notice {
     flex-wrap: wrap;
+  }
+
+  /* 요일별 현황의 준비 · 클리어 버튼: 손가락으로 누르기 편한 크기로 */
+  .day-raid-run-row {
+    gap: 6px 8px;
+  }
+
+  .day-raid-run-status {
+    gap: 6px;
+    padding: 3px 4px 3px 10px;
+  }
+
+  .day-raid-run-label {
+    font-size: 0.74rem;
+  }
+
+  .day-raid-run-button {
+    width: 32px;
+    height: 32px;
+  }
+
+  .day-raid-rally-button {
+    min-height: 32px;
+    padding: 4px 12px;
+    font-size: 0.76rem;
   }
 }
