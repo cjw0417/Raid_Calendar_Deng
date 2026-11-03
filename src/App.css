@@ -5,8 +5,8 @@
   overflow-x: clip;
   margin: 0 auto;
   padding: 14px 14px 20px;
-  background: rgba(8, 12, 25, 0.88);
-  border: 1px solid rgba(179, 198, 255, 0.12);
+  background: var(--bg-shell);
+  border: 1px solid var(--line-faint);
   border-radius: 0;
   box-shadow: none;
 }
@@ -16,14 +16,14 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(9, 13, 22, 0.95);
+  background: var(--bg-shell);
 }
 
 .login-card {
   width: min(100%, 560px);
   padding: 28px 28px 24px;
   border-radius: 18px;
-  background: rgba(16, 22, 32, 0.94);
+  background: var(--bg-section);
   border: 1px solid rgba(156, 178, 218, 0.14);
   box-shadow: 0 20px 48px rgba(1, 6, 15, 0.42);
 }
@@ -81,7 +81,7 @@
   margin: 0 0 12px;
   border-radius: 12px;
   border: 1px solid rgba(151, 168, 214, 0.2);
-  background: rgba(15, 24, 38, 0.8);
+  background: var(--bg-control);
   color: #edf5ff;
   font-size: 0.98rem;
   padding: 0 14px;
@@ -161,7 +161,7 @@ select.login-input {
 
 .remember-hint {
   margin: -10px 0 16px;
-  color: #aebbd6;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
@@ -177,7 +177,7 @@ select.login-input {
 .remember-row input {
   width: 16px;
   height: 16px;
-  accent-color: #7ea6ff;
+  accent-color: var(--accent);
 }
 
 .login-button {
@@ -186,7 +186,7 @@ select.login-input {
   border-radius: 12px;
   height: 50px;
   font-size: 1.02rem;
-  background: linear-gradient(135deg, rgba(99, 118, 255, 0.92), rgba(113, 176, 255, 0.8));
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
   color: #f2f7ff;
 }
 
@@ -207,8 +207,8 @@ select.login-input {
   align-items: center;
   padding: 9px 12px;
   border-radius: 999px;
-  background: rgba(89, 122, 255, 0.15);
-  border: 1px solid rgba(150, 170, 255, 0.22);
+  background: rgba(129, 136, 234, 0.17);
+  border: 1px solid var(--line);
   color: #ebf3ff;
   font-weight: 700;
   flex-shrink: 0;
@@ -258,8 +258,8 @@ select.login-input {
   align-items: flex-end;
   padding: 12px 16px;
   border-radius: 14px;
-  background: rgba(124, 145, 255, 0.08);
-  border: 1px solid rgba(148, 162, 255, 0.22);
+  background: rgba(129, 136, 234, 0.09);
+  border: 1px solid var(--line);
   color: #dfe9ff;
 }
 
@@ -284,18 +284,18 @@ select.login-input {
 .summary-card {
   padding: 14px 14px 12px;
   border-radius: 16px;
-  background: linear-gradient(135deg, rgba(14, 18, 32, 0.9), rgba(21, 30, 48, 0.85));
-  border: 1px solid rgba(143, 161, 255, 0.15);
+  background: linear-gradient(135deg, var(--bg-section), var(--bg-card));
+  border: 1px solid var(--line-soft);
 }
 
 .summary-card.accent {
-  background: linear-gradient(135deg, rgba(92, 120, 255, 0.2), rgba(122, 164, 255, 0.11));
+  background: linear-gradient(135deg, rgba(129, 136, 234, 0.23), rgba(129, 136, 234, 0.13));
 }
 
 .summary-card .label {
   display: block;
   font-size: 12px;
-  color: #8aa7d9;
+  color: var(--text-muted);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   margin-bottom: 8px;
@@ -320,9 +320,9 @@ select.login-input {
 }
 
 .panel {
-  background: rgba(13, 18, 31, 0.9);
+  background: var(--bg-panel);
   border-radius: 20px;
-  border: 1px solid rgba(162, 176, 255, 0.12);
+  border: 1px solid var(--line-faint);
   padding: 18px;
 }
 
@@ -353,8 +353,8 @@ select.login-input {
   width: 26px;
   height: 26px;
   border-radius: 999px;
-  border: 1px solid rgba(150, 170, 255, 0.25);
-  background: rgba(23, 31, 45, 0.9);
+  border: 1px solid var(--line);
+  background: var(--bg-control);
   color: #dfe9ff;
   font-weight: 800;
   cursor: pointer;
@@ -370,8 +370,8 @@ select.login-input {
   margin: -8px 0 14px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(18, 26, 40, 0.95);
-  border: 1px solid rgba(150, 170, 255, 0.12);
+  background: var(--bg-section);
+  border: 1px solid var(--line-faint);
   color: #dfe8ff;
   font-size: 0.8rem;
   line-height: 1.6;
@@ -446,8 +446,8 @@ select.login-input {
 .mini-badge {
   font-size: 10px;
   color: #9cc9ff;
-  border: 1px solid rgba(156, 201, 255, 0.25);
-  background: rgba(75, 111, 255, 0.08);
+  border: 1px solid rgba(76, 201, 240, 0.3);
+  background: rgba(129, 136, 234, 0.09);
   border-radius: 999px;
   padding: 4px 7px;
 }
@@ -468,8 +468,8 @@ select.login-input {
 
 .raid-tab,
 .subtab {
-  border: 1px solid rgba(148, 167, 255, 0.18);
-  background: rgba(17, 23, 36, 0.95);
+  border: 1px solid var(--line);
+  background: var(--bg-control);
   color: #dfe8ff;
   border-radius: 10px;
   padding: 7px 12px;
@@ -482,15 +482,15 @@ select.login-input {
 
 .raid-tab.active,
 .subtab.active {
-  background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
-  border-color: rgba(128, 170, 255, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(147, 183, 255, 0.18);
+  background: linear-gradient(135deg, rgba(129, 136, 234, 0.32), rgba(76, 201, 240, 0.14));
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px rgba(178, 184, 247, 0.18);
 }
 
 .subtab {
   padding: 6px 10px;
   font-size: 0.76rem;
-  background: rgba(14, 20, 32, 0.8);
+  background: var(--bg-control);
 }
 
 /* 탭 옆 신청 인원 수 */
@@ -542,9 +542,9 @@ select.login-input {
 /* 닉네임 라벨 옆 작은 '부캐 관리' 버튼 */
 .alt-manage-button {
   padding: 2px 8px;
-  border: 1px solid rgba(150, 170, 255, 0.25);
+  border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(19, 27, 42, 0.9);
+  background: var(--bg-control);
   color: #bcd3ff;
   font-size: 0.7rem;
   font-weight: 600;
@@ -553,13 +553,13 @@ select.login-input {
 }
 
 .alt-manage-button:hover {
-  background: rgba(32, 44, 68, 0.95);
+  background: var(--bg-control-hover);
   color: #e6eeff;
 }
 
 .alt-manager-desc {
   margin: 0 0 12px;
-  color: #a9b9da;
+  color: var(--text-muted);
   font-size: 0.8rem;
   line-height: 1.5;
 }
@@ -579,9 +579,9 @@ select.login-input {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid rgba(150, 170, 255, 0.18);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(17, 23, 36, 0.95);
+  background: var(--bg-control);
   color: #edf3ff;
   font-size: 0.86rem;
 }
@@ -607,10 +607,10 @@ select.login-input {
 }
 
 .chip {
-  border: 1px solid rgba(148, 167, 255, 0.18);
-  background: rgba(17, 23, 36, 0.95);
+  border: 1px solid var(--line);
+  background: var(--bg-control);
   color: #dfe8ff;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 8px 10px;
   font: inherit;
   font-size: 0.8rem;
@@ -629,7 +629,7 @@ select.login-input {
 }
 
 .chip:hover {
-  border-color: rgba(138, 170, 255, 0.38);
+  border-color: var(--line-strong);
 }
 
 .chip.disabled {
@@ -639,14 +639,15 @@ select.login-input {
 }
 
 .chip.active {
-  background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
-  border-color: rgba(128, 170, 255, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(147, 183, 255, 0.18);
+  background: rgba(136, 141, 231, 0.34);
+  border-color: rgba(152, 159, 231, 0.6);
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(136, 141, 231, 0.18);
 }
 
 .field-hint {
   margin: 0 0 8px;
-  color: #8fa3cf;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 
@@ -659,9 +660,9 @@ select.login-input {
 input,
 select {
   width: 100%;
-  background: rgba(17, 23, 36, 0.95);
+  background: var(--bg-control);
   color: #edf3ff;
-  border: 1px solid rgba(150, 170, 255, 0.2);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 11px 12px;
   font: inherit;
@@ -675,9 +676,9 @@ input::placeholder {
 .selected-summary {
   margin-top: 18px;
   padding: 15px 16px;
-  background: rgba(26, 34, 53, 0.9);
+  background: var(--bg-section);
   border-radius: 16px;
-  border: 1px solid rgba(174, 190, 255, 0.12);
+  border: 1px solid var(--line-faint);
 }
 
 .selected-summary h3 {
@@ -709,8 +710,8 @@ input::placeholder {
 .saved-schedule-count {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(124, 195, 255, 0.12);
-  border: 1px solid rgba(124, 195, 255, 0.24);
+  background: rgba(76, 201, 240, 0.14);
+  border: 1px solid rgba(76, 201, 240, 0.29);
   color: #9cc9ff;
   font-size: 0.72rem;
   font-weight: 700;
@@ -718,7 +719,7 @@ input::placeholder {
 
 .saved-schedule-hint {
   margin: 0 0 10px;
-  color: #8293ba;
+  color: var(--text-muted);
   font-size: 0.76rem;
   line-height: 1.5;
 }
@@ -737,8 +738,8 @@ input::placeholder {
   gap: 10px;
   padding: 12px 12px 12px 16px;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(23, 30, 47, 0.98), rgba(15, 20, 32, 0.98));
-  border: 1px solid rgba(148, 167, 255, 0.14);
+  background: linear-gradient(135deg, var(--bg-card), var(--bg-card-deep));
+  border: 1px solid var(--line-soft);
   overflow: hidden;
   transition: border-color 0.2s ease;
 }
@@ -757,7 +758,7 @@ input::placeholder {
 }
 
 .saved-schedule-item:hover {
-  border-color: rgba(148, 167, 255, 0.28);
+  border-color: var(--line);
 }
 
 .saved-schedule-item.is-absent {
@@ -797,8 +798,8 @@ input::placeholder {
 }
 
 .saved-schedule-tag.tag-normal {
-  background: rgba(124, 195, 255, 0.12);
-  border-color: rgba(124, 195, 255, 0.3);
+  background: rgba(76, 201, 240, 0.14);
+  border-color: rgba(76, 201, 240, 0.36);
   color: #b9e0ff;
 }
 
@@ -811,7 +812,7 @@ input::placeholder {
 .saved-schedule-tag.tag-absent {
   background: rgba(255, 255, 255, 0.04);
   border-style: dashed;
-  color: #8f9cbd;
+  color: var(--text-muted);
 }
 
 /* 요일 줄: 왼쪽 요일 버튼(그 요일 전체 삭제) + 오른쪽 시간 칩(그 시간만 삭제) */
@@ -819,7 +820,7 @@ input::placeholder {
   display: grid;
   gap: 6px;
   padding-top: 10px;
-  border-top: 1px solid rgba(148, 167, 255, 0.1);
+  border-top: 1px solid var(--line-faint);
 }
 
 .saved-slot-day {
@@ -848,8 +849,8 @@ input::placeholder {
   height: 28px;
   padding: 0;
   border-radius: 9px;
-  border: 1px solid rgba(148, 167, 255, 0.2);
-  background: rgba(118, 136, 255, 0.1);
+  border: 1px solid var(--line);
+  background: rgba(129, 136, 234, 0.12);
   color: #edf5ff;
   font-size: 0.78rem;
   font-weight: 800;
@@ -886,7 +887,7 @@ input::placeholder {
   height: 16px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
-  color: #9fb4d6;
+  color: var(--text-muted);
   font-size: 0.8rem;
   line-height: 1;
   transition: background 0.18s ease, color 0.18s ease;
@@ -910,8 +911,8 @@ input::placeholder {
 
 /* 폼에 불러와 고치고 있는 스케줄 */
 .saved-schedule-item.is-editing {
-  border-color: rgba(124, 195, 255, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(124, 195, 255, 0.2);
+  border-color: rgba(76, 201, 240, 0.66);
+  box-shadow: inset 0 0 0 1px rgba(76, 201, 240, 0.2);
 }
 
 .saved-schedule-tag.tag-unsaved {
@@ -927,7 +928,7 @@ input::placeholder {
 }
 
 .saved-schedule-edit {
-  border: 1px solid rgba(124, 195, 255, 0.32);
+  border: 1px solid rgba(76, 201, 240, 0.38);
   background: transparent;
   color: #b9e0ff;
   border-radius: 9px;
@@ -941,13 +942,13 @@ input::placeholder {
 
 .saved-schedule-edit:hover:not(:disabled),
 .saved-schedule-edit:focus-visible {
-  background: rgba(124, 195, 255, 0.14);
-  border-color: rgba(124, 195, 255, 0.6);
+  background: rgba(76, 201, 240, 0.16);
+  border-color: rgba(76, 201, 240, 0.72);
   outline: none;
 }
 
 .saved-schedule-edit:disabled {
-  background: rgba(124, 195, 255, 0.14);
+  background: rgba(76, 201, 240, 0.16);
   cursor: default;
 }
 
@@ -1020,13 +1021,13 @@ input::placeholder {
 
 .primary-button {
   color: #edf4ff;
-  background: linear-gradient(135deg, rgba(83, 109, 255, 0.92), rgba(83, 168, 255, 0.78));
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
 }
 
 .secondary-button {
   color: #dfeaff;
-  background: rgba(19, 27, 42, 0.9);
-  border: 1px solid rgba(150, 170, 255, 0.2);
+  background: var(--bg-control);
+  border: 1px solid var(--line);
 }
 
 .primary-button:hover,
@@ -1047,8 +1048,8 @@ input::placeholder {
 
 .save-confirm-modal {
   width: min(420px, calc(100vw - 32px));
-  background: rgba(14, 20, 31, 0.98);
-  border: 1px solid rgba(156, 178, 255, 0.22);
+  background: var(--bg-section);
+  border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: 0 24px 48px rgba(2, 6, 14, 0.52);
   padding: 20px 18px 16px;
@@ -1083,8 +1084,8 @@ input::placeholder {
   margin-bottom: 18px;
   padding: 14px 14px 12px;
   border-radius: 16px;
-  background: rgba(18, 25, 38, 0.92);
-  border: 1px solid rgba(163, 182, 255, 0.12);
+  background: var(--bg-section);
+  border: 1px solid var(--line-faint);
 }
 
 .day-raid-summary-panel h3 {
@@ -1104,9 +1105,9 @@ input::placeholder {
 .day-raid-past-toggle {
   flex-shrink: 0;
   padding: 3px 9px;
-  border: 1px solid rgba(150, 170, 255, 0.25);
+  border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(19, 27, 42, 0.9);
+  background: var(--bg-control);
   color: #bcd3ff;
   font-size: 0.7rem;
   font-weight: 600;
@@ -1116,12 +1117,12 @@ input::placeholder {
 }
 
 .day-raid-past-toggle:hover {
-  background: rgba(32, 44, 68, 0.95);
+  background: var(--bg-control-hover);
   color: #e6eeff;
 }
 
 .day-raid-past-toggle:focus-visible {
-  outline: 2px solid rgba(120, 160, 255, 0.8);
+  outline: 2px solid var(--accent-line);
   outline-offset: 2px;
 }
 
@@ -1137,8 +1138,8 @@ input::placeholder {
   min-width: 0;
   padding: 10px 10px 8px;
   border-radius: 12px;
-  background: rgba(12, 18, 28, 0.85);
-  border: 1px solid rgba(163, 182, 255, 0.1);
+  background: var(--bg-card);
+  border: 1px solid var(--line-faint);
   transition: flex-basis 0.2s ease, background-color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -1175,7 +1176,7 @@ input::placeholder {
 }
 
 .day-raid-date {
-  color: #8fa6d6;
+  color: var(--text-muted);
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0;
@@ -1197,7 +1198,7 @@ input::placeholder {
 }
 
 .day-raid-header-toggle:focus-visible {
-  outline: 2px solid rgba(120, 160, 255, 0.8);
+  outline: 2px solid var(--accent-line);
   outline-offset: 3px;
   border-radius: 6px;
 }
@@ -1224,8 +1225,8 @@ input::placeholder {
 /* 접힌 띠 전체가 버튼이라 마우스를 올리면 눌러도 된다는 걸 보여 준다. */
 .day-raid-card.is-collapsed:hover {
   opacity: 1;
-  background: rgba(24, 34, 52, 0.95);
-  border-color: rgba(163, 182, 255, 0.35);
+  background: var(--bg-control);
+  border-color: var(--line-strong);
 }
 
 .day-raid-card.is-collapsed .day-raid-header-toggle {
@@ -1251,7 +1252,7 @@ input::placeholder {
   min-width: 18px;
   padding: 1px 4px;
   border-radius: 999px;
-  background: rgba(163, 182, 255, 0.15);
+  background: rgba(129, 136, 234, 0.17);
   color: #bcd3ff;
   font-size: 0.66rem;
   letter-spacing: 0;
@@ -1266,8 +1267,8 @@ input::placeholder {
 .day-raid-bundle {
   padding: 7px 8px;
   border-radius: 10px;
-  background: rgba(104, 122, 255, 0.09);
-  border: 1px solid rgba(136, 170, 255, 0.12);
+  background: rgba(129, 136, 234, 0.1);
+  border: 1px solid var(--line-faint);
 }
 
 /* 레이드 조합 제목에만 적용 (툴팁 안의 닉네임 strong에는 적용되지 않도록 직계 자식으로 한정) */
@@ -1366,8 +1367,8 @@ input::placeholder {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: rgba(12, 18, 28, 0.95);
-  border: 1px solid rgba(136, 170, 255, 0.35);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
   object-fit: contain;
 }
 
@@ -1405,8 +1406,8 @@ input::placeholder {
   gap: 3px;
   padding: 2px 3px 2px 7px;
   border-radius: 999px;
-  background: rgba(12, 18, 28, 0.7);
-  border: 1px solid rgba(136, 170, 255, 0.16);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
 }
 
 .day-raid-run-status.is-yes {
@@ -1441,16 +1442,16 @@ input::placeholder {
   height: 20px;
   padding: 0;
   border-radius: 50%;
-  border: 1px solid rgba(136, 170, 255, 0.22);
+  border: 1px solid var(--line);
   background: transparent;
-  color: #7f93bd;
+  color: var(--text-muted);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .day-raid-run-button:hover:not(:disabled) {
   color: #edf5ff;
-  border-color: rgba(136, 170, 255, 0.5);
+  border-color: var(--accent-line);
 }
 
 .day-raid-run-button:disabled {
@@ -1496,8 +1497,8 @@ input::placeholder {
 .day-raid-rally-button {
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(136, 170, 255, 0.35);
-  background: rgba(104, 122, 255, 0.18);
+  border: 1px solid var(--line-strong);
+  background: rgba(129, 136, 234, 0.21);
   color: #edf5ff;
   font-size: 0.68rem;
   font-weight: 700;
@@ -1507,13 +1508,13 @@ input::placeholder {
 }
 
 .day-raid-rally-button:hover:not(:disabled) {
-  background: rgba(104, 122, 255, 0.32);
-  border-color: rgba(136, 170, 255, 0.6);
+  background: rgba(129, 136, 234, 0.37);
+  border-color: var(--accent-line);
 }
 
 .day-raid-rally-button.active {
   background: transparent;
-  color: #9fb4de;
+  color: var(--text-muted);
 }
 
 .day-raid-rally-button:disabled {
@@ -1583,7 +1584,7 @@ input::placeholder {
 .day-raid-toggle-arrow {
   margin-left: auto;
   flex-shrink: 0;
-  color: #9fb4de;
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 
@@ -1602,8 +1603,8 @@ input::placeholder {
   min-width: 0;
   padding: 4px 6px;
   border-radius: 999px;
-  background: rgba(104, 122, 255, 0.14);
-  border: 1px solid rgba(136, 170, 255, 0.24);
+  background: rgba(129, 136, 234, 0.16);
+  border: 1px solid var(--line);
   color: #edf5ff;
   font-size: 0.66rem;
   overflow: visible;
@@ -1656,8 +1657,8 @@ input::placeholder {
   margin-top: 22px;
   padding: 14px 14px 12px;
   border-radius: 16px;
-  background: rgba(18, 25, 38, 0.92);
-  border: 1px solid rgba(163, 182, 255, 0.12);
+  background: var(--bg-section);
+  border: 1px solid var(--line-faint);
 }
 
 .raid-detail-panel h3 {
@@ -1675,8 +1676,8 @@ input::placeholder {
 .raid-detail-item {
   padding: 10px 11px;
   border-radius: 12px;
-  background: rgba(12, 18, 28, 0.85);
-  border: 1px solid rgba(163, 182, 255, 0.1);
+  background: var(--bg-card);
+  border: 1px solid var(--line-faint);
 }
 
 .raid-detail-header {
@@ -1708,8 +1709,8 @@ input::placeholder {
   max-width: 100%;
   padding: 5px 8px;
   border-radius: 999px;
-  background: rgba(104, 122, 255, 0.14);
-  border: 1px solid rgba(136, 170, 255, 0.24);
+  background: rgba(129, 136, 234, 0.16);
+  border: 1px solid var(--line);
   color: #edf5ff;
   font-size: 0.7rem;
   overflow: visible;
@@ -1746,8 +1747,8 @@ input::placeholder {
 }
 
 .weekday-card {
-  background: rgba(18, 25, 38, 0.92);
-  border: 1px solid rgba(163, 182, 255, 0.12);
+  background: var(--bg-section);
+  border: 1px solid var(--line-faint);
   border-radius: 14px;
   padding: 12px;
 }
@@ -1772,8 +1773,8 @@ input::placeholder {
   max-width: 100%;
   min-width: 0;
   padding: 5px 8px;
-  background: rgba(104, 122, 255, 0.14);
-  border: 1px solid rgba(136, 170, 255, 0.24);
+  background: rgba(129, 136, 234, 0.16);
+  border: 1px solid var(--line);
   border-radius: 999px;
   color: #edf5ff;
   font-size: 0.72rem;
@@ -1897,8 +1898,8 @@ input::placeholder {
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: rgba(22, 29, 43, 0.9);
-  border: 1px solid rgba(163, 182, 255, 0.12);
+  background: var(--bg-head);
+  border: 1px solid var(--line-faint);
   color: #dfeaff;
 }
 
@@ -1914,7 +1915,7 @@ input::placeholder {
 }
 
 .day-name {
-  color: #8ea0c6;
+  color: var(--text-muted);
   font-size: 10px;
   text-transform: uppercase;
 }
@@ -1932,7 +1933,7 @@ input::placeholder {
   align-items: stretch;
   gap: 3px;
   padding: 6px 5px;
-  border: 1px solid rgba(158, 180, 255, 0.1);
+  border: 1px solid var(--line-faint);
   transition: transform 0.2s ease, border-color 0.2s ease;
   font-size: 0.78rem;
   min-height: 132px;
@@ -1952,8 +1953,8 @@ input::placeholder {
   gap: 3px;
   padding: 4px 5px;
   border-radius: 8px;
-  background: rgba(14, 19, 31, 0.5);
-  border: 1px solid rgba(162, 176, 255, 0.08);
+  background: var(--bg-card);
+  border: 1px solid var(--line-faint);
 }
 
 .party-split {
@@ -1995,8 +1996,8 @@ input::placeholder {
   padding: 4px 6px 5px;
   font-size: 0.72rem;
   border-radius: 10px;
-  background: rgba(118, 136, 255, 0.15);
-  border: 1px solid rgba(138, 170, 255, 0.2);
+  background: rgba(129, 136, 234, 0.17);
+  border: 1px solid var(--line);
   color: #edf5ff;
   text-align: left;
   white-space: nowrap;
@@ -2031,8 +2032,8 @@ input::placeholder {
   max-width: 220px;
   padding: 10px 12px;
   border-radius: 14px;
-  background: rgba(8, 13, 24, 0.97);
-  border: 1px solid rgba(161, 177, 255, 0.24);
+  background: var(--bg-tooltip);
+  border: 1px solid var(--line);
   box-shadow: 0 12px 28px rgba(2, 7, 16, 0.45);
   opacity: 0;
   visibility: hidden;
@@ -2136,19 +2137,19 @@ input::placeholder {
 }
 
 .slot-cell.occupied {
-  background: linear-gradient(135deg, rgba(75, 111, 255, 0.18), rgba(124, 155, 255, 0.08));
-  border-color: rgba(120, 159, 255, 0.26);
+  background: linear-gradient(135deg, rgba(129, 136, 234, 0.21), rgba(129, 136, 234, 0.09));
+  border-color: var(--line);
 }
 
 .slot-cell.empty {
-  background: rgba(12, 18, 28, 0.8);
+  background: var(--bg-inset);
   color: rgba(191, 208, 245, 0.7);
 }
 
 .slot-cell.muted-slot {
-  background: rgba(12, 18, 28, 0.45);
+  background: var(--bg-void);
   border-style: dashed;
-  border-color: rgba(158, 180, 255, 0.08);
+  border-color: var(--line-faint);
 }
 
 .slot-cell.selected {
@@ -2157,16 +2158,16 @@ input::placeholder {
 
 /* 신청 인원이 많을수록 진하게 (1~4명 / 5~9명 / 10명 이상) */
 .slot-cell.occupied.fill-1 {
-  background: linear-gradient(135deg, rgba(75, 111, 255, 0.12), rgba(124, 155, 255, 0.05));
+  background: linear-gradient(135deg, rgba(129, 136, 234, 0.14), rgba(129, 136, 234, 0.06));
 }
 
 .slot-cell.occupied.fill-2 {
-  background: linear-gradient(135deg, rgba(75, 111, 255, 0.28), rgba(124, 155, 255, 0.12));
-  border-color: rgba(120, 159, 255, 0.4);
+  background: linear-gradient(135deg, rgba(129, 136, 234, 0.32), rgba(129, 136, 234, 0.14));
+  border-color: var(--line-strong);
 }
 
 .slot-cell.occupied.fill-3 {
-  background: linear-gradient(135deg, rgba(47, 191, 134, 0.3), rgba(75, 111, 255, 0.18));
+  background: linear-gradient(135deg, rgba(47, 191, 134, 0.3), rgba(129, 136, 234, 0.21));
   border-color: rgba(94, 224, 170, 0.6);
 }
 
@@ -2177,7 +2178,7 @@ input::placeholder {
 }
 
 .slot-cell.is-vacant.my-schedule-slot {
-  background: linear-gradient(135deg, rgba(94, 224, 170, 0.14), rgba(67, 135, 255, 0.08));
+  background: linear-gradient(135deg, rgba(94, 224, 170, 0.14), rgba(129, 136, 234, 0.09));
 }
 
 .slot-cell-head {
@@ -2194,7 +2195,7 @@ input::placeholder {
 .slot-cell .slot-count {
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(12, 18, 28, 0.6);
+  background: var(--bg-inset);
   color: #bcd3ff;
   font-size: 0.62rem;
   font-weight: 700;
@@ -2250,8 +2251,8 @@ input::placeholder {
 .slot-cell.is-vacant {
   align-items: center;
   justify-content: center;
-  background: rgba(12, 18, 28, 0.55);
-  border-color: rgba(158, 180, 255, 0.06);
+  background: var(--bg-inset);
+  border-color: var(--line-faint);
 }
 
 .slot-cell.is-vacant .empty-text {
@@ -2340,7 +2341,7 @@ input::placeholder {
     margin: 0 -18px 14px;
     padding: 10px 18px;
     gap: 10px;
-    background: rgba(8, 12, 25, 0.94);
+    background: rgba(30, 34, 44, 0.94);
     border-bottom: 1px solid rgba(179, 198, 255, 0.1);
     backdrop-filter: blur(8px);
   }
@@ -2384,8 +2385,8 @@ input::placeholder {
     height: 40px;
     padding: 0;
     border-radius: 12px;
-    border: 1px solid rgba(150, 170, 255, 0.22);
-    background: rgba(19, 27, 42, 0.9);
+    border: 1px solid var(--line);
+    background: var(--bg-control);
   }
 
   .mobile-menu-button span {
@@ -2415,8 +2416,8 @@ input::placeholder {
     height: 100%;
     padding: 18px 16px 24px;
     overflow-y: auto;
-    background: #0e1422;
-    border-left: 1px solid rgba(156, 178, 255, 0.18);
+    background: var(--bg-shell);
+    border-left: 1px solid var(--line);
     box-shadow: -16px 0 40px rgba(2, 6, 14, 0.5);
     animation: mobile-nav-in 0.2s ease;
   }
@@ -2441,7 +2442,7 @@ input::placeholder {
     height: 36px;
     padding: 0;
     border-radius: 10px;
-    border: 1px solid rgba(150, 170, 255, 0.2);
+    border: 1px solid var(--line);
     background: transparent;
     color: #dfeaff;
     font-size: 0.9rem;
@@ -2453,8 +2454,8 @@ input::placeholder {
     gap: 2px;
     padding: 10px 12px;
     border-radius: 12px;
-    background: rgba(124, 145, 255, 0.08);
-    border: 1px solid rgba(148, 162, 255, 0.18);
+    background: rgba(129, 136, 234, 0.09);
+    border: 1px solid var(--line);
     color: #dfe9ff;
   }
 
@@ -2486,8 +2487,8 @@ input::placeholder {
     width: 100%;
     padding: 13px 14px;
     border-radius: 12px;
-    border: 1px solid rgba(148, 167, 255, 0.14);
-    background: rgba(17, 23, 36, 0.95);
+    border: 1px solid var(--line-soft);
+    background: var(--bg-control);
     color: #dfe8ff;
     font-size: 0.95rem;
     font-weight: 700;
@@ -2495,8 +2496,8 @@ input::placeholder {
   }
 
   .mobile-nav-item.active {
-    background: linear-gradient(135deg, rgba(93, 110, 255, 0.28), rgba(83, 193, 255, 0.12));
-    border-color: rgba(128, 170, 255, 0.55);
+    background: linear-gradient(135deg, rgba(129, 136, 234, 0.32), rgba(76, 201, 240, 0.14));
+    border-color: var(--accent-line);
     color: #f2f7ff;
   }
 
@@ -2652,9 +2653,9 @@ input::placeholder {
     position: sticky;
     left: 0;
     z-index: 2;
-    background: #161d2b;
+    background: var(--bg-head);
     /* 칸 사이 간격으로 뒤 칸이 비치지 않도록 가린다 */
-    box-shadow: 6px 0 0 #0d121f;
+    box-shadow: 6px 0 0 var(--bg-panel);
   }
 
   .calendar-corner,
@@ -2756,8 +2757,8 @@ input::placeholder {
   box-sizing: border-box;
   padding: 11px 14px;
   border-radius: 12px;
-  background: rgba(14, 20, 31, 0.97);
-  border: 1px solid rgba(156, 178, 255, 0.3);
+  background: var(--bg-card);
+  border: 1px solid var(--line-strong);
   box-shadow: 0 12px 28px rgba(2, 6, 14, 0.5);
   color: #edf4ff;
   font-size: 0.86rem;
@@ -2780,7 +2781,7 @@ input::placeholder {
 
 .toast.is-error {
   border-color: rgba(255, 120, 120, 0.6);
-  background: rgba(40, 16, 20, 0.97);
+  background: #3a1f2b;
 }
 
 @keyframes toast-in {
@@ -2826,14 +2827,14 @@ input::placeholder {
 }
 
 .day-raid-rally-button.is-primary {
-  background: linear-gradient(135deg, rgba(83, 109, 255, 0.92), rgba(83, 168, 255, 0.78));
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
   border-color: transparent;
 }
 
 .next-raid-status {
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(136, 170, 255, 0.25);
+  border: 1px solid var(--line);
   font-size: 0.76rem;
   font-weight: 700;
 }
@@ -2863,7 +2864,7 @@ input::placeholder {
 
 .summary-card small.next-raid-later {
   margin-top: 8px;
-  color: #8fa3cf;
+  color: var(--text-muted);
   font-size: 0.74rem;
 }
 
@@ -2876,8 +2877,8 @@ input::placeholder {
   margin-bottom: 14px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgba(124, 195, 255, 0.08);
-  border: 1px solid rgba(124, 195, 255, 0.32);
+  background: rgba(76, 201, 240, 0.09);
+  border: 1px solid rgba(76, 201, 240, 0.38);
 }
 
 .restore-callout-text {
@@ -2892,7 +2893,7 @@ input::placeholder {
 }
 
 .restore-callout-text span {
-  color: #9cb6dc;
+  color: var(--text-muted);
   font-size: 0.74rem;
 }
 
@@ -2918,8 +2919,8 @@ input::placeholder {
   gap: 2px;
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(17, 23, 36, 0.95);
-  border: 1px solid rgba(150, 170, 255, 0.18);
+  background: var(--bg-control);
+  border: 1px solid var(--line);
 }
 
 .restore-list strong {
@@ -2933,7 +2934,7 @@ input::placeholder {
 }
 
 .restore-list small {
-  color: #8fa3cf;
+  color: var(--text-muted);
   font-size: 0.7rem;
 }
 
@@ -2942,8 +2943,8 @@ input::placeholder {
   margin-bottom: 14px;
   padding: 12px 12px 2px;
   border-radius: 14px;
-  background: rgba(20, 27, 42, 0.55);
-  border: 1px solid rgba(150, 170, 255, 0.1);
+  background: var(--bg-section);
+  border: 1px solid var(--line-faint);
 }
 
 .form-section-title {
@@ -3007,11 +3008,16 @@ input::placeholder {
   grid-template-columns: 42px repeat(7, minmax(0, 1fr));
   gap: 3px;
   margin-bottom: 10px;
+  /* 시간표를 한 단계 어두운 판 위에 올려 칸이 떠 보이게 한다 */
+  padding: 6px;
+  border: 1px solid var(--line-faint);
+  border-radius: 12px;
+  background: var(--bg-inset);
   user-select: none;
 }
 
 .time-pick-grid.is-disabled {
-  opacity: 0.45;
+  opacity: 0.7;
 }
 
 .time-pick-corner {
@@ -3026,7 +3032,7 @@ input::placeholder {
   padding: 0;
   border: none;
   border-radius: 6px;
-  background: rgba(22, 29, 43, 0.9);
+  background: var(--bg-head);
   color: #dfeaff;
   font: inherit;
   font-size: 0.74rem;
@@ -3052,7 +3058,7 @@ input::placeholder {
 }
 
 .time-pick-head:hover:not(:disabled) {
-  background: rgba(104, 122, 255, 0.22);
+  background: rgba(129, 136, 234, 0.25);
 }
 
 .time-pick-head:disabled {
@@ -3062,9 +3068,9 @@ input::placeholder {
 .time-pick-cell {
   height: 30px;
   padding: 0;
-  border: 1px solid rgba(148, 167, 255, 0.16);
-  border-radius: 6px;
-  background: rgba(17, 23, 36, 0.95);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-control);
   color: #ffffff;
   font: inherit;
   font-size: 0.8rem;
@@ -3074,18 +3080,19 @@ input::placeholder {
 }
 
 .time-pick-cell:hover:not(:disabled) {
-  border-color: rgba(138, 170, 255, 0.5);
+  border-color: var(--accent-line);
 }
 
 .time-pick-cell.is-selected {
-  background: linear-gradient(135deg, rgba(83, 109, 255, 0.85), rgba(83, 168, 255, 0.65));
-  border-color: rgba(147, 183, 255, 0.8);
+  background: var(--accent);
+  border-color: transparent;
+  box-shadow: 0 0 0 1px rgba(212, 217, 251, 0.35), 0 2px 10px var(--accent-glow);
 }
 
 /* 같은 계정의 다른 캐릭터 · 다른 레이드로 이미 신청한 시간 */
 .time-pick-cell.is-taken {
-  border: 1px dashed rgba(245, 197, 66, 0.7);
-  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.12) 0 4px, transparent 4px 8px);
+  border: 1px dashed rgba(245, 197, 66, 0.8);
+  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.22) 0 4px, transparent 4px 8px), var(--bg-control);
 }
 
 .time-pick-cell:disabled {
@@ -3096,7 +3103,7 @@ input::placeholder {
 .time-pick-cell.is-unavailable {
   display: block;
   border-color: transparent;
-  background: rgba(12, 18, 28, 0.35);
+  background: var(--bg-void);
   cursor: default;
 }
 
@@ -3110,9 +3117,9 @@ input::placeholder {
   display: inline-block;
   width: 14px;
   height: 12px;
-  border: 1px dashed rgba(245, 197, 66, 0.7);
+  border: 1px dashed #f5c542;
   border-radius: 3px;
-  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.2) 0 3px, transparent 3px 6px);
+  background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.22) 0 3px, transparent 3px 6px), var(--bg-control);
 }
 
 .saved-schedule-clear {
@@ -3156,7 +3163,7 @@ input::placeholder {
 }
 
 .member-detail-list dt {
-  color: #8fa3cf;
+  color: var(--text-muted);
 }
 
 .member-detail-list dd {
@@ -3205,9 +3212,9 @@ input::placeholder {
 .toast-action {
   flex-shrink: 0;
   padding: 5px 12px;
-  border: 1px solid rgba(124, 195, 255, 0.6);
+  border: 1px solid rgba(76, 201, 240, 0.72);
   border-radius: 999px;
-  background: rgba(124, 195, 255, 0.14);
+  background: rgba(76, 201, 240, 0.16);
   color: #cfe6ff;
   font: inherit;
   font-size: 0.8rem;
@@ -3216,7 +3223,7 @@ input::placeholder {
 }
 
 .toast-action:hover:not(:disabled) {
-  background: rgba(124, 195, 255, 0.28);
+  background: rgba(76, 201, 240, 0.32);
 }
 
 .toast-action:disabled {
@@ -3295,7 +3302,7 @@ input::placeholder {
   padding: 10px 12px 10px 40px;
   border: 1px solid rgba(94, 224, 170, 0.45);
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(47, 191, 134, 0.16), rgba(75, 111, 255, 0.08));
+  background: linear-gradient(135deg, rgba(47, 191, 134, 0.16), rgba(129, 136, 234, 0.09));
   color: #edf5ff;
   font: inherit;
   text-align: left;
@@ -3304,7 +3311,7 @@ input::placeholder {
 }
 
 .recommend-card:hover {
-  background: linear-gradient(135deg, rgba(47, 191, 134, 0.28), rgba(75, 111, 255, 0.14));
+  background: linear-gradient(135deg, rgba(47, 191, 134, 0.28), rgba(129, 136, 234, 0.16));
   transform: translateY(-1px);
 }
 
@@ -3363,7 +3370,7 @@ input::placeholder {
 }
 
 .recommend-empty {
-  color: #8fa3cf;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 
@@ -3455,9 +3462,9 @@ input::placeholder {
     align-items: center;
     gap: 1px;
     padding: 6px 0;
-    border: 1px solid rgba(150, 170, 255, 0.18);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    background: rgba(19, 27, 42, 0.9);
+    background: var(--bg-control);
     color: #dfeaff;
     font: inherit;
     font-size: 0.82rem;
@@ -3466,7 +3473,7 @@ input::placeholder {
   }
 
   .mobile-day-tab small {
-    color: #8fa3cf;
+    color: var(--text-muted);
     font-size: 0.68rem;
   }
 
@@ -3475,8 +3482,8 @@ input::placeholder {
   }
 
   .mobile-day-tab.active {
-    border-color: rgba(128, 170, 255, 0.7);
-    background: linear-gradient(135deg, rgba(93, 110, 255, 0.4), rgba(83, 193, 255, 0.18));
+    border-color: var(--accent-line);
+    background: linear-gradient(135deg, rgba(129, 136, 234, 0.46), rgba(76, 201, 240, 0.21));
     opacity: 1;
   }
 

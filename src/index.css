@@ -1,11 +1,43 @@
+/* 색 단계: 바깥(페이지)에서 안쪽(누르는 칸)으로 갈수록 밝아진다. 모바일에서 칸이 묻히지 않게 하는 게 목적. */
+:root {
+  --bg-page: #1a1e27;
+  --bg-shell: #1e222c;
+  --bg-panel: #222632;
+  --bg-section: #292d3b;
+  --bg-card: #2e3342;
+  --bg-card-deep: #2a2f3d;
+  --bg-control: #383e50;
+  --bg-control-hover: #43495c;
+  --bg-head: #2f3442;
+  --bg-inset: #1d212b;
+  --bg-void: #171b24;
+  --bg-tooltip: #151922;
+
+  /* 테두리는 은은하게 두고, 구분은 면 색 차이로 한다 (선이 밝으면 화면이 날카로워 보인다) */
+  --line-faint: #2f3443;
+  --line-soft: #3c4254;
+  --line: #4d556a;
+  --line-strong: #5f6881;
+  --accent-line: #989fe7;
+
+  --accent: #888de7;
+  --accent-deep: #7379d5;
+  --accent-glow: rgba(136, 141, 231, 0.35);
+  --accent-2: #4cc9f0;
+
+  --text: #f1f3fc;
+  --text-muted: #b6bdd2;
+}
+
 * {
   box-sizing: border-box;
 }
 
 html {
   font-family: 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
-  background: #070d1b;
-  color: #edf4ff;
+  background: var(--bg-page);
+  color: var(--text);
+  color-scheme: dark;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -14,9 +46,9 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top, rgba(79, 101, 255, 0.18), transparent 32%),
-    linear-gradient(180deg, #070d1b 0%, #0d1426 100%);
-  color: #edf4ff;
+    radial-gradient(circle at top, rgba(113, 129, 227, 0.13), transparent 32%),
+    linear-gradient(180deg, var(--bg-page) 0%, #1e222d 100%);
+  color: var(--text);
 }
 
 button,
