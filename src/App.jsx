@@ -69,6 +69,8 @@ const raidDifficultyAvailability = {
 
 const STORAGE_KEY = 'raid-calendar-members-v1'
 const RAID_SCHEDULES_STORAGE_KEY = 'raid-calendar-raid-schedules-v1'
+// 지난 신청 보관 (다시 등록한 뒤 지워도 다시 불러올 수 있게)
+const ARCHIVED_SCHEDULES_STORAGE_KEY = 'raid-calendar-archived-schedules-v1'
 const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 // '비밀번호 저장'을 켠 기기에서만 비밀번호를 남겨 두고, 다음 접속 때 입력칸에 미리 채운다.
 const SAVED_PASSWORD_STORAGE_KEY = 'raid-calendar-saved-password-v1'
@@ -576,6 +578,43 @@ function saveLocalRaidSchedules(nextSchedules) {
   localStorage.setItem(RAID_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
 }
 
+// 지난 신청 보관 (raid_schedule_archive)
+function loadLocalArchivedSchedules() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ARCHIVED_SCHEDULES_STORAGE_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+function saveLocalArchivedSchedules(nextSchedules) {
+  try {
+    localStorage.setItem(ARCHIVED_SCHEDULES_STORAGE_KEY, JSON.stringify(nextSchedules))
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+// 보관 목록에 지난 신청을 합친다. 캐릭터 · 레이드 조합마다 가장 최근에 저장된 것 한 건만 남긴다.
+// 바뀐 것이 없으면 prev를 그대로 돌려준다.
+function mergeArchivedSchedules(prev, entries) {
+  const byKey = new Map(prev.map((entry) => [`${entry.nickname}|${getScheduleKey(entry)}`, entry]))
+  let changed = false
+
+  entries.forEach((entry) => {
+    const key = `${entry.nickname}|${getScheduleKey(entry)}`
+    const existing = byKey.get(key)
+
+    if (!existing || new Date(existing.updatedAt).getTime() < new Date(entry.updatedAt).getTime()) {
+      byKey.set(key, entry)
+      changed = true
+    }
+  })
+
+  return changed ? [...byKey.values()] : prev
+}
+
 // 시간대별 준비 / 클리어 기록 (raid_runs)
 function formatDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -848,6 +887,15 @@ function App() {
     () => storedRaidSchedules.filter((entry) => isSavedThisWeek(entry, weekStartTime)),
     [storedRaidSchedules, weekStartTime],
   )
+  // 지난주 이전 신청 (아직 덮어쓰이지 않은 것)
+  const pastRaidSchedules = useMemo(
+    () => storedRaidSchedules.filter((entry) => !isSavedThisWeek(entry, weekStartTime)),
+    [storedRaidSchedules, weekStartTime],
+  )
+  // 덮어쓰이거나 지워진 지난 신청 보관 목록. DB 보관 기록과 화면에서 본 지난 신청을 모두 모은다.
+  const [archivedSchedules, setArchivedSchedules] = useState(() => (supabase ? [] : loadLocalArchivedSchedules()))
+  // 불러오기 팝업에서 고른 신청 키 (레이드 · 난이도 · 공략 방식)
+  const [restoreSelectedKeys, setRestoreSelectedKeys] = useState([])
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   // '내 스케줄 전체 삭제' 확인 팝업 (한 건 · 한 시간 삭제는 확인 없이 지우고 되돌리기를 띄운다)
   const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false)
@@ -926,8 +974,21 @@ function App() {
       }
     }
 
+    const loadRemoteArchivedSchedules = async () => {
+      const { data, error } = await supabase.from('raid_schedule_archive').select('*')
+
+      if (!error && Array.isArray(data)) {
+        const normalized = data
+          .map((entry) => normalizeRaidScheduleEntry(entry))
+          .filter(Boolean)
+
+        setArchivedSchedules((prev) => mergeArchivedSchedules(prev, normalized))
+      }
+    }
+
     loadRemoteMembers()
     loadRemoteRaidSchedules()
+    loadRemoteArchivedSchedules()
     fetchMemberAlts().then((alts) => alts && setMemberAlts(alts))
 
     const memberChannel = supabase
@@ -1004,6 +1065,18 @@ function App() {
       saveLocalRaidRuns(raidRuns)
     }
   }, [raidRuns])
+
+  // 화면에 보이는 지난 신청을 보관 목록에 모아 둔다.
+  // 다시 등록해서 덮어쓰거나 지운 뒤에도 불러오기 목록에 남기기 위해서다. (DB에서는 트리거가 같은 일을 한다)
+  useEffect(() => {
+    setArchivedSchedules((prev) => mergeArchivedSchedules(prev, pastRaidSchedules))
+  }, [pastRaidSchedules])
+
+  useEffect(() => {
+    if (!supabase) {
+      saveLocalArchivedSchedules(archivedSchedules)
+    }
+  }, [archivedSchedules])
 
   // 이번 주 준비 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
   useEffect(() => {
@@ -1622,13 +1695,13 @@ function App() {
   )
 
   // 지난주 이전에 저장해 둔 내 신청 중 이번 주에 같은 레이드 조합을 아직 저장하지 않은 것.
-  // 수요일 리셋 뒤 한 번에 다시 등록할 수 있게 한다. (DB에는 지난 기록이 그대로 남아 있다)
+  // 수요일 리셋 뒤 골라서 다시 등록할 수 있게 한다. 다시 등록했다가 지운 신청도 보관 목록에서 다시 나온다.
   const restorableSchedules = useMemo(() => {
     const thisWeekKeys = new Set(
       raidSchedules.filter((entry) => entry.nickname === currentNickname).map((entry) => getScheduleKey(entry)),
     )
 
-    return storedRaidSchedules
+    return mergeArchivedSchedules(archivedSchedules, pastRaidSchedules)
       .filter((entry) => (
         entry.nickname === currentNickname
         && entry.days.length > 0
@@ -1636,7 +1709,7 @@ function App() {
         && !thisWeekKeys.has(getScheduleKey(entry))
       ))
       .sort(compareSchedules)
-  }, [currentNickname, raidSchedules, storedRaidSchedules, weekStartTime])
+  }, [archivedSchedules, currentNickname, pastRaidSchedules, raidSchedules, weekStartTime])
 
   // 이번 주에서 이미 지난 시간대인지 (시작하고 RAID_ONGOING_MS가 지나면 지난 것으로 본다)
   const isPastSlot = (day, time) => (
@@ -2503,14 +2576,27 @@ function App() {
     }
   }
 
-  // 지난 신청을 이번 주 신청으로 다시 등록한다. 직업 · 전투력 · 리딩은 지금 '내 캐릭터' 칸 값을 쓴다.
+  // 불러오기 팝업을 열 때는 지난 신청을 모두 고른 상태로 시작한다.
+  const openRestoreConfirm = () => {
+    setRestoreSelectedKeys(restorableSchedules.map((entry) => getScheduleKey(entry)))
+    setRestoreConfirmOpen(true)
+  }
+
+  const toggleRestoreKey = (key) => {
+    setRestoreSelectedKeys((prev) => (prev.includes(key) ? prev.filter((value) => value !== key) : [...prev, key]))
+  }
+
+  // 팝업에서 고른 지난 신청 (목록이 바뀌어 사라진 키는 빼고 센다)
+  const selectedRestoreSchedules = restorableSchedules.filter((entry) => restoreSelectedKeys.includes(getScheduleKey(entry)))
+
+  // 고른 지난 신청을 이번 주 신청으로 다시 등록한다. 직업 · 전투력 · 리딩은 지금 '내 캐릭터' 칸 값을 쓴다.
   // 이번 주 다른 신청과 겹치는 시간은 빼고 등록한다. (앞에서 등록한 것과도 겹치지 않게 차례로 쌓는다)
   const restoreSchedules = async () => {
     setRestoreConfirmOpen(false)
 
     const nickname = currentNickname
 
-    if (!nickname || isSaving) {
+    if (!nickname || isSaving || selectedRestoreSchedules.length === 0) {
       return
     }
 
@@ -2525,7 +2611,7 @@ function App() {
     setIsSaving(true)
 
     try {
-      for (const entry of restorableSchedules) {
+      for (const entry of selectedRestoreSchedules) {
         const selection = normalizeDayTimeSelection(entry.dayTimeSelection)
 
         if (entry.attendance === '참') {
@@ -3499,22 +3585,43 @@ function App() {
             <h3>지난 신청을 다시 등록할까요?</h3>
             <p>
               <span className="save-confirm-nickname">{currentNickname}</span>
-              의 지난 신청을 이번 주 신청으로 저장해요. 이번 주 다른 신청과 겹치는 시간은 빼고 등록해요.
+              의 지난 신청 중 고른 것을 이번 주 신청으로 저장해요. 이번 주 다른 신청과 겹치는 시간은 빼고 등록해요.
             </p>
+            <div className="restore-list-head">
+              <span>{selectedRestoreSchedules.length} / {restorableSchedules.length}건 선택</span>
+              <button
+                type="button"
+                className="restore-select-all"
+                onClick={() => setRestoreSelectedKeys(
+                  selectedRestoreSchedules.length === restorableSchedules.length
+                    ? []
+                    : restorableSchedules.map((entry) => getScheduleKey(entry)),
+                )}
+              >
+                {selectedRestoreSchedules.length === restorableSchedules.length ? '전체 해제' : '전체 선택'}
+              </button>
+            </div>
             <ul className="restore-list">
               {restorableSchedules.map((entry) => {
+                const key = getScheduleKey(entry)
                 const savedDate = new Date(entry.updatedAt)
+                const isSelected = restoreSelectedKeys.includes(key)
 
                 return (
-                  <li key={getScheduleKey(entry)}>
-                    <strong>
-                      {formatScheduleKey(getScheduleKey(entry))}
-                      {entry.attendance !== '참' && ' (불참)'}
-                    </strong>
-                    <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
-                    {!Number.isNaN(savedDate.getTime()) && (
-                      <small>{savedDate.getMonth() + 1}/{savedDate.getDate()} 저장</small>
-                    )}
+                  <li key={key}>
+                    <label className={`restore-item${isSelected ? ' selected' : ''}`}>
+                      <input type="checkbox" checked={isSelected} onChange={() => toggleRestoreKey(key)} />
+                      <span className="restore-item-text">
+                        <strong>
+                          {formatScheduleKey(key)}
+                          {entry.attendance !== '참' && ' (불참)'}
+                        </strong>
+                        <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
+                        {!Number.isNaN(savedDate.getTime()) && (
+                          <small>{savedDate.getMonth() + 1}/{savedDate.getDate()} 저장</small>
+                        )}
+                      </span>
+                    </label>
                   </li>
                 )
               })}
@@ -3523,8 +3630,13 @@ function App() {
               <button type="button" className="secondary-button" onClick={() => setRestoreConfirmOpen(false)}>
                 취소
               </button>
-              <button type="button" className="primary-button" onClick={restoreSchedules}>
-                다시 등록
+              <button
+                type="button"
+                className="primary-button"
+                onClick={restoreSchedules}
+                disabled={selectedRestoreSchedules.length === 0}
+              >
+                {selectedRestoreSchedules.length > 0 ? `${selectedRestoreSchedules.length}건 다시 등록` : '골라 주세요'}
               </button>
             </div>
           </div>
@@ -3736,7 +3848,7 @@ function App() {
               <p>2. 신청할 레이드 · 난이도 · 공략 방식과 참여 여부를 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
               <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요.</p>
               <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
-              <p>5. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 한 번에 다시 등록할 수 있어요.</p>
+              <p>5. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
             </div>
           )}
 
@@ -3749,7 +3861,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button small-toggle"
-                onClick={() => setRestoreConfirmOpen(true)}
+                onClick={openRestoreConfirm}
                 disabled={isSaving}
               >
                 불러오기
