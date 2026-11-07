@@ -89,3 +89,18 @@ export function MemberTooltip({ member, ownerNickname, showLead = false }) {
     </span>
   )
 }
+
+// 모바일 화면 폭인지. CSS의 모바일 기준(640px)과 맞춘다.
+export function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 640px)').matches)
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 640px)')
+    const handleChange = (event) => setIsMobile(event.matches)
+
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
+
+  return isMobile
+}

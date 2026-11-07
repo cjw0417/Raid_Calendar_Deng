@@ -25,6 +25,7 @@ import {
   LiveClock,
   ResetCountdown,
   MemberTooltip,
+  useIsMobile,
 } from './components/common'
 import {
   raidOptions,
@@ -42,6 +43,7 @@ import {
   modeOptions,
   raidTabOptions,
   raidDifficultyAvailability,
+  MOBILE_GUIDE_STORAGE_KEY,
   MOBILE_SECTIONS,
   weekdayNames,
   weekdayTimeSlots,
@@ -106,6 +108,17 @@ import {
 import './App.css'
 
 function App() {
+  // 모바일과 PC는 시간표 · 탭의 생김새가 달라서 화면 폭에 따라 다르게 그린다.
+  const isMobile = useIsMobile()
+  // 모바일 첫 사용 안내
+  const [guideOpen, setGuideOpen] = useState(false)
+  // 모바일 이번 주 화면의 추천 시간은 접어 두고 요일별 현황을 먼저 보여 준다.
+  const [recommendOpen, setRecommendOpen] = useState(false)
+  // 모바일 뒤로 가기: 현재 기록의 탭, 기록에 쌓아 둔 팝업 수, 코드가 직접 되돌린 기록을 무시할지
+  const historySectionRef = useRef(null)
+  const historyPopupCountRef = useRef(0)
+  const ignoreNextPopRef = useRef(false)
+  const autoSectionMoveRef = useRef(false)
   // 화면 계산에 쓰는 현재 시각. 1분마다만 바뀐다. (초 단위 시계는 LiveClock · ResetCountdown이 따로 그린다)
   const [currentTime, setCurrentTime] = useState(() => new Date())
   // 페이지를 켜 둔 채 수요일 00시가 지나면 새 주로 넘어가도록 현재 시각에서 주 시작을 다시 계산한다.
@@ -532,10 +545,11 @@ function App() {
   }, [activeRaidTab, visibleRaidTabs])
 
   // 그 날짜에 있는 시간 줄. 주말과 공휴일은 낮시간까지 있다. 입력 폼과 캘린더가 함께 쓴다.
+  const isWeekendOrHolidayDate = (date) => date.getDay() === 0 || date.getDay() === 6 || holidaySet.has(formatIsoDate(date))
+
   const getDayTimeSlots = (date) => {
     const day = date.getDay()
-    const isWeekendOrHoliday = day === 0 || day === 6 || holidaySet.has(formatIsoDate(date))
-    const slots = !isWeekendOrHoliday
+    const slots = !isWeekendOrHolidayDate(date)
       ? weekdayTimeSlots
       : showDaytimeSlots ? weekendTimeSlots : weekendTimeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
 
@@ -1041,6 +1055,51 @@ function App() {
       .sort((a, b) => a.startTime - b.startTime || compareSchedules(a, b))
   }, [currentMinute, myCharacters, raidSchedules, weekDates])
 
+  // 모바일은 요일 하나씩 보여 주므로, 처음 들어오면 내 가장 가까운 신청 요일, 없으면 신청이 있는 가장 가까운 요일을 연다.
+  const dayAutoPickedRef = useRef(false)
+
+  useEffect(() => {
+    if (dayAutoPickedRef.current || !loggedInNickname || dataLoadState !== 'ready') {
+      return
+    }
+
+    dayAutoPickedRef.current = true
+
+    const firstActiveDay = weekdayNames.find((day, index) => (
+      weekDates[index].getTime() >= activeDayStartTime && allScheduleEntries.some((entry) => entry.days.includes(day))
+    ))
+    const targetDay = myUpcomingSlots[0]?.day ?? firstActiveDay
+
+    if (targetDay) {
+      setMobileCalendarDayIndex(weekdayNames.indexOf(targetDay))
+    }
+  }, [loggedInNickname, dataLoadState, myUpcomingSlots, allScheduleEntries, weekDates, activeDayStartTime])
+
+  // 모바일에서 처음 로그인하면 탭 설명을 한 번 보여 준다.
+  useEffect(() => {
+    if (!isMobile || !loggedInNickname) {
+      return
+    }
+
+    try {
+      if (!localStorage.getItem(MOBILE_GUIDE_STORAGE_KEY)) {
+        setGuideOpen(true)
+      }
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [isMobile, loggedInNickname])
+
+  const closeGuide = () => {
+    setGuideOpen(false)
+
+    try {
+      localStorage.setItem(MOBILE_GUIDE_STORAGE_KEY, '1')
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+
   // 내 신청 중 대기였다가 정원에 든 시간대가 있으면 앱을 켜 둔 사람에게 바로 알려 준다. (디스코드 알림은 DB 트리거가 보낸다)
   const myWaitlistStateRef = useRef(null)
 
@@ -1123,6 +1182,8 @@ function App() {
     }
 
     // 이번 주에 이미 신청한 사람은 모바일에서 등록 폼 대신 요일별 신청 현황부터 보여 준다.
+    // 사용자가 옮긴 것이 아니므로 뒤로 가기 기록에 남기지 않는다.
+    autoSectionMoveRef.current = true
     setMobileSection((prev) => (prev === 'form' ? 'day' : prev))
   }, [loggedInNickname, mySavedSchedules])
 
@@ -1284,33 +1345,111 @@ function App() {
     tryAutoLogin()
   }, [isAutoLoggingIn])
 
-  // Esc로 맨 위 팝업부터 닫는다.
-  useEffect(() => {
-    const closeTopPopup = (event) => {
-      if (event.key !== 'Escape') {
-        return
-      }
+  // 맨 위 팝업부터 닫는다. Esc와 모바일 뒤로 가기가 함께 쓴다.
+  const closeTopPopup = () => {
+    if (guideOpen) {
+      closeGuide()
+    } else if (memberDetail) {
+      setMemberDetail(null)
+    } else if (pendingRunStatus) {
+      setPendingRunStatus(null)
+    } else if (clearAllConfirmOpen) {
+      setClearAllConfirmOpen(false)
+    } else if (restoreConfirmOpen) {
+      setRestoreConfirmOpen(false)
+    } else if (altManagerOpen) {
+      setAltManagerOpen(false)
+    } else if (passwordChangeOpen) {
+      setPasswordChangeOpen(false)
+    } else if (mobileMenuOpen) {
+      setMobileMenuOpen(false)
+    }
+  }
+  const closeTopPopupRef = useRef(closeTopPopup)
 
-      if (memberDetail) {
-        setMemberDetail(null)
-      } else if (pendingRunStatus) {
-        setPendingRunStatus(null)
-      } else if (clearAllConfirmOpen) {
-        setClearAllConfirmOpen(false)
-      } else if (restoreConfirmOpen) {
-        setRestoreConfirmOpen(false)
-      } else if (altManagerOpen) {
-        setAltManagerOpen(false)
-      } else if (passwordChangeOpen) {
-        setPasswordChangeOpen(false)
-      } else if (mobileMenuOpen) {
-        setMobileMenuOpen(false)
+  useEffect(() => {
+    closeTopPopupRef.current = closeTopPopup
+  })
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeTopPopupRef.current()
       }
     }
 
-    window.addEventListener('keydown', closeTopPopup)
-    return () => window.removeEventListener('keydown', closeTopPopup)
-  }, [memberDetail, pendingRunStatus, clearAllConfirmOpen, restoreConfirmOpen, altManagerOpen, passwordChangeOpen, mobileMenuOpen])
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // 모바일 뒤로 가기: 팝업이 열려 있으면 닫고, 아니면 이전 탭으로 돌아간다. 처음 탭에서 누르면 그때 앱을 벗어난다.
+  const openPopupCount = [
+    guideOpen, memberDetail, pendingRunStatus, clearAllConfirmOpen, restoreConfirmOpen, altManagerOpen, passwordChangeOpen, mobileMenuOpen,
+  ].filter(Boolean).length
+
+  useEffect(() => {
+    if (!isMobile || !loggedInNickname) {
+      historySectionRef.current = null
+      historyPopupCountRef.current = 0
+      return
+    }
+
+    if (historySectionRef.current === null) {
+      window.history.replaceState({ raidSection: mobileSection }, '')
+      historySectionRef.current = mobileSection
+      autoSectionMoveRef.current = false
+    }
+
+    if (mobileSection !== historySectionRef.current) {
+      const method = autoSectionMoveRef.current ? 'replaceState' : 'pushState'
+      window.history[method]({ raidSection: mobileSection }, '')
+      historySectionRef.current = mobileSection
+    }
+
+    autoSectionMoveRef.current = false
+
+    // 버튼으로 닫은 팝업의 기록은 지우고, 새로 연 팝업은 기록을 쌓아 뒤로 가기로 닫히게 한다.
+    if (historyPopupCountRef.current > openPopupCount) {
+      ignoreNextPopRef.current = true
+      window.history.go(openPopupCount - historyPopupCountRef.current)
+      historyPopupCountRef.current = openPopupCount
+    }
+
+    while (historyPopupCountRef.current < openPopupCount) {
+      window.history.pushState({ raidSection: mobileSection }, '')
+      historyPopupCountRef.current += 1
+    }
+  }, [isMobile, loggedInNickname, mobileSection, openPopupCount])
+
+  useEffect(() => {
+    if (!isMobile || !loggedInNickname) {
+      return undefined
+    }
+
+    const handlePopState = (event) => {
+      if (ignoreNextPopRef.current) {
+        ignoreNextPopRef.current = false
+        return
+      }
+
+      if (historyPopupCountRef.current > 0) {
+        historyPopupCountRef.current -= 1
+        closeTopPopupRef.current()
+        return
+      }
+
+      const section = event.state?.raidSection
+
+      if (section) {
+        historySectionRef.current = section
+        setMobileSection(section)
+        window.scrollTo({ top: 0 })
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [isMobile, loggedInNickname])
 
   const resetPasswordForm = () => {
     setPasswordForm(buildEmptyPasswordForm())
@@ -1520,6 +1659,7 @@ function App() {
     const rowKey = `${day}-${raidName} / ${difficulty} / ${mode}-${time}`
 
     setMobileSection('day')
+    setMobileCalendarDayIndex(weekdayNames.indexOf(day))
     setExpandedPastDays((prev) => ({ ...prev, [day]: true }))
     setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: true }))
     // 펼친 줄이 그려진 뒤에 스크롤한다.
@@ -1702,7 +1842,7 @@ function App() {
           scheduleEntry,
         )
       } catch (error) {
-        showToast(`스케줄 저장에 실패했어요. (${error.message})`, 'error')
+        showToast(`신청을 저장하지 못했어요. (${error.message})`, 'error')
         return false
       }
 
@@ -1711,7 +1851,7 @@ function App() {
         const conflictDetail = conflict
           ? `\n${conflict.day}요일 ${formatTimeLabel(conflict.time)}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
           : ''
-        showToast(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}${conflictDetail}`, 'error')
+        showToast(`신청을 저장하지 못했어요. ${describeAuthResult(result.error)}${conflictDetail}`, 'error')
         return false
       }
 
@@ -1865,6 +2005,9 @@ function App() {
       showToast(
         `${nickname} · ${formatScheduleKey(scheduleKey)} 저장했어요.${syncedCount > 0 ? `\n다른 신청 ${syncedCount}건에도 캐릭터 정보를 반영했어요.` : ''}`,
         'success',
+        '',
+        // 모바일은 저장 뒤 현황이 다른 탭에 있어서 바로 넘어갈 수 있게 한다.
+        isMobile ? { label: '현황 보기', onClick: () => selectMobileSection('day') } : null,
       )
     } finally {
       setIsSaving(false)
@@ -2105,7 +2248,7 @@ function App() {
     saveLocalRaidSchedules(
       loadLocalRaidSchedules().filter((entry) => entry.nickname !== trimmedNickname),
     )
-    showToast(`${trimmedNickname}의 스케줄을 모두 삭제했어요.`, 'success')
+    showToast(`${trimmedNickname}의 신청을 모두 삭제했어요.`, 'success')
   }
 
   // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다. 성공하면 true.
@@ -2240,14 +2383,14 @@ function App() {
       const info = { attendance: entry.attendance, className: entry.className, power: entry.power, leadReady: entry.leadReady }
 
       if (await persistSchedule(nickname, info, entry, entry.dayTimeSelection, entry.slotSignedAt)) {
-        showToast(`${scheduleLabel} 스케줄을 되돌렸어요.`, 'success', 'undo-delete')
+        showToast(`${scheduleLabel} 신청을 되돌렸어요.`, 'success', 'undo-delete')
       }
     }
 
     showToast(
       target.entry
         ? `${scheduleLabel}에서 ${describePendingSlot(target)} 시간을 삭제했어요.`
-        : `${scheduleLabel} 스케줄을 삭제했어요.`,
+        : `${scheduleLabel} 신청을 삭제했어요.`,
       'success',
       'undo-delete',
       { label: '되돌리기', onClick: undoDelete },
@@ -2926,6 +3069,25 @@ function App() {
       .filter(({ record }) => record?.rallyCalledAt)
     : []
 
+  // 추천 시간의 상태 문구
+  const getRecommendStatus = (slot) => {
+    const remaining = RAID_FULL_SIZE - slot.people.length
+
+    if (isConfirmedSlot(slot)) {
+      return '출발 가능'
+    }
+
+    return remaining > 0 ? `모집 중 · ${remaining}명 더` : '리더 필요'
+  }
+
+  // 모바일에서 지금 폼의 신청이 저장된 그대로인지. 그러면 저장 버튼 대신 저장됨으로 보여 준다.
+  const isCurrentScheduleSaved = isMobile
+    && Boolean(savedCurrentSchedule)
+    && savedCurrentSchedule.attendance === '참'
+    && !isClearingSavedSchedule
+    && !unsavedScheduleKeys.includes(currentScheduleKey)
+    && !outdatedCharacterSchedules.some((entry) => getScheduleKey(entry) === currentScheduleKey)
+
   // 비어 있는 목록의 문구. 아직 못 불러온 상태를 '신청 없음'으로 보여 주지 않는다.
   const getEmptyText = (text) => {
     if (dataLoadState === 'loading') {
@@ -2933,6 +3095,156 @@ function App() {
     }
 
     return dataLoadState === 'error' ? '불러오지 못했어요' : text
+  }
+
+  // 폼 단계 제목. 끝낸 단계는 번호 대신 ✓로 보여 준다.
+  const renderStepTitle = (step, isDone, text) => (
+    <h3 className="form-section-title">
+      <span className={`form-step-number ${isDone ? 'is-done' : ''}`} aria-hidden="true">{isDone ? '✓' : step}</span>
+      {text}
+    </h3>
+  )
+
+  // 모바일 요일 탭. 신청 · 현황 · 파티 화면이 같은 요일을 함께 쓴다. getMark가 숫자면 개수, true면 점을 보여 준다.
+  const renderMobileDayTabs = (section, getMark) => (
+    <div className="mobile-day-tabs" data-section={section} role="tablist" aria-label="요일 선택">
+      {weekDates.map((date, dayIndex) => {
+        const day = weekdayNames[dayIndex]
+        const mark = getMark(day)
+        const isToday = date.getTime() === todayStartTime
+
+        return (
+          <button
+            key={day}
+            type="button"
+            role="tab"
+            aria-selected={mobileCalendarDayIndex === dayIndex}
+            className={`mobile-day-tab${mobileCalendarDayIndex === dayIndex ? ' active' : ''}${date.getTime() < activeDayStartTime ? ' is-past' : ''}${isToday ? ' is-today' : ''}${holidaySet.has(formatIsoDate(date)) ? ' is-holiday' : ''}`}
+            onClick={() => setMobileCalendarDayIndex(dayIndex)}
+          >
+            <span>{day}</span>
+            <small>{isToday ? '오늘' : date.getDate()}</small>
+            {typeof mark === 'number'
+              ? mark > 0 && <span className="mobile-day-tab-count">{mark}</span>
+              : mark && <span className="mobile-day-tab-dot" aria-hidden="true" />}
+          </button>
+        )
+      })}
+    </div>
+  )
+
+  // 고른 요일의 시간을 다른 요일에도 넣는다. 그 요일에 없거나 지났거나 이미 신청한 시간은 뺀다. 저장 전이라 되돌릴 수 있다.
+  const copyTimesToOtherDays = (sourceDay) => {
+    const times = currentDayTimeSelection[sourceDay] ?? []
+    const pairs = weekdayNames
+      .filter((day) => day !== sourceDay)
+      .flatMap((day) => times
+        .filter((time) => (
+          getSelectableTimesForSelectedDay(day).includes(time)
+          && !(currentDayTimeSelection[day] ?? []).includes(time)
+          && !takenSlots.has(`${day}|${time}`)
+          && !isPastSlot(day, time)
+        ))
+        .map((time) => [day, time]))
+
+    if (pairs.length === 0) {
+      showToast('더 넣을 수 있는 요일이 없어요.', 'info', 'copy-times')
+      return
+    }
+
+    const scheduleKey = currentScheduleKey
+    const previousDraft = dayTimeDrafts[scheduleKey]
+
+    setSlotSelection(pairs, true)
+    showToast(`${new Set(pairs.map(([day]) => day)).size}개 요일에 같은 시간을 넣었어요. 저장해야 반영돼요.`, 'success', 'copy-times', {
+      label: '되돌리기',
+      onClick: () => setDayTimeDrafts((prev) => {
+        const nextDrafts = { ...prev }
+
+        if (previousDraft) {
+          nextDrafts[scheduleKey] = previousDraft
+        } else {
+          delete nextDrafts[scheduleKey]
+        }
+
+        return nextDrafts
+      }),
+    })
+  }
+
+  const tapMobileTime = (day, time, isSelected) => {
+    if (!isScheduleTargetSelected) {
+      warnScheduleTargetMissing()
+      return
+    }
+
+    const blockReason = getSlotBlockReason(day, time, isSelected)
+
+    if (blockReason) {
+      showToast(blockReason, 'info', 'slot-blocked')
+      return
+    }
+
+    setSlotSelection([[day, time]], !isSelected)
+  }
+
+  // 모바일 시간 고르기: 요일을 고르고 큰 시간 버튼을 누른다. 그 시간에 신청한 인원도 함께 보여 준다.
+  const renderMobileTimePicker = () => {
+    const day = weekdayNames[mobileCalendarDayIndex]
+    const date = weekDates[mobileCalendarDayIndex]
+    const times = getSelectableTimesForSelectedDay(day)
+    const selectedTimes = currentDayTimeSelection[day] ?? []
+    const targetKey = `${selectedRaidLabel} ${profile.difficulty} ${profile.mode}`
+    const selectionText = formatDayTimeSelection(currentDayTimeSelection)
+
+    return (
+      <div className={`mobile-time-picker ${isScheduleTargetSelected ? '' : 'is-disabled'}`}>
+        {renderMobileDayTabs('form', (tabDay) => (currentDayTimeSelection[tabDay] ?? []).length)}
+        <div className="mobile-time-head">
+          <strong>
+            {date.getMonth() + 1}/{date.getDate()} ({day})
+            {holidaySet.has(formatIsoDate(date)) && <span className="day-holiday-label"> 공휴일</span>}
+          </strong>
+          <button type="button" className="text-link-button" onClick={() => toggleTimeLine(times.map((time) => [day, time]))}>
+            이 날 전체 고르기 / 지우기
+          </button>
+        </div>
+        <div className="mobile-time-list">
+          {times.map((time) => {
+            const isSelected = selectedTimes.includes(time)
+            const blockReason = getSlotBlockReason(day, time, isSelected)
+            const peopleCount = isScheduleTargetSelected ? (memberByRaidDateTime.get(`${day}-${time}`)?.[targetKey] ?? []).length : 0
+            const isPast = isPastSlot(day, time)
+            const subText = takenSlots.has(`${day}|${time}`)
+              ? '신청함'
+              : isPast ? '지남' : peopleCount > 0 ? `${peopleCount}명 신청` : ' '
+
+            return (
+              <button
+                key={time}
+                type="button"
+                className={`mobile-time-button${isSelected ? ' is-selected' : ''}${blockReason ? ' is-blocked' : ''}`}
+                aria-pressed={isSelected}
+                aria-disabled={Boolean(blockReason)}
+                aria-label={`${day}요일 ${formatTimeLabel(time)}`}
+                onClick={() => tapMobileTime(day, time, isSelected)}
+              >
+                <strong>{isSelected ? `✓ ${formatTimeLabel(time)}` : formatTimeLabel(time)}</strong>
+                <small>{subText}</small>
+              </button>
+            )
+          })}
+        </div>
+        {selectedTimes.length > 0 && (
+          <button type="button" className="secondary-button mobile-copy-times" onClick={() => copyTimesToOtherDays(day)}>
+            이 시간을 다른 요일에도 넣기
+          </button>
+        )}
+        <p className="mobile-time-summary">
+          <strong>고른 시간</strong> {selectionText || '아직 없어요'}
+        </p>
+      </div>
+    )
   }
 
   const renderJoinButton = (slot, peopleCount, extraClass = '') => (
@@ -2944,7 +3256,7 @@ function App() {
         title={`${currentNickname}(으)로 ${slot.day}요일 ${formatTimeLabel(slot.time)}에 신청해요.`}
         onClick={() => joinSlot(slot)}
       >
-        {peopleCount >= RAID_FULL_SIZE ? '+ 대기 신청' : '+ 나도 참여'}
+        {extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= RAID_FULL_SIZE ? '+ 대기 신청' : '+ 나도 참여'}
       </button>
     ) : null
   )
@@ -3029,6 +3341,16 @@ function App() {
               </div>
             )}
             <div className="mobile-nav-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  setMobileMenuOpen(false)
+                  setGuideOpen(true)
+                }}
+              >
+                사용법
+              </button>
               <button type="button" className="secondary-button" onClick={openPasswordChangeFromMenu}>
                 비밀번호 변경
               </button>
@@ -3319,10 +3641,10 @@ function App() {
       {clearAllConfirmOpen && (
         <div className="save-confirm-backdrop" onClick={() => setClearAllConfirmOpen(false)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>내 스케줄을 전부 삭제할까요?</h3>
+            <h3>내 신청을 전부 삭제할까요?</h3>
             <p>
               <span className="save-confirm-nickname">{currentNickname || '현재 프로필'}</span>
-              의 모든 레이드 시간 정보를 삭제하시겠습니까
+              의 신청을 모두 지워요. 지운 뒤에는 되돌릴 수 없어요.
             </p>
             <div className="save-confirm-actions">
               <button type="button" className="secondary-button" onClick={() => setClearAllConfirmOpen(false)}>
@@ -3388,13 +3710,35 @@ function App() {
         </section>
       )}
 
+      {guideOpen && (
+        <div className="save-confirm-backdrop" onClick={closeGuide}>
+          <div className="save-confirm-modal mobile-guide" role="dialog" aria-label="사용법" onClick={(event) => event.stopPropagation()}>
+            <h3>이렇게 쓰면 돼요</h3>
+            <dl className="mobile-guide-list">
+              <dt>신청</dt>
+              <dd>레이드를 고르고 갈 수 있는 시간을 눌러 저장해요.</dd>
+              <dt>이번 주</dt>
+              <dd>요일별로 누가 오는지 보고, '나도 참여'로 바로 신청해요.</dd>
+              <dt>파티</dt>
+              <dd>시간마다 A · B 파티가 어떻게 나뉘는지 봐요.</dd>
+              <dt>인원</dt>
+              <dd>레이드별로 누가 신청했는지 봐요.</dd>
+            </dl>
+            <p className="field-hint">메뉴(☰)의 '사용법'에서 다시 볼 수 있어요.</p>
+            <button type="button" className="primary-button" onClick={closeGuide}>
+              시작하기
+            </button>
+          </div>
+        </div>
+      )}
+
       <section className="summary-grid">
         <article className="summary-card accent" data-section="form">
           <span className="label">다음 리셋</span>
           <ResetCountdown />
         </article>
 
-        <article className={`summary-card next-raid-card ${nextRaidNeedsMe ? 'needs-action' : ''}`}>
+        <article className={`summary-card next-raid-card ${nextRaidNeedsMe ? 'needs-action' : ''} ${!nextRaidSlot && dataLoadState === 'ready' ? 'is-empty' : ''}`}>
           <span className="label">{nextRaidNeedsMe ? '준비 확인 요청이 왔어요' : '내 다음 레이드'}</span>
           {nextRaidSlot ? (
             <>
@@ -3472,11 +3816,11 @@ function App() {
       <main className="content-grid">
         <section className="panel form-panel" data-section="form">
           <div className="panel-header">
-            <h2>나의 레이드 가능 시간</h2>
+            <h2>내 레이드 신청</h2>
             <button
               type="button"
               className="help-toggle"
-              onClick={() => setHelpOpen((prev) => !prev)}
+              onClick={() => (isMobile ? setGuideOpen(true) : setHelpOpen((prev) => !prev))}
               aria-label="사용 방법 보기"
               aria-expanded={helpOpen}
             >
@@ -3514,7 +3858,7 @@ function App() {
           )}
 
           <div className="form-section">
-            <h3 className="form-section-title">내 캐릭터</h3>
+            {renderStepTitle(1, isCharacterInfoComplete, '내 캐릭터')}
 
             {isCharacterInfoComplete && !characterEditOpen ? (
               <div className="character-summary">
@@ -3529,6 +3873,8 @@ function App() {
               </div>
             ) : (
               <>
+            {/* 모바일은 고칠 수 없는 닉네임 칸을 빼서 입력할 것만 보이게 한다. (부캐가 있으면 캐릭터를 골라야 하니 둔다) */}
+            {(!isMobile || myAltNicknames.length > 0) && (
             <div className="field-group">
               <div className="field-label-row">
                 <label htmlFor="nickname">{myAltNicknames.length > 0 ? '캐릭터' : '닉네임'}</label>
@@ -3561,6 +3907,7 @@ function App() {
                 />
               )}
             </div>
+            )}
 
             <div className="two-column">
               <div className="field-group">
@@ -3641,7 +3988,7 @@ function App() {
           </div>
 
           <div className="form-section" id="schedule-target-field">
-            <h3 className="form-section-title">신청할 레이드</h3>
+            {renderStepTitle(2, isScheduleTargetSelected, '신청할 레이드')}
 
             {/* 신청이 여러 개면 여기서 바로 바꿔 가며 고친다. (하나뿐이면 로그인할 때 이미 불러와 있다) */}
             {mySavedSchedules.length > 1 && (
@@ -3724,22 +4071,28 @@ function App() {
 
           <div className="form-section" id="schedule-day-field">
             <div className="field-label-row">
-              <h3 className="form-section-title">요일 · 시간</h3>
+              {renderStepTitle(3, currentSelectedDays.length > 0, '요일 · 시간')}
               {/* 주말 · 공휴일 낮시간(12~16시)은 켰을 때만 시간표에 줄이 생긴다. */}
-              <button
-                type="button"
-                className="secondary-button small-toggle"
-                onClick={() => setShowDaytimeSlots((prev) => !prev)}
-                aria-pressed={showDaytimeSlots}
-              >
-                {showDaytimeSlots ? '낮시간 숨기기' : '주말 · 공휴일 낮시간 보기'}
-              </button>
+              {(!isMobile || isWeekendOrHolidayDate(weekDates[mobileCalendarDayIndex])) && (
+                <button
+                  type="button"
+                  className="secondary-button small-toggle"
+                  onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                  aria-pressed={showDaytimeSlots}
+                >
+                  {showDaytimeSlots ? '낮시간 숨기기' : isMobile ? '낮시간 보기' : '주말 · 공휴일 낮시간 보기'}
+                </button>
+              )}
             </div>
             <p className="field-hint">
-              {isScheduleTargetSelected
-                ? '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요. 24:00은 그 요일 밤 12시예요.'
-                : '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'}
+              {!isScheduleTargetSelected
+                ? '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'
+                : isMobile
+                  ? '요일을 고른 뒤 갈 수 있는 시간을 모두 눌러 주세요. 24:00은 그 요일 밤 12시예요.'
+                  : '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요. 24:00은 그 요일 밤 12시예요.'}
             </p>
+            {isMobile ? renderMobileTimePicker() : (
+            <>
             <div className="time-pick-wrap">
               {/* 레이드 조합을 고르기 전에는 시간표 위에 안내를 덮어, 눌러도 왜 안 되는지 바로 알 수 있게 한다. */}
               {!isScheduleTargetSelected && (
@@ -3813,6 +4166,8 @@ function App() {
               <span><i className="time-pick-legend-swatch is-past" aria-hidden="true" />지난 시간</span>
               <span><i className="time-pick-legend-swatch is-unavailable" aria-hidden="true" />없는 시간</span>
             </div>
+            </>
+            )}
           </div>
 
           {/* 저장하지 않은 변경이 있으면 저장 영역을 화면 아래에 붙여, 스크롤해도 저장 버튼을 놓치지 않게 한다. */}
@@ -3852,15 +4207,25 @@ function App() {
             )}
 
             <div className="member-actions">
-              <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving}>
-                {isSaving ? '저장 중…' : isClearingSavedSchedule ? '이 신청 삭제' : '캘린더에 저장'}
+              <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving || isCurrentScheduleSaved}>
+                {isSaving
+                  ? '저장 중…'
+                  : isClearingSavedSchedule
+                    ? '이 신청 삭제'
+                    : isCurrentScheduleSaved
+                      ? '✓ 저장됨'
+                      : isMobile
+                        ? getDayTimePairs(currentDayTimeSelection).length > 0
+                          ? `시간 ${getDayTimePairs(currentDayTimeSelection).length}개 저장하기`
+                          : '시간을 고르면 저장할 수 있어요'
+                        : '캘린더에 저장'}
               </button>
             </div>
           </div>
 
           <div className="selected-summary saved-schedule-list">
             <div className="saved-schedule-head">
-              <h3>내 저장된 스케줄</h3>
+              <h3>내 신청 목록</h3>
               {mySavedSchedules.length > 0 && <span className="saved-schedule-count">{mySavedSchedules.length}건</span>}
             </div>
             {mySavedSchedules.length > 0 ? (
@@ -3891,7 +4256,7 @@ function App() {
                               className="saved-schedule-edit"
                               onClick={() => editSavedSchedule(entry)}
                               disabled={isEditing}
-                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 수정`}
+                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 신청 수정`}
                             >
                               {isEditing ? '수정 중' : '수정'}
                             </button>
@@ -3899,7 +4264,7 @@ function App() {
                               type="button"
                               className="saved-schedule-delete"
                               onClick={() => deleteWithUndo(entry)}
-                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 스케줄 삭제`}
+                              aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 신청 삭제`}
                             >
                               삭제
                             </button>
@@ -3943,11 +4308,11 @@ function App() {
                   })}
                 </ul>
                 <button type="button" className="secondary-button saved-schedule-clear" onClick={() => setClearAllConfirmOpen(true)}>
-                  내 스케줄 전체 삭제
+                  내 신청 전체 삭제
                 </button>
               </>
             ) : (
-              <p className="saved-schedule-empty">저장된 스케줄이 없어요.</p>
+              <p className="saved-schedule-empty">아직 신청이 없어요.</p>
             )}
           </div>
         </section>
@@ -3955,7 +4320,7 @@ function App() {
         <section className="panel calendar-panel">
           <div className="panel-header" data-section="calendar">
             <div className="panel-header-title-wrap">
-              <h2>주간 레이드 슬롯</h2>
+              <h2>주간 레이드 파티</h2>
               <button
                 type="button"
                 className="help-toggle small"
@@ -3967,14 +4332,16 @@ function App() {
               </button>
             </div>
             <div className="slot-legend" aria-label="리딩 여부 범례">
-              <button
-                type="button"
-                className="secondary-button small-toggle"
-                onClick={() => setShowDaytimeSlots((prev) => !prev)}
-                title={showDaytimeSlots ? '주말/공휴일 낮시간을 숨깁니다.' : '주말/공휴일 낮시간을 보여줍니다.'}
-              >
-                낮시간 설정
-              </button>
+              {(!isMobile || isWeekendOrHolidayDate(weekDates[mobileCalendarDayIndex])) && (
+                <button
+                  type="button"
+                  className="secondary-button small-toggle"
+                  onClick={() => setShowDaytimeSlots((prev) => !prev)}
+                  title={showDaytimeSlots ? '주말/공휴일 낮시간을 숨깁니다.' : '주말/공휴일 낮시간을 보여줍니다.'}
+                >
+                  낮시간 설정
+                </button>
+              )}
               <span className="legend-item"><span className="legend-badge lead-yes"><LeadMark value="O" /></span> 리딩 가능</span>
               <span className="legend-item"><span className="legend-badge lead-no"><LeadMark value="X" /></span> 리딩 불가</span>
             </div>
@@ -3982,12 +4349,26 @@ function App() {
 
           {/* 모든 레이드 조합에서 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. 누르면 그 탭 · 그 칸으로 간다. */}
           <div className="recommend-row" data-section="calendar">
-            <span className="recommend-label">추천 레이드 시간 TOP 3</span>
-            {recommendedSlots.length > 0 ? (
+            {isMobile && recommendedSlots.length > 0 ? (
+              <button
+                type="button"
+                className="recommend-toggle"
+                aria-expanded={recommendOpen}
+                onClick={() => setRecommendOpen((prev) => !prev)}
+              >
+                <span className="recommend-label">추천 시간</span>
+                <span className="recommend-toggle-preview">
+                  {recommendedSlots[0].day} {formatTimeLabel(recommendedSlots[0].time)} · {getRecommendStatus(recommendedSlots[0])}
+                </span>
+                <span className="recommend-toggle-arrow">{recommendOpen ? '접기 ▴' : `${recommendedSlots.length}곳 보기 ▾`}</span>
+              </button>
+            ) : (
+              <span className="recommend-label">추천 레이드 시간 TOP 3</span>
+            )}
+            {isMobile && !recommendOpen && recommendedSlots.length > 0 ? null : recommendedSlots.length > 0 ? (
               <div className="recommend-list">
                 {recommendedSlots.map((slot, index) => {
                   const isConfirmed = isConfirmedSlot(slot)
-                  const remaining = RAID_FULL_SIZE - slot.people.length
 
                   return (
                     <div key={`${slot.raidName}-${slot.difficulty}-${slot.mode}-${slot.day}-${slot.time}`} className="recommend-item">
@@ -4001,7 +4382,7 @@ function App() {
                         <span className="recommend-raid">{slot.raidName} {slot.difficulty} {slot.mode}</span>
                         <strong className="recommend-time">{slot.day}요일 {formatTimeLabel(slot.time)}</strong>
                         <span className={`recommend-status ${isConfirmed ? 'is-confirmed' : ''}`}>
-                          {isConfirmed ? '성사' : remaining > 0 ? `모집 중 · ${remaining}명 더` : '리더 필요'}
+                          {getRecommendStatus(slot)}
                         </span>
                         <span className="recommend-meta">
                           {formatHeadcount(slot.people.length)} · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
@@ -4021,7 +4402,7 @@ function App() {
             <div className="help-panel compact" data-section="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
               <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명이 정원이고, 넘는 인원은 신청 순서대로 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
-              <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '성사' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
+              <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '출발 가능' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
               <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
               <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
             </div>
@@ -4038,7 +4419,7 @@ function App() {
               >
                 {showOnlyMine ? '✓ 내 레이드만' : '내 레이드만'}
               </button>
-              {pastDayNames.length > 0 && (
+              {pastDayNames.length > 0 && !isMobile && (
                 <button
                   type="button"
                   className="day-raid-past-toggle"
@@ -4050,11 +4431,13 @@ function App() {
                 </button>
               )}
             </div>
-            <div className="day-raid-summary-grid">
+            {renderMobileDayTabs('day', (day) => dayRaidSummary.find((item) => item.day === day)?.raidGroups.length > 0)}
+            <div className="day-raid-summary-grid" data-mobile-day={isMobile ? mobileCalendarDayIndex : undefined}>
               {visibleDayRaidSummary.map(({ day, raidGroups }, dayIndex) => {
                 // weekdayNames와 weekDates는 둘 다 수요일부터 시작한다.
                 const isPastCard = weekDates[dayIndex].getTime() < activeDayStartTime
-                const isCardCollapsed = isPastCard && !expandedPastDays[day]
+                // 모바일은 요일 탭으로 하루씩 보므로 접지 않는다.
+                const isCardCollapsed = isPastCard && !expandedPastDays[day] && !isMobile
                 const isTodayCard = weekDates[dayIndex].getTime() === todayStartTime
                 const headerContent = (
                   <>
@@ -4069,8 +4452,8 @@ function App() {
                 )
 
                 return (
-                <div key={day} className={`day-raid-card ${isPastCard ? 'is-past' : ''} ${isCardCollapsed ? 'is-collapsed' : ''} ${isTodayCard ? 'is-today' : ''}`}>
-                  {isPastCard ? (
+                <div key={day} data-day-index={dayIndex} className={`day-raid-card ${isPastCard ? 'is-past' : ''} ${isCardCollapsed ? 'is-collapsed' : ''} ${isTodayCard ? 'is-today' : ''}`}>
+                  {isPastCard && !isMobile ? (
                     <button
                       type="button"
                       className="day-raid-header day-raid-header-toggle"
@@ -4232,13 +4615,13 @@ function App() {
                                       )}
                                       <button
                                         type="button"
-                                        className="day-raid-run-button"
+                                        className={isMobile ? 'day-raid-rally-button' : 'day-raid-run-button'}
                                         aria-label={`${formatTimeLabel(time)} 준비 확인 취소`}
                                         title={editDisabledReason || '준비 확인 취소'}
                                         disabled={!canEditRun}
                                         onClick={() => handleRallyClick(run, 'cancel', slotVoterNicknames)}
                                       >
-                                        ×
+                                        {isMobile ? '확인 취소' : '×'}
                                       </button>
                                     </span>
                                   )
@@ -4285,6 +4668,7 @@ function App() {
                                         {formatTimeLabel(time)}
                                         <span className="day-raid-time-count">{formatHeadcount(slotPeople.length)}</span>
                                       </span>
+                                      {isSlotVoter && <span className="my-slot-badge">내 시간</span>}
                                       {!hasLeader && <span className="slot-warn">리더 없음</span>}
                                       {!isExpanded && (
                                         <span className="day-raid-icon-stack" aria-hidden="true">
@@ -4299,7 +4683,9 @@ function App() {
                                           {hiddenCount > 0 && <span className="day-raid-stack-more">+{hiddenCount}</span>}
                                         </span>
                                       )}
-                                      <span className="day-raid-toggle-arrow" aria-hidden="true">{isExpanded ? '▴' : '▾'}</span>
+                                      <span className="day-raid-toggle-arrow" aria-hidden="true">
+                                        {isMobile ? (isExpanded ? '접기 ▴' : '인원 보기 ▾') : (isExpanded ? '▴' : '▾')}
+                                      </span>
                                     </button>
                                     {/* 버튼은 내가 신청한 시간대에만 보인다. 남의 시간대는 이미 진행된 준비 · 클리어 기록만 보여 준다.
                                         클리어는 전원 준비가 끝나야 고를 수 있어서 그 전에는 숨긴다. */}
@@ -4356,7 +4742,10 @@ function App() {
                       })}
                     </div>
                   ) : (
-                    <div className="empty-role">{getEmptyText(showOnlyMine ? '내 신청 없음' : '신청 인원 없음')}</div>
+                    <div className="empty-role">
+                      {getEmptyText(showOnlyMine ? '내 신청 없음' : '신청 인원 없음')}
+                      {isMobile && dataLoadState === 'ready' && <small className="mobile-empty-hint">초록 점이 있는 요일을 눌러 보세요.</small>}
+                    </div>
                   )}
                 </div>
                 )
@@ -4364,6 +4753,25 @@ function App() {
             </div>
           </div>
 
+          {/* 모바일은 탭 묶음 대신 고르기 칸 두 개로 줄여 시간표가 바로 보이게 한다. */}
+          {isMobile ? (
+            <div className="mobile-raid-select" data-section="calendar">
+              <select aria-label="레이드" value={activeRaidTab} onChange={(event) => setActiveRaidTab(event.target.value)}>
+                {visibleRaidTabs.map((tab) => (
+                  <option key={tab.id} value={tab.label}>
+                    {tab.label} · {countTabMembers(tab.raid, tab.difficulty, modeOptions)}명
+                  </option>
+                ))}
+              </select>
+              <select aria-label="공략 방식" value={activeModeTab} onChange={(event) => setActiveModeTab(event.target.value)}>
+                {modeOptions.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {mode} · {countTabMembers(activeTabMeta.raid, activeTabMeta.difficulty, [mode])}명
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
           <div className="raid-tab-group" data-section="calendar">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">
               {visibleRaidTabs.map((tab) => (
@@ -4402,30 +4810,13 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
           {/* 모바일은 7일을 가로로 넘기는 대신 요일 하나씩 본다. */}
-          <div className="mobile-day-tabs" data-section="calendar" role="tablist" aria-label="요일 선택">
-            {weekDates.map((date, dayIndex) => {
-              const day = weekdayNames[dayIndex]
-              const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
-              const hasPeople = timeSlots.some((time) => (memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []).length > 0)
-
-              return (
-                <button
-                  key={day}
-                  type="button"
-                  role="tab"
-                  aria-selected={mobileCalendarDayIndex === dayIndex}
-                  className={`mobile-day-tab${mobileCalendarDayIndex === dayIndex ? ' active' : ''}${date.getTime() < activeDayStartTime ? ' is-past' : ''}${date.getTime() === todayStartTime ? ' is-today' : ''}${holidaySet.has(formatIsoDate(date)) ? ' is-holiday' : ''}`}
-                  onClick={() => setMobileCalendarDayIndex(dayIndex)}
-                >
-                  <span>{day}</span>
-                  <small>{date.getTime() === todayStartTime ? '오늘' : date.getDate()}</small>
-                  {hasPeople && <span className="mobile-day-tab-dot" aria-hidden="true" />}
-                </button>
-              )
-            })}
-          </div>
+          {renderMobileDayTabs('calendar', (day) => {
+            const tabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
+            return timeSlots.some((time) => (memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []).length > 0)
+          })}
 
           <div className="calendar-grid" data-section="calendar" data-mobile-day={mobileCalendarDayIndex}>
             <div className="calendar-corner">시간</div>
@@ -4488,6 +4879,12 @@ function App() {
                         >
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
                           <span className="empty-text">-</span>
+                          {/* 모바일은 하루씩 보여 칸이 넓으니 빈 시간에도 바로 첫 신청을 할 수 있게 한다. */}
+                          {isMobile && renderJoinButton(
+                            { raidName: activeTabMeta.raid, difficulty: activeTabMeta.difficulty, mode: activeModeTab, day: dayLabel, time },
+                            0,
+                            'is-vacant-join',
+                          )}
                         </div>
                       )
                     }
@@ -4560,7 +4957,7 @@ function App() {
           </div>
 
           <div className="member-day-summary" data-section="members">
-            <h3>보스 난이도별 선택인원</h3>
+            <h3>레이드별 신청 인원</h3>
             <div className="weekday-list">
               {memberByRaidDifficulty.length ? (
                 memberByRaidDifficulty.map(({ raidName, difficulty, mode, members }) => (
@@ -4584,7 +4981,7 @@ function App() {
                   </div>
                 ))
               ) : (
-                <span className="empty-role">{getEmptyText('선택 인원 없음')}</span>
+                <span className="empty-role">{getEmptyText('신청 인원 없음')}</span>
               )}
             </div>
           </div>

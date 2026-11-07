@@ -83,14 +83,16 @@ export const LOGIN_STORAGE_KEY = 'raid-calendar-login-v1'
 export const SAVED_PASSWORD_STORAGE_KEY = 'raid-calendar-saved-password-v1'
 
 export const RAID_RUNS_STORAGE_KEY = 'raid-calendar-raid-runs-v1'
+// 모바일 첫 사용 안내를 본 기기
+export const MOBILE_GUIDE_STORAGE_KEY = 'raid-calendar-mobile-guide-v1'
 
 // 모바일에서 햄버거 메뉴로 한 번에 하나씩 보여주는 영역 (data-section 값과 맞춘다)
 // short: 모바일 하단 탭에 쓰는 짧은 이름
 export const MOBILE_SECTIONS = [
-  { id: 'form', label: '내 시간 등록', short: '내 시간' },
-  { id: 'day', label: '요일별 신청 현황', short: '요일별' },
-  { id: 'calendar', label: '주간 레이드 슬롯', short: '주간 슬롯' },
-  { id: 'members', label: '난이도별 선택인원', short: '인원' },
+  { id: 'form', label: '레이드 신청', short: '신청' },
+  { id: 'day', label: '이번 주 현황', short: '이번 주' },
+  { id: 'calendar', label: '파티 보기', short: '파티' },
+  { id: 'members', label: '레이드별 인원', short: '인원' },
 ]
 
 export const weekdayNames = ['수', '목', '금', '토', '일', '월', '화']

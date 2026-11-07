@@ -76,21 +76,22 @@ for (const url of [LOCAL, REMOTE]) {
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
 
-async function open(url, { schedules = [], members = [memberRow], extraStorage = {}, viewport = { width: 1440, height: 900 }, hasTouch = false, isMobile = false, now = NOW, routes = null } = {}) {
+async function open(url, { schedules = [], members = [memberRow], extraStorage = {}, viewport = { width: 1440, height: 900 }, hasTouch = false, isMobile = false, now = NOW, routes = null, showGuide = false } = {}) {
   const context = await browser.newContext({ locale: 'ko-KR', timezoneId: 'Asia/Seoul', viewport, hasTouch, isMobile })
   await context.route('**/*', (route) => {
     const requestUrl = route.request().url()
     return requestUrl.startsWith('http://localhost:') ? route.continue() : route.abort()
   })
   if (routes) await routes(context)
-  await context.addInitScript(({ schedules, members, credentials, extraStorage }) => {
+  await context.addInitScript(({ schedules, members, credentials, extraStorage, showGuide }) => {
     if (sessionStorage.getItem('seeded')) return
     sessionStorage.setItem('seeded', '1')
+    if (!showGuide) localStorage.setItem('raid-calendar-mobile-guide-v1', '1')
     localStorage.setItem('raid-calendar-raid-schedules-v1', JSON.stringify(schedules))
     localStorage.setItem('raid-calendar-members-v1', JSON.stringify(members))
     localStorage.setItem('raid-calendar-credentials-v1', JSON.stringify(credentials))
     Object.entries(extraStorage).forEach(([key, value]) => localStorage.setItem(key, value))
-  }, { schedules, members, credentials, extraStorage })
+  }, { schedules, members, credentials, extraStorage, showGuide })
   const page = await context.newPage()
   page.on('pageerror', (error) => { failures += 1; console.log('FAIL 페이지 오류:', error.message) })
   await page.clock.setFixedTime(new Date(now))
@@ -237,7 +238,7 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
   // 16. 추천 정렬
   const recommend = await page.locator('.recommend-card').evaluateAll((cards) => cards.map((c) => c.querySelector('.recommend-time').innerText + ' / ' + c.querySelector('.recommend-status').innerText))
-  check('#16 정원 찬 시간이 1위, 성사 표시', recommend[0], '금요일 21:00 / 성사')
+  check('#16 정원 찬 시간이 1위, 출발 가능 표시', recommend[0], '금요일 21:00 / 출발 가능')
   check('#16 9명 시간이 리더 있는 소수 시간보다 위', recommend[1].startsWith('일요일 22:00'))
   check('#16 정원 초과는 10/10 +대기 수로', (await page.locator('.recommend-meta').first().innerText()).startsWith('10/10 +2 · 리딩'))
   check('표기 통일: 캘린더 칸', await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText(), '10/10 +2')
@@ -307,20 +308,23 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   const mine = sched(NICK, 0, { 금: ['21:00'], 토: ['21:00'], 일: ['21:00'] }, { id: 'mine' })
   const { page, context } = await open(LOCAL, { schedules: [...crowd, mine], viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   await login(page)
-  await page.locator('.mobile-tab', { hasText: '주간 슬롯' }).tap()
+  check('모바일: 첫 화면은 내 신청이 있는 요일', await page.locator('.day-raid-summary-panel .mobile-day-tab.active span').first().innerText(), '금')
+  check('모바일: 이번 주 화면은 하루만 표시', await page.locator('.day-raid-card:visible').count(), 1)
+  await page.locator('.mobile-tab', { hasText: '파티' }).tap()
   await page.waitForTimeout(200)
   const firstRow = await page.locator('.calendar-grid .time-label:visible').first().boundingBox()
   console.log(`INFO 모바일 주간 슬롯 첫 시간 줄 y=${Math.round(firstRow.y)} (수정 전 약 700)`)
   await page.screenshot({ path: join(out, 'm-calendar.png') })
-  await page.locator('.mobile-tab', { hasText: '내 시간' }).tap()
+  await page.locator('.mobile-tab', { hasText: '신청' }).tap()
   await page.waitForTimeout(200)
-  const grid = await page.locator('.time-pick-grid').boundingBox()
+  const grid = await page.locator('.mobile-time-list').boundingBox()
   console.log(`INFO 모바일 시간표 시작 y=${Math.round(grid.y)} (수정 전 1273)`)
   check('#11 시간표가 수정 전(1273)보다 위', grid.y < 1100)
   await page.screenshot({ path: join(out, 'm-form.png') })
 
   // 14. 터치: 막힌 칸을 탭하면 이유 표시
   await pickTarget(page, '비탄의 설원', '보통', '트라이')
+  await page.locator('.form-panel .mobile-day-tab', { hasText: '토' }).tap()
   const taken = page.locator('[aria-label="토요일 21:00"]')
   await taken.evaluate((el) => el.scrollIntoView({ block: 'center' }))
   await taken.tap({ force: true })
@@ -329,6 +333,215 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   // 17. 터치 영역
   const chip = await page.locator('.saved-slot-chip').first().boundingBox()
   check('#17 터치 칩 높이 36px 이상', chip.height >= 36)
+  await context.close()
+}
+
+// ---------- 모바일: 처음 쓰는 사람의 신청 흐름 ----------
+{
+  const blankMember = { ...memberRow, className: '', power: '', leadReady: '', attendance: '참' }
+  const { page, context } = await open(LOCAL, { schedules: crowd, members: [blankMember], viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, showGuide: true })
+  await login(page)
+
+  // 첫 사용 안내
+  check('모바일: 첫 로그인에 사용법 표시', await page.locator('.mobile-guide').count(), 1)
+  await page.locator('.mobile-guide .primary-button').tap()
+  check('모바일: 사용법 닫힘', await page.locator('.mobile-guide').count(), 0)
+  check('모바일: 사용법을 봤다고 기억', await page.evaluate(() => localStorage.getItem('raid-calendar-mobile-guide-v1')), '1')
+  await page.locator('.mobile-menu-button').tap()
+  await page.locator('.mobile-nav-actions button', { hasText: '사용법' }).tap()
+  check('모바일: 메뉴에서 사용법 다시 보기', await page.locator('.mobile-guide').count(), 1)
+  await page.locator('.mobile-guide .primary-button').tap()
+  await page.reload()
+  await login(page)
+  check('모바일: 다음 로그인에는 사용법 안 나옴', await page.locator('.mobile-guide').count(), 0)
+
+  // 탭 이름
+  check('모바일: 탭 이름', await page.locator('.mobile-tab span').allInnerTexts(), ['신청', '이번 주', '파티', '인원'])
+  check('모바일: 신청이 없으면 빈 카드 숨김', await page.locator('.next-raid-card:visible').count(), 0)
+  check('모바일: 고칠 수 없는 닉네임 칸 없음', await page.locator('#nickname').count(), 0)
+  check('모바일: 8열 시간표 대신 시간 버튼', [await page.locator('.time-pick-grid').count(), (await page.locator('.mobile-time-button').count()) > 0], [0, true])
+
+  // 레이드를 고르기 전에 시간을 누르면 안내
+  await page.locator('.form-panel .mobile-day-tab', { hasText: '금' }).tap()
+  await page.locator('[aria-label="금요일 21:00"]').tap()
+  check('모바일: 레이드 전에 시간을 누르면 안내', (await toastText(page)).includes('먼저 골라'))
+  check('모바일: 그때는 선택되지 않음', await page.locator('[aria-label="금요일 21:00"]').getAttribute('aria-pressed'), 'false')
+
+  await page.selectOption('#className', '검성')
+  await page.selectOption('#power', '700~800k')
+  await page.locator('[aria-label="리딩 여부"] button').first().tap()
+  check('모바일: 1단계 완료 표시', await page.locator('.form-step-number').first().innerText(), '✓')
+  await pickTarget(page)
+  check('모바일: 2단계 완료 표시', await page.locator('.form-step-number').nth(1).innerText(), '✓')
+
+  // 시간 고르기
+  check('모바일: 그 시간 신청 인원 표시', await page.locator('[aria-label="금요일 21:00"] small').innerText(), '12명 신청')
+  await page.locator('[aria-label="금요일 21:00"]').tap()
+  await page.locator('[aria-label="금요일 22:00"]').tap()
+  check('모바일: 요일 탭에 고른 개수', await page.locator('.form-panel .mobile-day-tab.active .mobile-day-tab-count').innerText(), '2')
+  check('모바일: 고른 시간 요약', (await page.locator('.mobile-time-summary').innerText()).includes('금 21:00, 22:00'))
+  check('모바일: 저장 버튼에 개수', await page.locator('.member-actions .primary-button').innerText(), '시간 2개 저장하기')
+
+  // 지난 시간 (수요일 20:30 기준 19:00은 지남)
+  await page.locator('.form-panel .mobile-day-tab', { hasText: '수' }).tap()
+  check('모바일: 지난 시간 표시', await page.locator('[aria-label="수요일 19:00"] small').innerText(), '지남')
+  await page.locator('[aria-label="수요일 19:00"]').evaluate((el) => el.scrollIntoView({ block: 'center' }))
+  await page.locator('[aria-label="수요일 19:00"]').tap({ force: true })
+  check('모바일: 지난 시간은 안 골라짐', await page.locator('[aria-label="수요일 19:00"]').getAttribute('aria-pressed'), 'false')
+
+  // 평일에는 낮시간 버튼이 없고, 공휴일에는 있다
+  check('모바일: 평일에는 낮시간 버튼 없음', await page.locator('button', { hasText: '낮시간 보기' }).count(), 0)
+  await page.locator('.form-panel .mobile-day-tab', { hasText: '금' }).tap()
+  await page.locator('button', { hasText: '낮시간 보기' }).tap()
+  check('모바일: 공휴일 낮시간 표시', await page.locator('[aria-label="금요일 12:00"]').count(), 1)
+
+  // 저장 뒤 현황으로 이동
+  await page.locator('.member-actions .primary-button').tap()
+  await page.locator('.toast-action', { hasText: '현황 보기' }).tap()
+  check('모바일: 저장 뒤 이번 주 화면으로', await page.locator('.mobile-tab.active span').innerText(), '이번 주')
+  check('모바일: 내 시간 표시', await page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-22:00"] .my-slot-badge').count(), 1)
+  await page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-21:00"] .day-raid-time-toggle').tap()
+  check('모바일: 인원 펼치기', await page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-21:00"] .day-raid-members').count(), 1)
+
+  // 파티 화면: 고르기 칸과 빈 시간 신청
+  await page.locator('.mobile-tab', { hasText: '파티' }).tap()
+  check('모바일: 탭 묶음 대신 고르기 칸', [await page.locator('.raid-tab-group').count(), await page.locator('.mobile-raid-select select').count()], [0, 2])
+  await page.locator('.mobile-day-tabs[data-section="calendar"] .mobile-day-tab', { hasText: '토' }).tap()
+  const vacantJoin = page.locator('[id="calendar-slot-토-19:00"] .join-slot-button')
+  check('모바일: 빈 시간 신청 버튼', await vacantJoin.innerText(), '+ 신청')
+  await vacantJoin.tap()
+  await page.locator('[id="calendar-slot-토-19:00"] .my-slot-badge').waitFor()
+  check('모바일: 빈 시간에 바로 신청', await page.locator('[id="calendar-slot-토-19:00"] .my-slot-badge').count(), 1)
+  await page.selectOption('.mobile-raid-select select >> nth=0', '비탄의 설원 보통')
+  check('모바일: 레이드를 바꾸면 그 레이드 시간표', await page.locator('[id="calendar-slot-토-19:00"] .my-slot-badge').count(), 0)
+
+  const overflowing = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
+  check('모바일: 가로 스크롤 없음', overflowing, false)
+  await context.close()
+}
+
+// ---------- 모바일: 뒤로 가기, 저장됨, 추천 접기, 터치 크기, 같은 시간 복사 ----------
+{
+  const mine = sched(NICK, 0, { 금: ['21:00'], 토: ['22:00'] }, { id: 'mine', power: '700~800k' })
+  const rallyRun = { weekStart: '2026-12-23', day: '금', time: '21:00', raidName: '무스펠', difficulty: '보통', mode: '트라이', rallyCalledBy: '레기온원2', rallyCalledAt: THIS_WEEK, rallyCheckins: ['레기온원2'], gatheredAt: null, cleared: null, clearedBy: null }
+  const { page, context } = await open(LOCAL, {
+    schedules: [...crowd, mine],
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    extraStorage: { 'raid-calendar-raid-runs-v1': JSON.stringify([rallyRun]) },
+  })
+  await login(page)
+  const activeTab = () => page.locator('.mobile-tab.active span').innerText()
+
+  // 뒤로 가기
+  check('뒤로 가기: 시작 탭', await activeTab(), '이번 주')
+  await page.locator('.mobile-tab', { hasText: '파티' }).tap()
+  await page.locator('.mobile-tab', { hasText: '인원' }).tap()
+  await page.goBack()
+  check('뒤로 가기: 이전 탭으로', await activeTab(), '파티')
+  await page.goBack()
+  check('뒤로 가기: 그 이전 탭으로', await activeTab(), '이번 주')
+  check('뒤로 가기: 앱을 벗어나지 않음', await page.locator('.app-shell').count(), 1)
+
+  await page.locator('.mobile-menu-button').tap()
+  check('뒤로 가기: 메뉴 열림', await page.locator('.mobile-nav-drawer').count(), 1)
+  await page.goBack()
+  check('뒤로 가기: 메뉴가 닫힘', await page.locator('.mobile-nav-drawer').count(), 0)
+  check('뒤로 가기: 메뉴를 닫아도 탭 유지', await activeTab(), '이번 주')
+
+  await page.locator('.mobile-tab', { hasText: '파티' }).tap()
+  await page.locator('.mobile-menu-button').tap()
+  await page.locator('.mobile-nav-close').tap()
+  await page.waitForTimeout(100)
+  check('뒤로 가기: 버튼으로 닫으면 탭 유지', await activeTab(), '파티')
+  await page.goBack()
+  check('뒤로 가기: 버튼으로 닫은 뒤 한 번에 이전 탭으로', await activeTab(), '이번 주')
+
+  await page.locator('.mobile-menu-button').tap()
+  await page.locator('.mobile-nav-actions button', { hasText: '사용법' }).tap()
+  check('뒤로 가기: 메뉴에서 연 사용법 표시', await page.locator('.mobile-guide').count(), 1)
+  await page.goBack()
+  check('뒤로 가기: 사용법이 닫힘', await page.locator('.mobile-guide').count(), 0)
+
+  // 추천 접기
+  check('추천: 기본은 접힘', await page.locator('.recommend-list').count(), 0)
+  check('추천: 접혀도 1순위 표시', (await page.locator('.recommend-toggle-preview').innerText()).startsWith('금 21:00'))
+  await page.locator('.recommend-toggle').tap()
+  check('추천: 누르면 펼침', await page.locator('.recommend-list').count(), 1)
+  await page.locator('.recommend-toggle').tap()
+  check('추천: 다시 접힘', await page.locator('.recommend-list').count(), 0)
+
+  // 터치 크기와 입력칸 글자 크기를 네 탭에서 모두 잰다.
+  await page.locator('.mobile-tab', { hasText: '신청' }).tap()
+  await page.locator('.mobile-day-tabs[data-section="form"] .mobile-day-tab', { hasText: '금' }).tap()
+  for (const name of ['신청', '이번 주', '파티', '인원']) {
+    await page.locator('.mobile-tab', { hasText: name }).tap()
+    await page.waitForTimeout(100)
+    const small = await page.evaluate(() => {
+      const found = new Set()
+      document.querySelectorAll('button, select, a, [role="button"]').forEach((el) => {
+        const rect = el.getBoundingClientRect()
+        if (rect.width && rect.height && rect.height < 40) found.add(`${String(el.className || el.tagName).split(' ')[0]}:${Math.round(rect.height)}`)
+      })
+      return [...found]
+    })
+    check(`터치 크기 40px 이상: ${name}`, small, [])
+    const smallInputs = await page.evaluate(() => [...document.querySelectorAll('input, select, textarea')]
+      .filter((el) => el.offsetParent !== null && parseFloat(getComputedStyle(el).fontSize) < 16)
+      .map((el) => el.id || el.tagName))
+    check(`입력칸 글자 16px 이상: ${name}`, smallInputs, [])
+  }
+
+  // 저장됨 표시
+  await page.locator('.mobile-tab', { hasText: '신청' }).tap()
+  const saveButton = page.locator('.member-actions .primary-button')
+  check('저장: 변경이 없으면 저장됨', await saveButton.innerText(), '✓ 저장됨')
+  check('저장: 저장됨이면 누를 수 없음', await saveButton.isDisabled(), true)
+
+  // 같은 시간 다른 요일에도 넣기 (금 21:00을 복사. 토 21:00 등 남은 요일로)
+  await page.locator('.mobile-day-tabs[data-section="form"] .mobile-day-tab', { hasText: '금' }).tap()
+  await page.locator('.mobile-copy-times').tap()
+  check('복사: 안내', (await toastText(page)).includes('개 요일에 같은 시간을 넣었어요'))
+  check('복사: 평일에 들어감', (await page.locator('.mobile-time-summary').innerText()).includes('목 21:00'))
+  check('복사: 지났거나 없는 요일 제외 후 버튼이 저장으로', (await saveButton.innerText()).endsWith('저장하기'))
+  await page.locator('.toast-action', { hasText: '되돌리기' }).tap()
+  check('복사: 되돌리기', await saveButton.innerText(), '✓ 저장됨')
+  await page.locator('[aria-label="금요일 22:00"]').tap()
+  check('저장: 시간을 바꾸면 다시 저장 버튼', await saveButton.innerText(), '시간 3개 저장하기')
+  await context.close()
+}
+
+// ---------- 페이지 기본 설정 ----------
+{
+  const { page, context } = await open(LOCAL)
+  check('언어 설정', await page.locator('html').getAttribute('lang'), 'ko')
+  check('제목', await page.title(), '그루 레기온 설원 스케줄')
+  check('테마 색', Boolean(await page.locator('meta[name="theme-color"]').getAttribute('content')), true)
+  const manifest = await page.evaluate(async () => {
+    const link = document.querySelector('link[rel="manifest"]')
+    const data = await (await fetch(link.href)).json()
+    const icons = await Promise.all(data.icons.map(async (icon) => (await fetch(icon.src)).ok))
+    return { name: data.short_name, icons }
+  })
+  check('홈 화면 이름', manifest.name, '설원 스케줄')
+  check('홈 화면 아이콘 파일', manifest.icons, [true, true])
+  await context.close()
+}
+
+// ---------- PC는 기존 방식 유지 ----------
+{
+  const { page, context } = await open(LOCAL, { schedules: crowd, showGuide: true })
+  await login(page)
+  check('PC: 사용법 팝업 없음', await page.locator('.mobile-guide').count(), 0)
+  const pcHistory = await page.evaluate(() => history.length)
+  await page.locator('.saved-schedule-clear').count()
+  check('PC: 추천 목록은 항상 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [1, 0])
+  check('PC: 뒤로 가기 기록을 건드리지 않음', await page.evaluate(() => history.length), pcHistory)
+  check('PC: 칸 시간표 유지', [await page.locator('.time-pick-grid').count(), await page.locator('.mobile-time-list').count()], [1, 0])
+  check('PC: 레이드 탭 유지', [await page.locator('.raid-tab-group').count(), await page.locator('.mobile-raid-select').count()], [1, 0])
+  check('PC: 빈 칸에는 신청 버튼 없음', await page.locator('[id="calendar-slot-토-19:00"] .join-slot-button').count(), 0)
+  check('PC: 요일 7개 카드 표시', await page.locator('.day-raid-card:visible').count(), 7)
   await context.close()
 }
 

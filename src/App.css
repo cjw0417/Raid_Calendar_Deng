@@ -4171,3 +4171,458 @@ input::placeholder {
     white-space: normal;
   }
 }
+
+/* 신청 폼 단계 번호 */
+.form-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-step-number {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.form-step-number.is-done {
+  background: rgba(47, 191, 134, 0.9);
+}
+
+/* 모바일 첫 사용 안내 */
+.mobile-guide {
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-guide h3 {
+  margin: 0;
+}
+
+.mobile-guide-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 12px;
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mobile-guide-list dt {
+  color: #9cc9ff;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.mobile-guide-list dd {
+  margin: 0;
+  color: #edf5ff;
+}
+
+/* 모바일 시간 고르기 (PC는 칸 시간표를 그대로 쓴다) */
+.mobile-time-picker {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.mobile-time-picker.is-disabled .mobile-time-list,
+.mobile-time-picker.is-disabled .mobile-time-head {
+  opacity: 0.45;
+}
+
+.mobile-time-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  font-size: 0.92rem;
+}
+
+.mobile-time-head .text-link-button {
+  margin: 0;
+  width: auto;
+  font-size: 0.76rem;
+}
+
+.mobile-time-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mobile-time-button {
+  display: grid;
+  gap: 1px;
+  min-height: 56px;
+  padding: 6px 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-control);
+  color: #edf5ff;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.mobile-time-button strong {
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-time-button small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.mobile-time-button.is-selected {
+  border-color: transparent;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(212, 217, 251, 0.35), 0 2px 10px var(--accent-glow);
+}
+
+.mobile-time-button.is-selected small {
+  color: #eef0ff;
+}
+
+.mobile-time-button.is-blocked {
+  border-style: dashed;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mobile-time-summary {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-inset);
+  color: #dfeaff;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.mobile-time-summary strong {
+  margin-right: 4px;
+  color: #9cc9ff;
+}
+
+/* 모바일 파티 화면의 레이드 고르기 */
+.mobile-raid-select {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* 아이폰 Safari는 글자가 16px보다 작은 입력칸을 누르면 화면을 확대한다 */
+.mobile-raid-select select {
+  width: 100%;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.mobile-empty-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+@media (max-width: 640px) {
+  /* 신청할 내용이 없을 때의 빈 카드는 빼서 신청 폼이 바로 보이게 한다 */
+  .next-raid-card.is-empty {
+    display: none;
+  }
+
+  /* 난이도와 공략 방식은 나란히 둔다 */
+  .form-section .two-column {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  /* 요일 탭 크기를 맞추고, 고른 시간 수를 배지로 보여 준다 */
+  .mobile-day-tab {
+    min-height: 48px;
+    justify-content: center;
+  }
+
+  .mobile-day-tab-count {
+    position: absolute;
+    top: -5px;
+    right: -3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #2fbf86;
+    color: #ffffff;
+    font-size: 0.64rem;
+    font-weight: 800;
+  }
+
+  /* 이번 주 화면: 고른 요일 하나만 보여 준다 */
+  .day-raid-summary-grid[data-mobile-day='0'] .day-raid-card:not([data-day-index='0']),
+  .day-raid-summary-grid[data-mobile-day='1'] .day-raid-card:not([data-day-index='1']),
+  .day-raid-summary-grid[data-mobile-day='2'] .day-raid-card:not([data-day-index='2']),
+  .day-raid-summary-grid[data-mobile-day='3'] .day-raid-card:not([data-day-index='3']),
+  .day-raid-summary-grid[data-mobile-day='4'] .day-raid-card:not([data-day-index='4']),
+  .day-raid-summary-grid[data-mobile-day='5'] .day-raid-card:not([data-day-index='5']),
+  .day-raid-summary-grid[data-mobile-day='6'] .day-raid-card:not([data-day-index='6']) {
+    display: none;
+  }
+
+  .day-raid-summary-head {
+    justify-content: flex-end;
+  }
+
+  /* 상단 바에 같은 이름이 있어 제목은 뺀다 */
+  .day-raid-summary-head h3 {
+    display: none;
+  }
+
+  .day-raid-time-toggle {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .day-raid-toggle-arrow {
+    margin-left: auto;
+    color: #9cc9ff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  /* 누르는 버튼을 손가락 크기로 키운다 */
+  .day-raid-rally-button,
+  .day-raid-run-button,
+  .next-raid-actions .day-raid-rally-button {
+    min-height: 40px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
+
+  .day-raid-run-button {
+    min-width: 40px;
+  }
+
+  .day-raid-run-row {
+    gap: 6px;
+  }
+
+  .day-raid-run-row .join-slot-button,
+  .slot-cell .join-slot-button {
+    width: 100%;
+    min-height: 40px;
+    margin-left: 0;
+    border-radius: 10px;
+    font-size: 0.84rem;
+  }
+
+  .slot-cell.is-vacant:has(.join-slot-button) .empty-text {
+    display: none;
+  }
+
+  /* 추천은 이번 주 화면에서만, 좁은 세 칸 대신 한 줄씩 크게 보여 준다 */
+  .app-shell[data-mobile-section='calendar'] .recommend-row[data-section] {
+    display: none;
+  }
+
+  .recommend-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .recommend-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .recommend-card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+  }
+
+  .recommend-rank {
+    position: static;
+    grid-row: 1 / span 2;
+    width: 22px;
+    height: 22px;
+    font-size: 0.74rem;
+  }
+
+  .recommend-time {
+    grid-column: 2;
+    grid-row: 1;
+    font-size: 0.94rem;
+  }
+
+  .recommend-raid {
+    grid-column: 2;
+    grid-row: 2;
+    font-size: 0.7rem;
+  }
+
+  .recommend-status {
+    grid-column: 3;
+    grid-row: 1;
+    font-size: 0.72rem;
+    text-align: right;
+  }
+
+  .recommend-meta {
+    grid-column: 3;
+    grid-row: 2;
+    font-size: 0.68rem;
+    text-align: right;
+  }
+
+  .recommend-item .join-slot-button.is-block {
+    width: auto;
+    max-width: 76px;
+    padding: 4px 6px;
+    font-size: 0.74rem;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 640px) {
+  /* 파티 화면: 빈 시간의 신청 버튼은 인원이 있는 칸보다 눈에 띄지 않게 한다 */
+  .slot-cell.is-vacant:has(.join-slot-button) {
+    min-height: 44px;
+    padding: 3px 5px;
+    justify-content: center;
+  }
+
+  .slot-cell .join-slot-button.is-vacant-join {
+    min-height: 36px;
+    border-color: var(--line);
+    background: none;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+
+
+  /* 도움말 버튼과 범례를 한 줄에 둔다 */
+  .calendar-panel > .panel-header .panel-header-title-wrap,
+  .calendar-panel > .panel-header .slot-legend {
+    width: auto;
+    margin: 0;
+  }
+}
+
+/* 모바일 추천 시간 접기 */
+.recommend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid rgba(94, 224, 170, 0.35);
+  border-radius: 12px;
+  background: rgba(47, 191, 134, 0.08);
+  color: #edf5ff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recommend-toggle .recommend-label {
+  flex-shrink: 0;
+}
+
+.recommend-toggle-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recommend-toggle-arrow {
+  flex-shrink: 0;
+  color: #9cc9ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.mobile-copy-times {
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 0.86rem;
+}
+
+/* 모바일 터치 영역: 손가락으로 누르는 것은 40px 이상으로 맞춘다 */
+@media (max-width: 640px) {
+  .help-toggle,
+  .help-toggle.small {
+    width: 40px;
+    height: 40px;
+  }
+
+  .next-raid-link,
+  .text-link-button,
+  .mobile-time-head .text-link-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+
+  .form-section .chip-grid .chip,
+  .small-toggle,
+  .day-raid-past-toggle,
+  .alt-manage-button,
+  .alt-unlink-button,
+  .restore-select-all,
+  .toast-action {
+    min-height: 40px;
+  }
+
+  .slot-cell .join-slot-button.is-vacant-join,
+  .recommend-item .join-slot-button.is-block {
+    min-height: 40px;
+  }
+
+  .time-member-pill {
+    min-height: 42px;
+  }
+
+  /* 수정과 삭제는 나란히 있어 잘못 누르기 쉬우니 크기와 간격을 함께 키운다 */
+  .saved-schedule-actions {
+    gap: 10px;
+  }
+
+  .saved-schedule-edit,
+  .saved-schedule-delete {
+    min-width: 52px;
+    min-height: 40px;
+  }
+
+  .saved-slot-day-label {
+    width: 40px;
+    height: 40px;
+  }
+
+  .saved-slot-chip {
+    height: 40px;
+    padding: 0 10px 0 12px;
+  }
+}
