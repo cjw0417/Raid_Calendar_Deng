@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 import {
   HINT_QUESTIONS,
@@ -40,6 +40,12 @@ const SUMMARY_ICON_PREVIEW_LIMIT = 4
 const RAID_FULL_SIZE = 10
 // 시작한 뒤에도 이 시간 동안은 '내 다음 레이드'에 진행 중으로 남겨 둔다.
 const RAID_ONGOING_MS = 60 * 60 * 1000
+// 준비 확인은 시작 이 시간 전부터 누를 수 있다. (디스코드 알림이 너무 일찍 가지 않게)
+const RALLY_OPEN_BEFORE_MS = 60 * 60 * 1000
+// 앱으로 돌아왔을 때 마지막으로 불러온 뒤 이 시간이 지났으면 현황을 다시 불러온다.
+const REFRESH_MIN_INTERVAL_MS = 30 * 1000
+// 파티를 나눌 때 양쪽에 고르게 넣을 직업
+const HEALER_CLASS = '치유성'
 // 토스트 알림이 떠 있는 시간 (ms)
 const TOAST_DURATION = { info: 3500, success: 3000, error: 6000 }
 // 되돌리기 같은 버튼이 달린 알림은 누를 시간을 넉넉히 준다.
@@ -53,6 +59,7 @@ const RALLY_SUCCESS_MESSAGES = {
   uncheck: '준비를 취소했어요.',
   cancel: '준비 확인을 취소했어요.',
   remind: '디스코드로 다시 알렸어요.',
+  start: '지금 준비한 인원으로 시작했어요.',
 }
 const modeOptions = ['트라이', '반숙이상']
 const raidTabOptions = [
@@ -288,6 +295,16 @@ function timeToMinutes(time) {
   return hours * 60 + minutes
 }
 
+// 화요일 00:00은 수요일 00:00(주간 리셋)과 같은 시각이라, 시작하는 순간 사라져서 신청을 받지 않는다.
+function isResetOverlapSlot(day, time) {
+  return day === '화' && time === '00:00'
+}
+
+// 저장 값 00:00은 그 요일 밤 12시라서 화면에는 24:00으로 보여 준다.
+function formatTimeLabel(time) {
+  return time === '00:00' ? '24:00' : time
+}
+
 function buildEmptyDayTimeSelection() {
   return Object.fromEntries(weekdayNames.map((day) => [day, []]))
 }
@@ -305,7 +322,7 @@ function normalizeDayTimeSelection(rawSelection) {
     }
 
     const normalizedTimes = Array.isArray(times)
-      ? [...new Set(times.filter((time) => typeof time === 'string' && timeSlots.includes(time)))]
+      ? [...new Set(times.filter((time) => typeof time === 'string' && timeSlots.includes(time) && !isResetOverlapSlot(day, time)))]
       : []
 
     nextSelection[day] = normalizedTimes
@@ -361,14 +378,14 @@ function formatScheduleKey(key) {
 
 // 시간 삭제 대상 { entry, day, time }을 "목요일 19:00" / "목요일 전체" 형태로 표시한다. (time이 null이면 그 요일 전체)
 function describePendingSlot({ day, time }) {
-  return `${day}요일 ${time ?? '전체'}`
+  return `${day}요일 ${time ? formatTimeLabel(time) : '전체'}`
 }
 
 // 요일별 시간 선택을 "목 19:00 / 금 20:00, 21:00" 형태로 표시한다.
 function formatDayTimeSelection(dayTimeSelection) {
   return weekdayNames
     .filter((day) => (dayTimeSelection?.[day] ?? []).length > 0)
-    .map((day) => `${day} ${[...dayTimeSelection[day]].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)).join(', ')}`)
+    .map((day) => `${day} ${[...dayTimeSelection[day]].sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b)).map(formatTimeLabel).join(', ')}`)
     .join(' / ')
 }
 
@@ -417,33 +434,50 @@ function getPowerValue(power) {
   return matched ? Number(matched[0]) : 0
 }
 
-// 한 타임 인원을 A/B 파티로 나눈다. 리딩 가능자를 양쪽에 번갈아 먼저 넣고, 나머지는 전투력이 높은 순으로
-// 전투력 합이 낮은 파티에 넣는다. 정원(10명)을 넘는 인원은 신청 순서대로 대기로 둔다.
+// 한 타임 인원을 A/B 파티로 나눈다. people은 신청 순서로 정렬되어 있어야 한다. 앞의 10명이 정원이고 나머지는 대기다.
+// 가능한 나눔을 모두 비교해 리딩 가능자 수 → 치유성 수 → 전투력 합 순으로 가장 고른 것을 고른다. (최대 252가지)
 function buildBalancedParties(people) {
-  const partySize = RAID_FULL_SIZE / 2
-  const ordered = people
-    .slice(0, RAID_FULL_SIZE)
-    .sort((a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power))
-  const parties = [[], []]
-  const powerTotals = [0, 0]
-  const leaderCounts = [0, 0]
+  const roster = people.slice(0, RAID_FULL_SIZE)
+  const count = roster.length
+  const sizeA = Math.ceil(count / 2)
+  const sum = (getValue) => roster.reduce((total, member) => total + getValue(member), 0)
+  const leaderValue = (member) => (member.leadReady === 'O' ? 1 : 0)
+  const healerValue = (member) => (member.className === HEALER_CLASS ? 1 : 0)
+  const totals = [sum(leaderValue), sum(healerValue), sum((member) => getPowerValue(member.power))]
+  let bestMask = 0
+  let bestCost = null
 
-  ordered.forEach((member) => {
-    const isLeader = member.leadReady === 'O'
-    let index = isLeader
-      ? (leaderCounts[0] <= leaderCounts[1] ? 0 : 1)
-      : (powerTotals[0] <= powerTotals[1] ? 0 : 1)
+  // 첫 사람은 항상 A에 둔다. (같은 나눔이 A/B만 뒤바뀌어 사람마다 다르게 보이지 않게)
+  for (let mask = 1; mask < (1 << count); mask += 2) {
+    const partyA = roster.filter((_, index) => mask & (1 << index))
 
-    if (parties[index].length >= partySize) {
-      index = 1 - index
+    if (partyA.length !== sizeA) {
+      continue
     }
 
-    parties[index].push(member)
-    powerTotals[index] += getPowerValue(member.power)
-    leaderCounts[index] += isLeader ? 1 : 0
-  })
+    const partSums = [
+      partyA.reduce((total, member) => total + leaderValue(member), 0),
+      partyA.reduce((total, member) => total + healerValue(member), 0),
+      partyA.reduce((total, member) => total + getPowerValue(member.power), 0),
+    ]
+    const cost = partSums.map((value, index) => Math.abs(2 * value - totals[index]))
+    const isBetter = !bestCost
+      || cost[0] < bestCost[0]
+      || (cost[0] === bestCost[0] && (cost[1] < bestCost[1] || (cost[1] === bestCost[1] && cost[2] < bestCost[2])))
 
-  return { partyA: parties[0], partyB: parties[1], waiting: people.slice(RAID_FULL_SIZE) }
+    if (isBetter) {
+      bestMask = mask
+      bestCost = cost
+    }
+  }
+
+  const byRole = (a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power)
+
+  return {
+    partyA: roster.filter((_, index) => bestMask & (1 << index)).sort(byRole),
+    partyB: roster.filter((_, index) => !(bestMask & (1 << index))).sort(byRole),
+    waiting: people.slice(RAID_FULL_SIZE),
+  }
 }
 
 // 레이드 · 난이도 · 공략 방식 순으로 정렬한다.
@@ -465,8 +499,8 @@ function buildDefaultMember(overrides = {}) {
     days: [],
     times: [],
     dayTimeSelection: initialSelection,
+    attendance: '참',
     // 로그인 직후 폼에는 아무것도 선택되지 않은 상태로 시작한다.
-    attendance: '',
     className: '',
     power: '',
     raidFocus: '',
@@ -510,6 +544,39 @@ function isSavedThisWeek(record, weekStartTime) {
   return Number.isNaN(savedTime) || savedTime >= weekStartTime
 }
 
+// 그 시간대에 처음 신청한 시각. 기록이 없는 예전 신청은 마지막 저장 시각으로 본다. (DB의 _raid_slot_roster와 같은 기준)
+function getSlotSignedTime(record, day, time) {
+  const signedTime = new Date(record.slotSignedAt?.[`${day}|${time}`] ?? record.updatedAt).getTime()
+  return Number.isNaN(signedTime) ? 0 : signedTime
+}
+
+// 한 시간대 인원을 신청 순서로 정렬한다. 같은 시각이면 닉네임 코드값 순으로, 어느 화면에서든 순서가 같게 한다.
+function compareSlotPeople(a, b) {
+  if (a.signedTime !== b.signedTime) {
+    return a.signedTime - b.signedTime
+  }
+
+  if (a.nickname === b.nickname) {
+    return 0
+  }
+
+  return a.nickname < b.nickname ? -1 : 1
+}
+
+// 로컬 모드에서 DB 트리거(_stamp_slot_signed_at)와 같은 규칙으로 시간대별 신청 시각을 채운다.
+function stampSlotSignedAt(previous, selection, nowIso, weekStartTime) {
+  const wasThisWeek = Boolean(previous) && isSavedThisWeek(previous, weekStartTime)
+
+  return Object.fromEntries(getDayTimePairs(selection).map(([day, time]) => {
+    const slotKey = `${day}|${time}`
+    const kept = wasThisWeek
+      ? previous.slotSignedAt?.[slotKey] ?? ((previous.dayTimeSelection?.[day] ?? []).includes(time) ? previous.updatedAt : null)
+      : null
+
+    return [slotKey, kept ?? nowIso]
+  }))
+}
+
 function normalizeRaidScheduleEntry(entry) {
   if (!entry) {
     return null
@@ -537,6 +604,7 @@ function normalizeRaidScheduleEntry(entry) {
     power: entry.power ?? '600~700k',
     leadReady: normalizeLeadReady(entry.lead_ready ?? entry.leadReady ?? 'X'),
     updatedAt: entry.updated_at ?? entry.updatedAt ?? new Date().toISOString(),
+    slotSignedAt: entry.slot_signed_at ?? entry.slotSignedAt ?? {},
   }
 }
 
@@ -841,6 +909,16 @@ function App() {
   const [loginPassword, setLoginPassword] = useState(() => readStoredLoginPassword())
   const [loginError, setLoginError] = useState('')
   const [isLoginPending, setIsLoginPending] = useState(false)
+  // 비밀번호를 저장해 둔 기기는 접속하자마자 로그인을 시도한다.
+  const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(() => Boolean(readStoredLoginNickname() && readStoredLoginPassword()))
+  const autoLoginStartedRef = useRef(false)
+  // 현황 불러오기 상태: 'loading' | 'ready' | 'error'. '신청 없음'과 '아직 못 불러옴'을 구분한다.
+  const [dataLoadState, setDataLoadState] = useState(() => (supabase ? 'loading' : 'ready'))
+  // 이 값이 바뀌면 준비 / 클리어 기록을 다시 불러온다.
+  const [raidRunsReloadTick, setRaidRunsReloadTick] = useState(0)
+  const lastRemoteLoadRef = useRef(0)
+  // 다 채운 '내 캐릭터'는 한 줄로 접어 둔다. 고치는 동안에는 펼친다.
+  const [characterEditOpen, setCharacterEditOpen] = useState(false)
   // 로그인한 사람의 비밀번호. 저장·삭제할 때 DB가 다시 확인하므로 메모리에만 들고 있는다.
   const [sessionPassword, setSessionPassword] = useState('')
   // 본캐에 연결된 부캐 목록: [{ altNickname, ownerNickname }] (누구나 읽을 수 있어 캘린더에 "OO의 부캐"로도 쓴다)
@@ -924,12 +1002,13 @@ function App() {
   useEffect(() => {
     let isMounted = true
 
+    // 연말 주간은 다음 해 날짜까지 걸치므로 두 해를 함께 불러온다.
     const year = new Date().getFullYear()
 
-    getHolidaySetForYear(year)
-      .then((nextHolidaySet) => {
+    Promise.all([getHolidaySetForYear(year), getHolidaySetForYear(year + 1)])
+      .then(([thisYearSet, nextYearSet]) => {
         if (isMounted) {
-          setHolidaySet(nextHolidaySet)
+          setHolidaySet(new Set([...thisYearSet, ...nextYearSet]))
         }
       })
       .catch(() => {
@@ -943,6 +1022,41 @@ function App() {
     }
   }, [])
 
+  // 신청 · 인원 · 보관 기록을 DB에서 다시 불러온다. 실패해도 지금 보이는 내용은 그대로 둔다.
+  const loadRemoteData = useCallback(async () => {
+    if (!supabase) {
+      return
+    }
+
+    lastRemoteLoadRef.current = Date.now()
+
+    try {
+      const [membersResult, schedulesResult, archiveResult] = await Promise.all([
+        supabase.from('members').select('*').order('updated_at', { ascending: false }),
+        supabase.from('raid_schedules').select('*').order('updated_at', { ascending: false }),
+        supabase.from('raid_schedule_archive').select('*'),
+      ])
+
+      if (membersResult.error || schedulesResult.error) {
+        setDataLoadState('error')
+        return
+      }
+
+      setMembers((membersResult.data ?? []).map((member) => normalizeMemberRecord(member)).filter(Boolean))
+      setRaidSchedules((schedulesResult.data ?? []).map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean))
+
+      // 보관 테이블은 SQL을 실행하기 전에는 없을 수 있어 실패로 치지 않는다.
+      if (!archiveResult.error && Array.isArray(archiveResult.data)) {
+        const archived = archiveResult.data.map((entry) => normalizeRaidScheduleEntry(entry)).filter(Boolean)
+        setArchivedSchedules((prev) => mergeArchivedSchedules(prev, archived))
+      }
+
+      setDataLoadState('ready')
+    } catch {
+      setDataLoadState('error')
+    }
+  }, [])
+
   useEffect(() => {
     if (!supabase) {
       saveLocalMembers(storedMembers)
@@ -950,45 +1064,7 @@ function App() {
       return
     }
 
-    const loadRemoteMembers = async () => {
-      const { data, error } = await supabase.from('members').select('*').order('updated_at', { ascending: false })
-
-      if (!error && Array.isArray(data)) {
-        const normalized = data
-          .map((member) => normalizeMemberRecord(member))
-          .filter(Boolean)
-
-        setMembers(normalized)
-      }
-    }
-
-    const loadRemoteRaidSchedules = async () => {
-      const { data, error } = await supabase.from('raid_schedules').select('*').order('updated_at', { ascending: false })
-
-      if (!error && Array.isArray(data)) {
-        const normalized = data
-          .map((entry) => normalizeRaidScheduleEntry(entry))
-          .filter(Boolean)
-
-        setRaidSchedules(normalized)
-      }
-    }
-
-    const loadRemoteArchivedSchedules = async () => {
-      const { data, error } = await supabase.from('raid_schedule_archive').select('*')
-
-      if (!error && Array.isArray(data)) {
-        const normalized = data
-          .map((entry) => normalizeRaidScheduleEntry(entry))
-          .filter(Boolean)
-
-        setArchivedSchedules((prev) => mergeArchivedSchedules(prev, normalized))
-      }
-    }
-
-    loadRemoteMembers()
-    loadRemoteRaidSchedules()
-    loadRemoteArchivedSchedules()
+    loadRemoteData()
     fetchMemberAlts().then((alts) => alts && setMemberAlts(alts))
 
     const memberChannel = supabase
@@ -997,12 +1073,13 @@ function App() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'members' },
         (payload) => {
-          const nextMember = normalizeMemberRecord(payload.new ?? payload.old)
-
-          if (!nextMember) {
-            setMembers((prev) => prev.filter((member) => member.nickname !== (payload.old?.nickname ?? '')))
+          // 삭제 이벤트는 new가 빈 객체이고, old에는 기본 키(id)만 온다.
+          if (payload.eventType === 'DELETE') {
+            setMembers((prev) => prev.filter((member) => member.id !== payload.old?.id))
             return
           }
+
+          const nextMember = normalizeMemberRecord(payload.new)
 
           setMembers((prev) => {
             const exists = prev.findIndex((member) => member.nickname === nextMember.nickname)
@@ -1025,12 +1102,13 @@ function App() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'raid_schedules' },
         (payload) => {
-          const nextEntry = normalizeRaidScheduleEntry(payload.new ?? payload.old)
-
-          if (!nextEntry) {
-            setRaidSchedules((prev) => prev.filter((entry) => !(entry.nickname === (payload.old?.nickname ?? '') && entry.raidName === (payload.old?.raid_name ?? '') && entry.difficulty === (payload.old?.difficulty ?? '') && entry.mode === (payload.old?.mode ?? ''))))
+          // 삭제 이벤트는 new가 빈 객체이고, old에는 기본 키(id)만 온다.
+          if (payload.eventType === 'DELETE') {
+            setRaidSchedules((prev) => prev.filter((entry) => entry.id !== payload.old?.id))
             return
           }
+
+          const nextEntry = normalizeRaidScheduleEntry(payload.new)
 
           setRaidSchedules((prev) => {
             const exists = prev.findIndex((entry) => entry.nickname === nextEntry.nickname && entry.raidName === nextEntry.raidName && entry.difficulty === nextEntry.difficulty && entry.mode === nextEntry.mode)
@@ -1051,7 +1129,35 @@ function App() {
       supabase.removeChannel(memberChannel)
       supabase.removeChannel(raidScheduleChannel)
     }
-  }, [])
+  }, [loadRemoteData])
+
+  // 다른 앱을 보다 돌아오거나 네트워크가 다시 연결되면 놓친 변경을 불러온다.
+  useEffect(() => {
+    if (!supabase) {
+      return undefined
+    }
+
+    const refreshIfStale = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - lastRemoteLoadRef.current < REFRESH_MIN_INTERVAL_MS) {
+        return
+      }
+
+      setCurrentTime(new Date())
+      setRaidRunsReloadTick((prev) => prev + 1)
+      loadRemoteData()
+      fetchMemberAlts().then((alts) => alts && setMemberAlts(alts))
+    }
+
+    document.addEventListener('visibilitychange', refreshIfStale)
+    window.addEventListener('focus', refreshIfStale)
+    window.addEventListener('online', refreshIfStale)
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshIfStale)
+      window.removeEventListener('focus', refreshIfStale)
+      window.removeEventListener('online', refreshIfStale)
+    }
+  }, [loadRemoteData])
 
   useEffect(() => {
     if (!supabase) {
@@ -1078,7 +1184,7 @@ function App() {
     }
   }, [archivedSchedules])
 
-  // 이번 주 준비 / 클리어 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  // 이번 주 준비 / 클리어 기록을 불러온다.
   useEffect(() => {
     if (!supabase) {
       return undefined
@@ -1096,6 +1202,17 @@ function App() {
         }
       })
 
+    return () => {
+      isMounted = false
+    }
+  }, [weekStartKey, raidRunsReloadTick])
+
+  // 다른 사람이 준비 / 클리어 기록을 바꾸면 바로 반영한다.
+  useEffect(() => {
+    if (!supabase) {
+      return undefined
+    }
+
     const raidRunChannel = supabase
       .channel('raid-runs-live')
       .on(
@@ -1112,7 +1229,6 @@ function App() {
       .subscribe()
 
     return () => {
-      isMounted = false
       supabase.removeChannel(raidRunChannel)
     }
   }, [weekStartKey])
@@ -1184,17 +1300,26 @@ function App() {
     }
   }, [activeRaidTab, visibleRaidTabs])
 
-  const getSelectableTimesForSelectedDay = (day) => {
-    if (!day || !weekdayNames.includes(day)) {
-      return weekdayTimeSlots
-    }
+  // 그 날짜에 있는 시간 줄. 주말과 공휴일은 낮시간까지 있다. 입력 폼과 캘린더가 함께 쓴다.
+  const getDayTimeSlots = (date) => {
+    const day = date.getDay()
+    const isWeekendOrHoliday = day === 0 || day === 6 || holidaySet.has(formatIsoDate(date))
+    const slots = !isWeekendOrHoliday
+      ? weekdayTimeSlots
+      : showDaytimeSlots ? weekendTimeSlots : weekendTimeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
 
-    if (day === '토' || day === '일') {
-      return showDaytimeSlots ? timeSlots : timeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
-    }
-
-    return weekdayTimeSlots
+    return day === 2 ? slots.filter((time) => !isResetOverlapSlot('화', time)) : slots
   }
+
+  const getSelectableTimesForSelectedDay = (day) => {
+    const dayIndex = weekdayNames.indexOf(day)
+    return dayIndex < 0 ? weekdayTimeSlots : getDayTimeSlots(weekDates[dayIndex])
+  }
+
+  // 이번 주에서 이미 지난 시간대인지 (시작하고 RAID_ONGOING_MS가 지나면 지난 것으로 본다)
+  const isPastSlot = (day, time) => (
+    getSlotStartDate(weekDates, day, time).getTime() + RAID_ONGOING_MS <= currentTime.getTime()
+  )
 
   // 입력 폼 시간표의 시간 줄. 낮시간(12~16시)은 켰을 때만 보여 준다.
   const formTimeRows = timeSlots.filter((time) => showDaytimeSlots || !hiddenWeekdayTimeSlots.includes(time))
@@ -1268,7 +1393,7 @@ function App() {
   )
 
   // 시간표 칸 여러 개를 한꺼번에 고르거나(shouldSelect) 지운다.
-  // 그 요일에 없는 시간대이거나 같은 계정이 이미 신청한 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
+  // 그 요일에 없는 시간대, 이미 지난 시간, 같은 계정이 이미 신청한 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
   // 끌어서 빠르게 여러 칸을 바꿀 수 있어 이전 수정 상태(prev)를 기준으로 바꾼다.
   const setSlotSelection = (pairs, shouldSelect) => {
     if (!currentScheduleKey) {
@@ -1289,7 +1414,7 @@ function App() {
           return
         }
 
-        if (!dayTimes.includes(time) && getSelectableTimesForSelectedDay(day).includes(time) && !takenSlots.has(`${day}|${time}`)) {
+        if (!dayTimes.includes(time) && getSelectableTimesForSelectedDay(day).includes(time) && !takenSlots.has(`${day}|${time}`) && !isPastSlot(day, time)) {
           nextSelection[day] = [...dayTimes, time]
         }
       })
@@ -1324,6 +1449,21 @@ function App() {
     setToasts((prev) => prev.filter((toast) => toast.key !== 'target-missing'))
   }, [isScheduleTargetSelected])
 
+  // 이 칸을 새로 고를 수 없는 이유. 없으면 ''. 터치 기기는 title이 안 보이므로 눌렀을 때 알림으로도 띄운다.
+  const getSlotBlockReason = (day, time, isSelected) => {
+    if (isSelected) {
+      return ''
+    }
+
+    const takenBy = takenSlots.get(`${day}|${time}`)
+
+    if (takenBy) {
+      return `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}`
+    }
+
+    return isPastSlot(day, time) ? '이미 지난 시간이라 고를 수 없어요.' : ''
+  }
+
   // 마우스로 시간표 칸을 누르면 그 칸을 바꾸고, 누른 채 끌면 지나가는 칸에도 같은 동작을 한다.
   // 터치는 화면을 스크롤하다 칸이 바뀌지 않도록 손을 뗀 탭(click)에서만 바꾼다.
   const startTimeDrag = (event, day, time, isSelected) => {
@@ -1340,6 +1480,13 @@ function App() {
       return
     }
 
+    const blockReason = getSlotBlockReason(day, time, isSelected)
+
+    if (blockReason) {
+      showToast(blockReason, 'info', 'slot-blocked')
+      return
+    }
+
     timeDragModeRef.current = !isSelected
     setSlotSelection([[day, time]], !isSelected)
   }
@@ -1352,6 +1499,13 @@ function App() {
 
     if (!isScheduleTargetSelected) {
       warnScheduleTargetMissing()
+      return
+    }
+
+    const blockReason = getSlotBlockReason(day, time, isSelected)
+
+    if (blockReason) {
+      showToast(blockReason, 'info', 'slot-blocked')
       return
     }
 
@@ -1375,7 +1529,7 @@ function App() {
 
     const selectablePairs = pairs.filter(([day, time]) => (
       getSelectableTimesForSelectedDay(day).includes(time)
-      && ((currentDayTimeSelection[day] ?? []).includes(time) || !takenSlots.has(`${day}|${time}`))
+      && ((currentDayTimeSelection[day] ?? []).includes(time) || (!takenSlots.has(`${day}|${time}`) && !isPastSlot(day, time)))
     ))
 
     if (selectablePairs.length === 0) {
@@ -1483,23 +1637,6 @@ function App() {
 
     return nextSet
   }, [activeModeTab, activeTabMeta, allScheduleEntries, currentDayTimeSelection, currentNickname, currentScheduleKey])
-
-  const getDayTimeSlots = (date) => {
-    const day = date.getDay()
-    const isoKey = formatIsoDate(date)
-    const isHoliday = holidaySet.has(isoKey)
-    const isWeekendOrHoliday = day === 0 || day === 6 || isHoliday
-
-    if (!isWeekendOrHoliday) {
-      return weekdayTimeSlots
-    }
-
-    if (!showDaytimeSlots) {
-      return weekendTimeSlots.filter((time) => !hiddenWeekdayTimeSlots.includes(time))
-    }
-
-    return weekendTimeSlots
-  }
 
   const isSharedMode = Boolean(supabase)
 
@@ -1641,6 +1778,8 @@ function App() {
         times: entry.times,
         dayTimeSelection: entry.dayTimeSelection,
         attendance: entry.attendance,
+        slotSignedAt: entry.slotSignedAt,
+        updatedAt: entry.updatedAt,
       })),
       ...members
         .filter((member) => member.attendance === '참' && (member.days.length > 0 || member.times.length > 0))
@@ -1656,6 +1795,7 @@ function App() {
           times: member.times,
           dayTimeSelection: member.dayTimeSelection,
           attendance: member.attendance,
+          updatedAt: member.updatedAt,
         })),
     ]
 
@@ -1675,12 +1815,18 @@ function App() {
             className: entry.className,
             power: entry.power ?? '600~700k',
             leadReady: normalizeLeadReady(entry.leadReady ?? 'X'),
+            signedTime: getSlotSignedTime(entry, day, time),
           })
         }
 
         target[tabKey] = existing
         map.set(key, target)
       })
+    })
+
+    // 시간대마다 먼저 신청한 사람부터 둔다. 앞의 10명이 정원이다.
+    map.forEach((peopleByTab) => {
+      Object.values(peopleByTab).forEach((people) => people.sort(compareSlotPeople))
     })
 
     return map
@@ -1704,17 +1850,13 @@ function App() {
     return mergeArchivedSchedules(archivedSchedules, pastRaidSchedules)
       .filter((entry) => (
         entry.nickname === currentNickname
+        && entry.attendance === '참'
         && entry.days.length > 0
         && !isSavedThisWeek(entry, weekStartTime)
         && !thisWeekKeys.has(getScheduleKey(entry))
       ))
       .sort(compareSchedules)
   }, [archivedSchedules, currentNickname, pastRaidSchedules, raidSchedules, weekStartTime])
-
-  // 이번 주에서 이미 지난 시간대인지 (시작하고 RAID_ONGOING_MS가 지나면 지난 것으로 본다)
-  const isPastSlot = (day, time) => (
-    getSlotStartDate(weekDates, day, time).getTime() + RAID_ONGOING_MS <= currentTime.getTime()
-  )
 
   // 내 캐릭터(본캐 + 부캐)가 참여로 신청한 이번 주 시간대 중 아직 끝나지 않은 것 (가까운 순).
   // 1초마다 다시 계산하지 않도록 분 단위로만 갱신한다.
@@ -1829,7 +1971,7 @@ function App() {
   )
 
   // 저장된 스케줄을 폼에 불러와 바로 고칠 수 있게 한다.
-  // 직업 · 전투력 · 리딩은 '내 캐릭터' 칸의 값을 그대로 쓰고, 레이드 조합과 참여 여부만 불러온다.
+  // 직업 · 전투력 · 리딩은 '내 캐릭터' 칸의 값을 그대로 쓰고, 레이드 조합만 불러온다.
   const loadScheduleIntoForm = (entry) => {
     const raid = raidOptions.find((option) => option.label === entry.raidName)
 
@@ -1838,7 +1980,6 @@ function App() {
       raidFocus: raid?.id ?? entry.raidName,
       difficulty: entry.difficulty,
       mode: entry.mode,
-      attendance: entry.attendance,
     }))
 
     // 주말 낮시간(12~16시)이 들어 있으면 고칠 수 있게 낮시간을 켠다.
@@ -1901,6 +2042,7 @@ function App() {
     setSessionPassword(password)
     setLoggedInNickname(nickname)
     setActiveCharacter('')
+    setCharacterEditOpen(false)
     setExpandedPastDays({})
     // 다른 기기에서 연결한 부캐도 보이도록 로그인할 때 다시 불러온다.
     reloadMemberAlts()
@@ -1916,6 +2058,70 @@ function App() {
     setProfile(buildDefaultMember({ nickname }))
     await loadCurrentProfileByNickname(nickname)
   }
+
+  // 비밀번호를 저장해 둔 기기는 로그인 버튼을 다시 누르지 않아도 되게 한다.
+  useEffect(() => {
+    if (!isAutoLoggingIn || autoLoginStartedRef.current) {
+      return
+    }
+
+    autoLoginStartedRef.current = true
+
+    const nickname = readStoredLoginNickname()
+    const password = readStoredLoginPassword()
+
+    const tryAutoLogin = async () => {
+      try {
+        const result = await memberLogin(nickname, password)
+
+        if (result === 'ok') {
+          await completeLogin(nickname, password)
+        } else if (result === 'invalid') {
+          // 다른 기기에서 비밀번호를 바꿨을 수 있다. 새로고침마다 틀린 비밀번호로 시도해 잠기지 않도록 지운다.
+          writeStoredLoginPassword('')
+          setSavePassword(false)
+          setLoginPassword('')
+          setLoginError('저장된 비밀번호가 맞지 않아요. 다시 입력해 주세요.')
+        } else if (result !== 'must_change') {
+          setLoginError(describeAuthResult(result))
+        }
+      } catch (error) {
+        setLoginError(`자동 로그인에 실패했어요. (${error.message})`)
+      } finally {
+        setIsAutoLoggingIn(false)
+      }
+    }
+
+    tryAutoLogin()
+  }, [isAutoLoggingIn])
+
+  // Esc로 맨 위 팝업부터 닫는다.
+  useEffect(() => {
+    const closeTopPopup = (event) => {
+      if (event.key !== 'Escape') {
+        return
+      }
+
+      if (memberDetail) {
+        setMemberDetail(null)
+      } else if (pendingRunStatus) {
+        setPendingRunStatus(null)
+      } else if (clearAllConfirmOpen) {
+        setClearAllConfirmOpen(false)
+      } else if (restoreConfirmOpen) {
+        setRestoreConfirmOpen(false)
+      } else if (altManagerOpen) {
+        setAltManagerOpen(false)
+      } else if (passwordChangeOpen) {
+        setPasswordChangeOpen(false)
+      } else if (mobileMenuOpen) {
+        setMobileMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', closeTopPopup)
+    return () => window.removeEventListener('keydown', closeTopPopup)
+  }, [memberDetail, pendingRunStatus, clearAllConfirmOpen, restoreConfirmOpen, altManagerOpen, passwordChangeOpen, mobileMenuOpen])
 
   const resetPasswordForm = () => {
     setPasswordForm(buildEmptyPasswordForm())
@@ -2171,7 +2377,6 @@ function App() {
     setProfile((prev) => ({
       ...prev,
       nickname: trimmedNickname,
-      attendance: member.attendance,
       className: member.className,
       power: member.power,
       leadReady: member.leadReady,
@@ -2263,6 +2468,12 @@ function App() {
     }
   }
 
+  // '내 캐릭터' 칸을 고친다. 마지막 칸을 고르는 순간 접혀 버리지 않도록 고치는 동안은 펼쳐 둔다.
+  const updateCharacterField = (field, value) => {
+    setCharacterEditOpen(true)
+    setProfile((prev) => ({ ...prev, [field]: value }))
+  }
+
   // 스케줄 한 건(캐릭터 · 레이드 조합)을 저장하고 화면에 반영한다. 성공하면 true, 실패하면 알림을 띄우고 false.
   // info: 참여 여부 · 직업 · 전투력 · 리딩, target: 레이드 · 난이도 · 공략 방식
   const persistSchedule = async (nickname, info, target, dayTimeSelection) => {
@@ -2308,7 +2519,7 @@ function App() {
       if (result?.error) {
         const conflict = result.conflict
         const conflictDetail = conflict
-          ? `\n${conflict.day}요일 ${conflict.time}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
+          ? `\n${conflict.day}요일 ${formatTimeLabel(conflict.time)}: ${conflict.nickname} · ${conflict.raid_name} ${conflict.difficulty} ${conflict.mode}`
           : ''
         showToast(`스케줄 저장에 실패했어요. ${describeAuthResult(result.error)}${conflictDetail}`, 'error')
         return false
@@ -2382,19 +2593,31 @@ function App() {
     setRaidSchedules((prevSchedules) => {
       const nextSchedules = [...prevSchedules]
       const index = nextSchedules.findIndex((entry) => entry.nickname === nickname && getScheduleKey(entry) === getScheduleKey(localEntry))
+      const stampedEntry = { ...localEntry, slotSignedAt: stampSlotSignedAt(nextSchedules[index], selection, updatedAt, weekStartTime) }
 
       if (index >= 0) {
-        nextSchedules[index] = localEntry
+        nextSchedules[index] = stampedEntry
         return nextSchedules
       }
 
-      return [...nextSchedules, localEntry]
+      return [...nextSchedules, stampedEntry]
     })
     return true
   }
 
+  // 저장된 신청에서 시간을 모두 뺐으면 저장 버튼이 그 신청을 지운다.
+  const isClearingSavedSchedule = Boolean(savedCurrentSchedule) && currentSelectedDays.length === 0
+
   // 저장 전에 선택하지 않은 항목이나 겹치는 시간이 있으면 알려 주고, 없으면 바로 저장한다.
   const handleSaveClick = async () => {
+    if (isClearingSavedSchedule) {
+      if (!isSaving) {
+        await deleteWithUndo(savedCurrentSchedule)
+      }
+
+      return
+    }
+
     const missingFields = [
       [profile.className, '직업'],
       [profile.power, '전투력'],
@@ -2402,7 +2625,6 @@ function App() {
       [selectedRaidLabel, '레이드'],
       [profile.difficulty, '난이도'],
       [profile.mode, '공략 방식'],
-      [profile.attendance, '참여 여부'],
       [currentSelectedDays.length > 0, '요일 · 시간'],
     ]
       .filter(([value]) => !value)
@@ -2414,11 +2636,9 @@ function App() {
     }
 
     // 골라 둔 뒤에 다른 캐릭터로 같은 시간을 저장했을 수 있어 저장 전에 한 번 더 본다.
-    const conflictLines = profile.attendance === '참'
-      ? getDayTimePairs(currentDayTimeSelection)
-        .filter(([day, time]) => takenSlots.has(`${day}|${time}`))
-        .map(([day, time]) => `${day}요일 ${time}: ${describeTakenSlot(takenSlots.get(`${day}|${time}`))}`)
-      : []
+    const conflictLines = getDayTimePairs(currentDayTimeSelection)
+      .filter(([day, time]) => takenSlots.has(`${day}|${time}`))
+      .map(([day, time]) => `${day}요일 ${formatTimeLabel(time)}: ${describeTakenSlot(takenSlots.get(`${day}|${time}`))}`)
 
     if (conflictLines.length > 0) {
       showToast(`같은 시간에 이미 신청한 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n${conflictLines.join('\n')}`, 'error')
@@ -2438,7 +2658,7 @@ function App() {
     setIsSaving(true)
 
     try {
-      const isSaved = await persistSchedule(nickname, profile, currentScheduleTarget, currentDayTimeSelection)
+      const isSaved = await persistSchedule(nickname, { ...profile, attendance: '참' }, currentScheduleTarget, currentDayTimeSelection)
 
       if (!isSaved) {
         return
@@ -2515,8 +2735,18 @@ function App() {
     }
   }
 
+  // 저장하지 않은 변경을 모두 버리고 저장된 상태로 돌아간다. 잘못 눌렀으면 알림에서 되살릴 수 있다.
+  const discardUnsavedChanges = () => {
+    const discardedDrafts = dayTimeDrafts
+
+    setDayTimeDrafts({})
+    showToast('변경을 취소했어요.', 'info', 'discard-drafts', {
+      label: '되돌리기',
+      onClick: () => setDayTimeDrafts(discardedDrafts),
+    })
+  }
+
   // 저장하지 않은 레이드 조합을 한꺼번에 저장한다.
-  // 참여 여부는 지금 폼의 조합이면 폼 값, 아니면 그 조합에 저장돼 있던 값(없으면 폼 값)을 쓴다.
   const handleSaveAllClick = async () => {
     const nickname = currentNickname
 
@@ -2539,16 +2769,14 @@ function App() {
       for (const key of targetKeys) {
         const [raidName, difficulty, mode] = key.split('|')
         const selection = normalizeDayTimeSelection(dayTimeDrafts[key])
-        const savedEntry = raidSchedules.find((entry) => entry.nickname === nickname && getScheduleKey(entry) === key)
-        const attendance = key === currentScheduleKey ? profile.attendance : (savedEntry?.attendance ?? profile.attendance)
 
         // 시간을 모두 뺀 조합은 저장 대신 삭제를 해야 해서 건너뛴다.
-        if (getSelectedDayList(selection).length === 0 || !attendance) {
+        if (getSelectedDayList(selection).length === 0) {
           skipped.push(formatScheduleKey(key))
           continue
         }
 
-        const info = { attendance, className: profile.className, power: profile.power, leadReady: profile.leadReady }
+        const info = { attendance: '참', className: profile.className, power: profile.power, leadReady: profile.leadReady }
 
         if (!(await persistSchedule(nickname, info, { raidName, difficulty, mode }, selection))) {
           break
@@ -2572,7 +2800,7 @@ function App() {
     }
 
     if (skipped.length > 0) {
-      showToast(`시간이 비어 있거나 참여 여부가 없어 건너뛰었어요: ${skipped.join(' / ')}`, 'info')
+      showToast(`시간을 모두 뺀 조합은 건너뛰었어요. 그 조합을 폼에 불러와 '신청 삭제'로 지울 수 있어요: ${skipped.join(' / ')}`, 'info')
     }
   }
 
@@ -2590,7 +2818,7 @@ function App() {
   const selectedRestoreSchedules = restorableSchedules.filter((entry) => restoreSelectedKeys.includes(getScheduleKey(entry)))
 
   // 고른 지난 신청을 이번 주 신청으로 다시 등록한다. 직업 · 전투력 · 리딩은 지금 '내 캐릭터' 칸 값을 쓴다.
-  // 이번 주 다른 신청과 겹치는 시간은 빼고 등록한다. (앞에서 등록한 것과도 겹치지 않게 차례로 쌓는다)
+  // 이번 주 다른 신청과 겹치는 시간과 이미 지난 시간은 빼고 등록한다. (앞에서 등록한 것과도 겹치지 않게 차례로 쌓는다)
   const restoreSchedules = async () => {
     setRestoreConfirmOpen(false)
 
@@ -2606,6 +2834,7 @@ function App() {
         .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${day}|${time}`)),
     )
     const skipped = []
+    const skippedPast = []
     let restoredCount = 0
 
     setIsSaving(true)
@@ -2614,28 +2843,31 @@ function App() {
       for (const entry of selectedRestoreSchedules) {
         const selection = normalizeDayTimeSelection(entry.dayTimeSelection)
 
-        if (entry.attendance === '참') {
-          weekdayNames.forEach((day) => {
-            selection[day] = selection[day].filter((time) => {
-              const slotKey = `${day}|${time}`
+        weekdayNames.forEach((day) => {
+          selection[day] = selection[day].filter((time) => {
+            const slotKey = `${day}|${time}`
 
-              if (takenKeys.has(slotKey)) {
-                skipped.push(`${day} ${time}`)
-                return false
-              }
+            if (isPastSlot(day, time)) {
+              skippedPast.push(`${day} ${formatTimeLabel(time)}`)
+              return false
+            }
 
-              takenKeys.add(slotKey)
-              return true
-            })
+            if (takenKeys.has(slotKey)) {
+              skipped.push(`${day} ${formatTimeLabel(time)}`)
+              return false
+            }
+
+            takenKeys.add(slotKey)
+            return true
           })
-        }
+        })
 
         if (getSelectedDayList(selection).length === 0) {
           continue
         }
 
         const info = {
-          attendance: entry.attendance,
+          attendance: '참',
           className: profile.className || entry.className,
           power: profile.power || entry.power,
           leadReady: profile.leadReady || entry.leadReady,
@@ -2658,6 +2890,10 @@ function App() {
 
     if (skipped.length > 0) {
       showToast(`이번 주 다른 신청과 겹쳐서 뺀 시간: ${skipped.join(', ')}`, 'info')
+    }
+
+    if (skippedPast.length > 0) {
+      showToast(`이미 지나서 뺀 시간: ${skippedPast.join(', ')}`, 'info')
     }
   }
 
@@ -2733,7 +2969,15 @@ function App() {
     const targetKey = getScheduleKey(entry)
     const nextDays = getSelectedDayList(nextSelection)
     const nextTimes = getCombinedTimes(nextSelection)
-    let savedEntry = { ...entry, days: nextDays, times: nextTimes, dayTimeSelection: nextSelection, updatedAt: new Date().toISOString() }
+    const nowIso = new Date().toISOString()
+    let savedEntry = {
+      ...entry,
+      days: nextDays,
+      times: nextTimes,
+      dayTimeSelection: nextSelection,
+      updatedAt: nowIso,
+      slotSignedAt: stampSlotSignedAt(entry, nextSelection, nowIso, weekStartTime),
+    }
 
     if (supabase) {
       // members 행은 캐릭터의 최근 정보라 그대로 다시 넣고, 스케줄 쪽만 시간을 줄인다.
@@ -2817,6 +3061,89 @@ function App() {
       'success',
       'undo-delete',
       { label: '되돌리기', onClick: undoDelete },
+    )
+  }
+
+  // 같은 계정(본캐 + 부캐)이 이번 주에 신청한 모든 시간. 폼에서 고치는 조합도 뺀 takenSlots와 달리 전부 포함한다.
+  const myAllTakenSlots = useMemo(() => new Set(
+    raidSchedules
+      .filter((entry) => entry.attendance === '참' && myCharacters.includes(entry.nickname))
+      .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${day}|${time}`)),
+  ), [raidSchedules, myCharacters])
+
+  // '나도 참여'를 보여 줄 시간대인지. 지났거나 내 캐릭터가 그 시간에 이미 다른 신청을 했으면 보여 주지 않는다.
+  const canJoinSlot = ({ day, time }) => !isPastSlot(day, time) && !myAllTakenSlots.has(`${day}|${time}`)
+
+  // 현황을 보다가 그 시간대에 바로 신청한다. 지금 폼에서 고른 캐릭터로 저장한다.
+  const joinSlot = async ({ raidName, difficulty, mode, day, time }) => {
+    const nickname = currentNickname
+
+    if (!nickname || isSaving) {
+      return
+    }
+
+    const target = { raidName, difficulty, mode }
+    const scheduleKey = getScheduleKey(target)
+    const savedEntry = raidSchedules.find((entry) => entry.nickname === nickname && getScheduleKey(entry) === scheduleKey)
+    const characterSource = isCharacterInfoComplete ? profile : savedEntry
+
+    if (!characterSource) {
+      showToast('내 캐릭터의 직업 · 전투력 · 리딩 여부를 먼저 골라 주세요.', 'error')
+      setCharacterEditOpen(true)
+      setMobileSection('form')
+      setTimeout(() => {
+        document.querySelector('.form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 0)
+      return
+    }
+
+    const info = {
+      attendance: '참',
+      className: characterSource.className,
+      power: characterSource.power,
+      leadReady: characterSource.leadReady,
+    }
+    const nextSelection = normalizeDayTimeSelection(savedEntry?.dayTimeSelection)
+    nextSelection[day] = [...nextSelection[day], time]
+
+    setIsSaving(true)
+
+    try {
+      if (!(await persistSchedule(nickname, info, target, nextSelection))) {
+        return
+      }
+    } finally {
+      setIsSaving(false)
+    }
+
+    // 이 조합을 폼에서 고치던 중이었으면 거기에도 같은 시간을 넣는다.
+    setDayTimeDrafts((prev) => {
+      if (!prev[scheduleKey]) {
+        return prev
+      }
+
+      const nextDraft = normalizeDayTimeSelection(prev[scheduleKey])
+
+      if (!nextDraft[day].includes(time)) {
+        nextDraft[day] = [...nextDraft[day], time]
+      }
+
+      return { ...prev, [scheduleKey]: nextDraft }
+    })
+
+    const undoJoin = async () => {
+      const joinedEntry = { ...target, ...info, nickname, dayTimeSelection: nextSelection }
+
+      if (await deleteScheduleSlot({ entry: joinedEntry, day, time })) {
+        showToast('신청을 취소했어요.', 'success', 'join-slot')
+      }
+    }
+
+    showToast(
+      `${nickname} · ${formatScheduleKey(scheduleKey)} ${day}요일 ${formatTimeLabel(time)} 신청했어요.`,
+      'success',
+      'join-slot',
+      { label: '취소', onClick: undoJoin },
     )
   }
 
@@ -2953,6 +3280,13 @@ function App() {
       nextRun = { ...current, rallyCalledBy: nickname, rallyCalledAt: new Date().toISOString(), rallyCheckins: [nickname], gatheredAt: null }
     } else if (action === 'cancel') {
       nextRun = { ...current, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null }
+    } else if (action === 'start') {
+      if (!current.rallyCalledAt) {
+        showToast(describeAuthResult('not_called'), 'error')
+        return
+      }
+
+      nextRun = { ...current, gatheredAt: current.gatheredAt ?? new Date().toISOString() }
     } else {
       if (!current.rallyCalledAt) {
         showToast(describeAuthResult('not_called'), 'error')
@@ -2993,7 +3327,7 @@ function App() {
 
   // 호출 · 다시 알림은 디스코드 알림이 가고, 호출 취소는 체크 · 클리어 기록이 지워지므로 한 번 확인한다.
   const handleRallyClick = (run, action, slotVoterNicknames) => {
-    if (action === 'call' || action === 'cancel' || action === 'remind') {
+    if (action === 'call' || action === 'cancel' || action === 'remind' || action === 'start') {
       const runRecord = raidRunByKey.get(getRaidRunKey(run))
       setPendingRunStatus({ run, action, slotVoterNicknames, alreadyNotified: (runRecord?.rallyNotifyCount ?? 0) >= 2 })
       return
@@ -3017,6 +3351,17 @@ function App() {
   const confirmClearAll = async () => {
     setClearAllConfirmOpen(false)
     await clearCurrentSchedule()
+  }
+
+  if (!loggedInNickname && isAutoLoggingIn) {
+    return (
+      <div className="login-screen">
+        <div className="login-card auto-login-card" role="status">
+          <p className="eyebrow centered">그루 레기온의 설원 스케줄</p>
+          <h1>자동 로그인 중…</h1>
+        </div>
+      </div>
+    )
   }
 
   if (!loggedInNickname && passwordSetup) {
@@ -3267,7 +3612,11 @@ function App() {
     const runKey = getRaidRunKey(run)
     const runRecord = raidRunByKey.get(runKey)
     const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
-    const voterNicknames = [...new Set(people.map((person) => person.nickname))]
+    const { partyA, partyB, waiting } = buildBalancedParties(people)
+    const isInParty = (party) => party.some((person) => person.nickname === slot.nickname)
+    const waitingIndex = waiting.findIndex((person) => person.nickname === slot.nickname)
+    // 준비 확인은 정원에 든 사람만 센다. (DB의 _raid_slot_roster와 같은 기준)
+    const voterNicknames = [...new Set(people.slice(0, RAID_FULL_SIZE).map((person) => person.nickname))]
     const rallyCheckins = runRecord?.rallyCheckins ?? []
 
     return {
@@ -3281,6 +3630,9 @@ function App() {
       isGathered: Boolean(runRecord?.gatheredAt),
       checkedCount: voterNicknames.filter((name) => rallyCheckins.includes(name)).length,
       isMeChecked: rallyCheckins.includes(slot.nickname),
+      isWaitlisted: waitingIndex >= 0,
+      partyLabel: waitingIndex >= 0 ? `대기 ${waitingIndex + 1}번` : isInParty(partyA) ? 'A파티' : isInParty(partyB) ? 'B파티' : '',
+      canCallRally: slot.startTime - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS,
     }
   })
   // '내 레이드만 보기'를 켜면 내 캐릭터(본캐 + 부캐)가 투표한 시간대만 남긴다.
@@ -3311,7 +3663,10 @@ function App() {
   }
 
   // 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. (targets: 볼 레이드 조합 목록)
-  // 리딩 가능자가 있는 시간을 먼저, 그다음 인원이 많은 순, 같으면 이른 시간 순이다.
+  // 정원이 차고 리더가 있어 갈 수 있는 시간을 먼저, 그다음 인원이 많은 순(정원 초과는 같은 인원으로 본다),
+  // 같으면 리더가 있는 시간, 그래도 같으면 이른 시간 순이다.
+  const isConfirmedSlot = (slot) => slot.people.length >= RAID_FULL_SIZE && slot.leaderCount > 0
+
   const buildRecommendedSlots = (targets) => targets
     .flatMap(({ raidName, difficulty, mode }) => weekdayNames.flatMap((day) => timeSlots.map((time) => {
       const people = memberByRaidDateTime.get(`${day}-${time}`)?.[`${raidName} ${difficulty} ${mode}`] ?? []
@@ -3319,8 +3674,9 @@ function App() {
     })))
     .filter((slot) => slot.people.length > 0 && !isPastSlot(slot.day, slot.time))
     .sort((a, b) => (
-      (b.leaderCount > 0) - (a.leaderCount > 0)
-      || b.people.length - a.people.length
+      isConfirmedSlot(b) - isConfirmedSlot(a)
+      || Math.min(b.people.length, RAID_FULL_SIZE) - Math.min(a.people.length, RAID_FULL_SIZE)
+      || (b.leaderCount > 0) - (a.leaderCount > 0)
       || getSlotStartDate(weekDates, a.day, a.time) - getSlotStartDate(weekDates, b.day, b.time)
     ))
     .slice(0, 3)
@@ -3364,10 +3720,33 @@ function App() {
   }
 
   // 내가 준비 완료를 눌러야 하는 시간대가 있으면 그것을 먼저, 없으면 가장 가까운 시간대를 보여 준다.
-  const isWaitingForMe = (slot) => slot.isRallyCalled && !slot.isGathered && !slot.isMeChecked
+  const isWaitingForMe = (slot) => slot.isRallyCalled && !slot.isGathered && !slot.isMeChecked && !slot.isWaitlisted
   const nextRaidSlot = myUpcomingSlotDetails.find(isWaitingForMe) ?? myUpcomingSlotDetails[0] ?? null
   const nextRaidNeedsMe = Boolean(nextRaidSlot && isWaitingForMe(nextRaidSlot))
   const laterRaidSlots = myUpcomingSlotDetails.filter((slot) => slot !== nextRaidSlot)
+
+  // 비어 있는 목록의 문구. 아직 못 불러온 상태를 '신청 없음'으로 보여 주지 않는다.
+  const getEmptyText = (text) => {
+    if (dataLoadState === 'loading') {
+      return '불러오는 중…'
+    }
+
+    return dataLoadState === 'error' ? '불러오지 못했어요' : text
+  }
+
+  const renderJoinButton = (slot, peopleCount, extraClass = '') => (
+    canJoinSlot(slot) ? (
+      <button
+        type="button"
+        className={`join-slot-button ${extraClass}`}
+        disabled={isSaving}
+        title={`${currentNickname}(으)로 ${slot.day}요일 ${formatTimeLabel(slot.time)}에 신청해요.`}
+        onClick={() => joinSlot(slot)}
+      >
+        {peopleCount >= RAID_FULL_SIZE ? '+ 대기 신청' : '+ 나도 참여'}
+      </button>
+    ) : null
+  )
 
   return (
     <div className="app-shell" data-mobile-section={mobileSection}>
@@ -3612,10 +3991,7 @@ function App() {
                     <label className={`restore-item${isSelected ? ' selected' : ''}`}>
                       <input type="checkbox" checked={isSelected} onChange={() => toggleRestoreKey(key)} />
                       <span className="restore-item-text">
-                        <strong>
-                          {formatScheduleKey(key)}
-                          {entry.attendance !== '참' && ' (불참)'}
-                        </strong>
+                        <strong>{formatScheduleKey(key)}</strong>
                         <span>{formatDayTimeSelection(entry.dayTimeSelection)}</span>
                         {!Number.isNaN(savedDate.getTime()) && (
                           <small>{savedDate.getMonth() + 1}/{savedDate.getDate()} 저장</small>
@@ -3706,17 +4082,20 @@ function App() {
               {pendingRunStatus.action === 'call' ? '준비 확인을 시작할까요?'
                 : pendingRunStatus.action === 'cancel' ? '준비 확인을 취소할까요?'
                 : pendingRunStatus.action === 'remind' ? '준비 확인을 다시 알릴까요?'
+                : pendingRunStatus.action === 'start' ? '이 인원으로 시작할까요?'
                 : '클리어로 표시할까요?'}
             </h3>
             <p>
               <span className="save-confirm-nickname">
                 {pendingRunStatus.run.raidName} · {pendingRunStatus.run.difficulty} · {pendingRunStatus.run.mode}
               </span>
-              {` ${pendingRunStatus.run.day}요일 ${pendingRunStatus.run.time} 레이드`}
-              {pendingRunStatus.action === 'call' && '의 준비 확인을 시작합니다. 이 시간대에 투표한 사람이 모두 준비 완료를 누르면 전원 준비가 돼요.'}
+              {` ${pendingRunStatus.run.day}요일 ${formatTimeLabel(pendingRunStatus.run.time)} 레이드`}
+              {pendingRunStatus.action === 'call' && '의 준비 확인을 시작합니다. 정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 돼요.'}
+              {pendingRunStatus.action === 'start' && '를 지금 준비한 인원으로 시작합니다. 아직 준비하지 않은 사람을 기다리지 않고 전원 준비로 넘어가요.'}
               {pendingRunStatus.action === 'cancel' && '의 준비 확인을 취소합니다. 지금까지의 준비 완료와 클리어 표시도 함께 지워져요.'}
               {pendingRunStatus.action === 'remind' && '의 준비 확인을 디스코드로 한 번 더 알립니다. 지금 신청한 인원과 아직 준비 안 한 인원이 함께 가요. (시간대마다 두 번까지)'}
               {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
+              {supabase && pendingRunStatus.action === 'start' && ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.'}
               {supabase && (pendingRunStatus.action === 'call' || pendingRunStatus.action === 'cleared') && (pendingRunStatus.alreadyNotified
                 ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
                 : ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.')}
@@ -3728,7 +4107,8 @@ function App() {
               <button type="button" className="primary-button" onClick={confirmPendingRunStatus}>
                 {pendingRunStatus.action === 'call' ? '호출'
                   : pendingRunStatus.action === 'cancel' ? '호출 취소'
-                  : pendingRunStatus.action === 'remind' ? '다시 알림' : '표시'}
+                  : pendingRunStatus.action === 'remind' ? '다시 알림'
+                  : pendingRunStatus.action === 'start' ? '시작' : '표시'}
               </button>
             </div>
           </div>
@@ -3755,6 +4135,15 @@ function App() {
         </div>
       )}
 
+      {dataLoadState === 'error' && (
+        <div className="data-load-banner" role="alert">
+          <span>최신 현황을 불러오지 못했어요. 지금 보이는 내용이 오래됐을 수 있어요.</span>
+          <button type="button" className="secondary-button small-toggle" onClick={loadRemoteData}>
+            다시 불러오기
+          </button>
+        </div>
+      )}
+
       <section className="summary-grid">
         <article className="summary-card accent" data-section="form">
           <span className="label">다음 리셋</span>
@@ -3766,23 +4155,28 @@ function App() {
           {nextRaidSlot ? (
             <>
               <strong>
-                {nextRaidSlot.day}요일 {nextRaidSlot.time} · {nextRaidSlot.raidName} {nextRaidSlot.difficulty} {nextRaidSlot.mode}
+                {nextRaidSlot.day}요일 {formatTimeLabel(nextRaidSlot.time)} · {nextRaidSlot.raidName} {nextRaidSlot.difficulty} {nextRaidSlot.mode}
               </strong>
               <small>
                 {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())}
                 {` · ${nextRaidSlot.people.length}/${RAID_FULL_SIZE}명 · 리딩 ${nextRaidSlot.leaderCount}명`}
+                {nextRaidSlot.partyLabel && ` · ${nextRaidSlot.partyLabel}`}
                 {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
               </small>
               <div className="next-raid-actions">
                 {!nextRaidSlot.isRallyCalled ? (
-                  <button
-                    type="button"
-                    className="day-raid-rally-button"
-                    disabled={savingRunKey === nextRaidSlot.runKey}
-                    onClick={() => handleRallyClick(nextRaidSlot.run, 'call', nextRaidSlot.voterNicknames)}
-                  >
-                    📣 준비 확인 시작
-                  </button>
+                  nextRaidSlot.canCallRally ? (
+                    <button
+                      type="button"
+                      className="day-raid-rally-button"
+                      disabled={savingRunKey === nextRaidSlot.runKey}
+                      onClick={() => handleRallyClick(nextRaidSlot.run, 'call', nextRaidSlot.voterNicknames)}
+                    >
+                      📣 준비 확인 시작
+                    </button>
+                  ) : (
+                    <span className="next-raid-hint">시작 1시간 전부터 준비 확인을 할 수 있어요</span>
+                  )
                 ) : nextRaidSlot.isGathered ? (
                   <span className="next-raid-status is-yes">
                     전원 준비 {nextRaidSlot.checkedCount}/{nextRaidSlot.voterNicknames.length}
@@ -3792,15 +4186,17 @@ function App() {
                     <span className="next-raid-status is-pending">
                       준비 {nextRaidSlot.checkedCount}/{nextRaidSlot.voterNicknames.length}
                     </span>
-                    <button
-                      type="button"
-                      className={`day-raid-rally-button ${nextRaidSlot.isMeChecked ? 'active' : 'is-primary'}`}
-                      aria-pressed={nextRaidSlot.isMeChecked}
-                      disabled={savingRunKey === nextRaidSlot.runKey}
-                      onClick={() => handleRallyClick(nextRaidSlot.run, nextRaidSlot.isMeChecked ? 'uncheck' : 'check', nextRaidSlot.voterNicknames)}
-                    >
-                      {nextRaidSlot.isMeChecked ? '준비 취소' : '✓ 준비 완료'}
-                    </button>
+                    {!nextRaidSlot.isWaitlisted && (
+                      <button
+                        type="button"
+                        className={`day-raid-rally-button ${nextRaidSlot.isMeChecked ? 'active' : 'is-primary'}`}
+                        aria-pressed={nextRaidSlot.isMeChecked}
+                        disabled={savingRunKey === nextRaidSlot.runKey}
+                        onClick={() => handleRallyClick(nextRaidSlot.run, nextRaidSlot.isMeChecked ? 'uncheck' : 'check', nextRaidSlot.voterNicknames)}
+                      >
+                        {nextRaidSlot.isMeChecked ? '준비 취소' : '✓ 준비 완료'}
+                      </button>
+                    )}
                   </>
                 )}
                 <button type="button" className="next-raid-link" onClick={() => openSlotInDaySummary(nextRaidSlot)}>
@@ -3809,19 +4205,21 @@ function App() {
               </div>
               {laterRaidSlots.length > 0 && (
                 <small className="next-raid-later">
-                  이후: {laterRaidSlots.slice(0, 2).map((slot) => `${slot.day} ${slot.time} ${slot.raidName} ${slot.difficulty}`).join(' / ')}
+                  이후: {laterRaidSlots.slice(0, 2).map((slot) => `${slot.day} ${formatTimeLabel(slot.time)} ${slot.raidName} ${slot.difficulty}`).join(' / ')}
                   {laterRaidSlots.length > 2 && ` 외 ${laterRaidSlots.length - 2}건`}
                 </small>
               )}
             </>
           ) : (
             <>
-              <strong>이번 주 남은 신청 없음</strong>
-              <small>
-                {restorableSchedules.length > 0
-                  ? '내 시간 등록에서 지난 신청을 불러와 다시 등록할 수 있어요.'
-                  : '내 시간 등록에서 가능한 시간을 골라 주세요.'}
-              </small>
+              <strong>{getEmptyText('이번 주 남은 신청 없음')}</strong>
+              {dataLoadState === 'ready' && (
+                <small>
+                  {restorableSchedules.length > 0
+                    ? '내 시간 등록에서 지난 신청을 불러와 다시 등록할 수 있어요.'
+                    : '내 시간 등록에서 가능한 시간을 골라 주세요.'}
+                </small>
+              )}
             </>
           )}
         </article>
@@ -3845,10 +4243,12 @@ function App() {
           {helpOpen && (
             <div className="help-panel">
               <p>1. '내 캐릭터'에서 직업 · 전투력 · 리딩 여부를 정해요. 캐릭터마다 한 번 정해 두면 계속 쓰여요.</p>
-              <p>2. 신청할 레이드 · 난이도 · 공략 방식과 참여 여부를 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
-              <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요.</p>
+              <p>2. 신청할 레이드 · 난이도 · 공략 방식을 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
+              <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요. 24:00은 그 요일 밤 12시예요.</p>
               <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
-              <p>5. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
+              <p>5. 못 가는 시간은 시간표에서 빼고 저장해요. 시간을 모두 빼면 저장 버튼이 '신청 삭제'로 바뀌어요.</p>
+              <p>6. 현황을 보다가 '나도 참여'를 누르면 그 시간대에 바로 신청돼요. 시간대마다 먼저 신청한 10명이 정원이고, 시간을 다시 저장해도 순서는 그대로예요.</p>
+              <p>7. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
             </div>
           )}
 
@@ -3872,6 +4272,19 @@ function App() {
           <div className="form-section">
             <h3 className="form-section-title">내 캐릭터</h3>
 
+            {isCharacterInfoComplete && !characterEditOpen ? (
+              <div className="character-summary">
+                <img src={getClassIconPath(profile.className)} alt="" className="character-summary-icon" />
+                <span className="character-summary-text">
+                  <strong>{currentNickname}</strong>
+                  <span>{profile.className} · {profile.power} · {profile.leadReady === 'O' ? '리딩 가능' : '리딩 불가'}</span>
+                </span>
+                <button type="button" className="secondary-button small-toggle" onClick={() => setCharacterEditOpen(true)}>
+                  {myAltNicknames.length > 0 ? '캐릭터 · 정보 변경' : '정보 수정'}
+                </button>
+              </div>
+            ) : (
+              <>
             <div className="field-group">
               <div className="field-label-row">
                 <label htmlFor="nickname">{myAltNicknames.length > 0 ? '캐릭터' : '닉네임'}</label>
@@ -3911,7 +4324,7 @@ function App() {
                 <select
                   id="className"
                   value={profile.className}
-                  onChange={(event) => setProfile((prev) => ({ ...prev, className: event.target.value }))}
+                  onChange={(event) => updateCharacterField('className', event.target.value)}
                 >
                   <option value="" disabled>선택</option>
                   {classOptions.map((className) => (
@@ -3927,7 +4340,7 @@ function App() {
                 <select
                   id="power"
                   value={profile.power}
-                  onChange={(event) => setProfile((prev) => ({ ...prev, power: event.target.value }))}
+                  onChange={(event) => updateCharacterField('power', event.target.value)}
                 >
                   <option value="" disabled>선택</option>
                   {powerOptions.map((power) => (
@@ -3948,7 +4361,7 @@ function App() {
                     type="button"
                     className={profile.leadReady === value ? 'chip active' : 'chip'}
                     aria-pressed={profile.leadReady === value}
-                    onClick={() => setProfile((prev) => ({ ...prev, leadReady: value }))}
+                    onClick={() => updateCharacterField('leadReady', value)}
                   >
                     <span className="chip-lead-mark"><LeadMark value={value} /></span>
                     {label}
@@ -3956,6 +4369,14 @@ function App() {
                 ))}
               </div>
             </div>
+
+            {isCharacterInfoComplete && (
+              <button type="button" className="text-link-button character-collapse-button" onClick={() => setCharacterEditOpen(false)}>
+                한 줄로 접기
+              </button>
+            )}
+              </>
+            )}
 
             {/* 신청마다 직업 · 전투력 · 리딩이 따로 저장되므로, 바꾼 값이 아직 안 들어간 신청이 있으면 한 번에 반영할 수 있게 한다. */}
             {outdatedCharacterSchedules.length > 0 && (
@@ -4055,40 +4476,24 @@ function App() {
               </div>
             </div>
 
-            <div className="field-group">
-              <label>참여 여부</label>
-              <div className="chip-grid segmented" role="group" aria-label="참여 여부">
-                {[['참', '참여'], ['불참', '불참']].map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={profile.attendance === value ? 'chip active' : 'chip'}
-                    aria-pressed={profile.attendance === value}
-                    onClick={() => setProfile((prev) => ({ ...prev, attendance: value }))}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
 
           <div className="form-section" id="schedule-day-field">
             <div className="field-label-row">
               <h3 className="form-section-title">요일 · 시간</h3>
-              {/* 주말 낮시간(12~16시)은 켰을 때만 시간표에 줄이 생긴다. */}
+              {/* 주말 · 공휴일 낮시간(12~16시)은 켰을 때만 시간표에 줄이 생긴다. */}
               <button
                 type="button"
                 className="secondary-button small-toggle"
                 onClick={() => setShowDaytimeSlots((prev) => !prev)}
                 aria-pressed={showDaytimeSlots}
               >
-                {showDaytimeSlots ? '낮시간 숨기기' : '주말 낮시간 보기'}
+                {showDaytimeSlots ? '낮시간 숨기기' : '주말 · 공휴일 낮시간 보기'}
               </button>
             </div>
             <p className="field-hint">
               {isScheduleTargetSelected
-                ? '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요.'
+                ? '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요. 24:00은 그 요일 밤 12시예요.'
                 : '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'}
             </p>
             <div className="time-pick-wrap">
@@ -4103,11 +4508,11 @@ function App() {
               )}
               <div className={`time-pick-grid ${isScheduleTargetSelected ? '' : 'is-disabled'}`} aria-label="요일 · 시간 선택">
                 <span className="time-pick-corner" aria-hidden="true" />
-                {weekdayNames.map((day) => (
+                {weekdayNames.map((day, dayIndex) => (
                   <button
                     key={day}
                     type="button"
-                    className={`time-pick-head${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
+                    className={`time-pick-head${day === '토' ? ' is-sat' : ''}${day === '일' || holidaySet.has(formatIsoDate(weekDates[dayIndex])) ? ' is-sun' : ''}`}
                     onClick={() => toggleTimeLine(formTimeRows.map((time) => [day, time]))}
                     title={`${day}요일 전체 고르기 / 지우기`}
                   >
@@ -4120,9 +4525,9 @@ function App() {
                       type="button"
                       className="time-pick-head is-row"
                       onClick={() => toggleTimeLine(weekdayNames.map((day) => [day, time]))}
-                      title={`매일 ${time} 고르기 / 지우기`}
+                      title={`매일 ${formatTimeLabel(time)} 고르기 / 지우기`}
                     >
-                      {time}
+                      {formatTimeLabel(time)}
                     </button>
                     {weekdayNames.map((day) => {
                       if (!getSelectableTimesForSelectedDay(day).includes(time)) {
@@ -4132,17 +4537,18 @@ function App() {
                       const isSelected = (currentDayTimeSelection[day] ?? []).includes(time)
                       // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
                       const takenBy = takenSlots.get(`${day}|${time}`)
-                      const isDisabled = Boolean(takenBy) && !isSelected
+                      // 막힌 칸도 눌리게 두어(disabled 대신 aria-disabled), 누르면 이유를 알림으로 띄운다.
+                      const blockReason = getSlotBlockReason(day, time, isSelected)
 
                       return (
                         <button
                           key={`${day}-${time}`}
                           type="button"
-                          className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}`}
+                          className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}${blockReason ? ' is-blocked' : ''}`}
                           aria-pressed={isSelected}
-                          aria-label={`${day}요일 ${time}`}
-                          disabled={isDisabled}
-                          title={takenBy ? `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}` : `${day}요일 ${time}`}
+                          aria-label={`${day}요일 ${formatTimeLabel(time)}`}
+                          aria-disabled={Boolean(blockReason)}
+                          title={blockReason || `${day}요일 ${formatTimeLabel(time)}`}
                           onPointerDown={(event) => startTimeDrag(event, day, time, isSelected)}
                           onPointerEnter={(event) => continueTimeDrag(event, day, time)}
                           onClick={(event) => handleTimeCellClick(event, day, time, isSelected)}
@@ -4174,23 +4580,33 @@ function App() {
                   <strong>저장하지 않은 변경이 있어요</strong>
                   <span>{unsavedScheduleKeys.map(formatScheduleKey).join(' / ')}</span>
                 </div>
-                {/* 저장 버튼은 지금 폼의 조합만 저장하므로, 다른 조합도 고쳐 뒀으면 한꺼번에 저장할 수 있게 한다. */}
-                {unsavedScheduleKeys.some((key) => key !== currentScheduleKey) && (
+                <div className="unsaved-notice-actions">
                   <button
                     type="button"
                     className="secondary-button small-toggle"
-                    onClick={handleSaveAllClick}
+                    onClick={discardUnsavedChanges}
                     disabled={isSaving}
                   >
-                    모두 저장
+                    변경 취소
                   </button>
-                )}
+                  {/* 저장 버튼은 지금 폼의 조합만 저장하므로, 다른 조합도 고쳐 뒀으면 한꺼번에 저장할 수 있게 한다. */}
+                  {unsavedScheduleKeys.some((key) => key !== currentScheduleKey) && (
+                    <button
+                      type="button"
+                      className="secondary-button small-toggle"
+                      onClick={handleSaveAllClick}
+                      disabled={isSaving}
+                    >
+                      모두 저장
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
             <div className="member-actions">
               <button type="button" className="primary-button" onClick={handleSaveClick} disabled={isSaving}>
-                {isSaving ? '저장 중…' : '캘린더에 저장'}
+                {isSaving ? '저장 중…' : isClearingSavedSchedule ? '이 신청 삭제' : '캘린더에 저장'}
               </button>
             </div>
           </div>
@@ -4265,9 +4681,9 @@ function App() {
                                         type="button"
                                         className="saved-slot-chip"
                                         onClick={() => deleteWithUndo({ entry, day, time })}
-                                        aria-label={`${day}요일 ${time} 삭제`}
+                                        aria-label={`${day}요일 ${formatTimeLabel(time)} 삭제`}
                                       >
-                                        <span className="saved-slot-chip-time">{time}</span>
+                                        <span className="saved-slot-chip-time">{formatTimeLabel(time)}</span>
                                         <span className="saved-slot-chip-x" aria-hidden="true">×</span>
                                       </button>
                                     ))}
@@ -4322,33 +4738,44 @@ function App() {
             <span className="recommend-label">추천 레이드 시간 TOP 3</span>
             {recommendedSlots.length > 0 ? (
               <div className="recommend-list">
-                {recommendedSlots.map((slot, index) => (
-                  <button
-                    key={`${slot.raidName}-${slot.difficulty}-${slot.mode}-${slot.day}-${slot.time}`}
-                    type="button"
-                    className={`recommend-card ${slot.leaderCount === 0 ? 'no-leader' : ''}`}
-                    onClick={() => focusCalendarSlot(slot)}
-                    title="주간 캘린더에서 이 시간 보기"
-                  >
-                    <span className="recommend-rank">{index + 1}</span>
-                    <span className="recommend-raid">{slot.raidName} {slot.difficulty} {slot.mode}</span>
-                    <strong className="recommend-time">{slot.day}요일 {slot.time}</strong>
-                    <span className="recommend-meta">
-                      {slot.people.length}/{RAID_FULL_SIZE}명 · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
-                    </span>
-                  </button>
-                ))}
+                {recommendedSlots.map((slot, index) => {
+                  const isConfirmed = isConfirmedSlot(slot)
+                  const remaining = RAID_FULL_SIZE - slot.people.length
+                  const overflow = slot.people.length - RAID_FULL_SIZE
+
+                  return (
+                    <div key={`${slot.raidName}-${slot.difficulty}-${slot.mode}-${slot.day}-${slot.time}`} className="recommend-item">
+                      <button
+                        type="button"
+                        className={`recommend-card ${slot.leaderCount === 0 ? 'no-leader' : ''}`}
+                        onClick={() => focusCalendarSlot(slot)}
+                        title="주간 캘린더에서 이 시간 보기"
+                      >
+                        <span className="recommend-rank">{index + 1}</span>
+                        <span className="recommend-raid">{slot.raidName} {slot.difficulty} {slot.mode}</span>
+                        <strong className="recommend-time">{slot.day}요일 {formatTimeLabel(slot.time)}</strong>
+                        <span className={`recommend-status ${isConfirmed ? 'is-confirmed' : ''}`}>
+                          {isConfirmed ? '성사' : remaining > 0 ? `모집 중 · ${remaining}명 더` : '리더 필요'}
+                        </span>
+                        <span className="recommend-meta">
+                          {Math.min(slot.people.length, RAID_FULL_SIZE)}/{RAID_FULL_SIZE}명{overflow > 0 ? ` · 대기 ${overflow}` : ''} · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
+                        </span>
+                      </button>
+                      {renderJoinButton(slot, slot.people.length, 'is-block')}
+                    </div>
+                  )
+                })}
               </div>
             ) : (
-              <span className="recommend-empty">이번 주에 아직 남은 신청이 없어요</span>
+              <span className="recommend-empty">{getEmptyText('이번 주에 아직 남은 신청이 없어요')}</span>
             )}
           </div>
 
           {calendarHelpOpen && (
             <div className="help-panel compact" data-section="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
-              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. A/B 파티는 리딩 가능자를 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요. 10명을 넘는 인원은 대기로 표시돼요.</p>
-              <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 리딩 가능자가 있고 인원이 많은 순서예요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
+              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명이 정원이고, 넘는 인원은 신청 순서대로 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
+              <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '성사' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
               <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
               <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
             </div>
@@ -4457,6 +4884,10 @@ function App() {
                                 const isExpanded = Boolean(expandedSummaryRows[rowKey])
                                 const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
                                 const hiddenCount = timeVoters.length - previewVoters.length
+                                // 신청 순서로 정렬된 이 시간대 인원. 앞의 10명이 정원이고 나머지는 대기다.
+                                const slotPeople = memberByRaidDateTime.get(`${day}-${time}`)?.[`${raidName} ${difficulty} ${mode}`] ?? []
+                                const rosterNicknames = [...new Set(slotPeople.slice(0, RAID_FULL_SIZE).map((member) => member.nickname))]
+                                const overflowCount = Math.max(0, slotPeople.length - RAID_FULL_SIZE)
                                 const run = { weekStart: weekStartKey, day, time, raidName, difficulty, mode }
                                 const runKey = getRaidRunKey(run)
                                 const runRecord = raidRunByKey.get(runKey)
@@ -4465,12 +4896,13 @@ function App() {
                                 // 부캐로 투표했으면 그 부캐로 표시한다. (같은 시간 중복 신청이 막혀 있어 내 캐릭터는 많아야 하나)
                                 const mySlotNickname = timeVoters.find((member) => myCharacters.includes(member.nickname))?.nickname ?? ''
                                 const isSlotVoter = Boolean(mySlotNickname)
+                                const isMeWaitlisted = isSlotVoter && !rosterNicknames.includes(mySlotNickname)
                                 const canEditRun = Boolean(loggedInNickname) && isSlotVoter && !isSavingRun
                                 const editDisabledReason = !loggedInNickname
                                   ? '로그인한 뒤에 표시할 수 있어요.'
                                   : !isSlotVoter ? describeAuthResult('not_participant') : ''
-                                // 준비: 이 시간대에 투표한 닉네임 중 몇 명이 체크했는지
-                                const slotVoterNicknames = [...new Set(timeVoters.map((member) => member.nickname))]
+                                // 준비: 이 시간대 정원에 든 닉네임 중 몇 명이 체크했는지
+                                const slotVoterNicknames = rosterNicknames
                                 const isRallyCalled = Boolean(runRecord?.rallyCalledAt)
                                 const isGathered = Boolean(runRecord?.gatheredAt)
                                 const rallyCheckins = runRecord?.rallyCheckins ?? []
@@ -4478,10 +4910,16 @@ function App() {
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
                                 const isMeChecked = rallyCheckins.includes(mySlotNickname)
                                 const isFullSlot = timeVoters.length >= RAID_FULL_SIZE
+                                // 시작 1시간 전부터 준비 확인을 시작할 수 있다. (지난 시간은 기록용으로 그대로 둔다)
+                                const canCallRally = getSlotStartDate(weekDates, day, time).getTime() - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS
                                 const hasLeader = timeVoters.some((member) => member.leadReady === 'O')
                                 // 어제까지의 요일인데 준비 호출이 없으면 점선으로 흐리게 보여 준다. (DB에는 저장하지 않음)
                                 const isPastDay = weekDates[dayIndex].getTime() < todayStartTime
                                 const renderRally = () => {
+                                  if (!isRallyCalled && !canCallRally) {
+                                    return <span className="day-raid-rally-hint">시작 1시간 전부터 준비 확인</span>
+                                  }
+
                                   if (!isRallyCalled) {
                                     return (
                                       <span
@@ -4510,7 +4948,7 @@ function App() {
                                       <span className="day-raid-run-label">
                                         {isGathered ? '전원 준비' : '준비'} {checkedCount}/{slotVoterNicknames.length}
                                       </span>
-                                      {!isGathered && isSlotVoter && (
+                                      {!isGathered && isSlotVoter && !isMeWaitlisted && (
                                         <button
                                           type="button"
                                           className={`day-raid-rally-button ${isMeChecked ? 'active' : ''}`}
@@ -4519,6 +4957,18 @@ function App() {
                                           onClick={() => handleRallyClick(run, isMeChecked ? 'uncheck' : 'check', slotVoterNicknames)}
                                         >
                                           {isMeChecked ? '준비 취소' : '✓ 준비 완료'}
+                                        </button>
+                                      )}
+                                      {/* 안 오는 사람이 있어도 클리어 표시까지 막히지 않게 한다. */}
+                                      {!isGathered && isSlotVoter && !isMeWaitlisted && checkedCount > 0 && waitingNicknames.length > 0 && (
+                                        <button
+                                          type="button"
+                                          className="day-raid-rally-button"
+                                          title="아직 준비하지 않은 사람을 기다리지 않고 전원 준비로 넘어가요."
+                                          disabled={!canEditRun}
+                                          onClick={() => handleRallyClick(run, 'start', slotVoterNicknames)}
+                                        >
+                                          ▶ 이 인원으로 시작
                                         </button>
                                       )}
                                       {/* 인원이 늘었을 때 디스코드로 한 번 더 알린다. (시간대마다 준비 확인 알림 최대 2번) */}
@@ -4536,7 +4986,7 @@ function App() {
                                       <button
                                         type="button"
                                         className="day-raid-run-button"
-                                        aria-label={`${time} 준비 확인 취소`}
+                                        aria-label={`${formatTimeLabel(time)} 준비 확인 취소`}
                                         title={editDisabledReason || '준비 확인 취소'}
                                         disabled={!canEditRun}
                                         onClick={() => handleRallyClick(run, 'cancel', slotVoterNicknames)}
@@ -4564,7 +5014,7 @@ function App() {
                                           type="button"
                                           className={`day-raid-run-button ${value === option ? 'active' : ''}`}
                                           aria-pressed={value === option}
-                                          aria-label={`${time} ${fieldLabel} ${option}`}
+                                          aria-label={`${formatTimeLabel(time)} ${fieldLabel} ${option}`}
                                           disabled={!canEditRun || isLocked}
                                           onClick={() => handleRunStatusClick(run, field, option)}
                                         >
@@ -4581,12 +5031,14 @@ function App() {
                                       type="button"
                                       className="day-raid-time-toggle"
                                       aria-expanded={isExpanded}
-                                      title={isExpanded ? '접기' : `${time} 인원 펼치기`}
+                                      title={isExpanded ? '접기' : `${formatTimeLabel(time)} 인원 펼치기`}
                                       onClick={() => setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))}
                                     >
                                       <span className={`day-raid-time-tag ${isFullSlot ? 'is-full' : ''}`}>
-                                        {time}
-                                        <span className="day-raid-time-count">{timeVoters.length}/{RAID_FULL_SIZE}</span>
+                                        {formatTimeLabel(time)}
+                                        <span className="day-raid-time-count">
+                                          {Math.min(timeVoters.length, RAID_FULL_SIZE)}/{RAID_FULL_SIZE}{overflowCount > 0 ? ` +${overflowCount}` : ''}
+                                        </span>
                                       </span>
                                       {!hasLeader && <span className="slot-warn">리더 없음</span>}
                                       {!isExpanded && (
@@ -4606,16 +5058,17 @@ function App() {
                                     </button>
                                     {/* 버튼은 내가 신청한 시간대에만 보인다. 남의 시간대는 이미 진행된 준비 · 클리어 기록만 보여 준다.
                                         클리어는 전원 준비가 끝나야 고를 수 있어서 그 전에는 숨긴다. */}
-                                    {(isSlotVoter || isRallyCalled || runRecord?.cleared) && (
+                                    {(isSlotVoter || isRallyCalled || runRecord?.cleared || canJoinSlot(run)) && (
                                       <div className="day-raid-run-row">
                                         {(isSlotVoter || isRallyCalled) && renderRally()}
                                         {(isGathered || runRecord?.cleared) && renderRunStatus('cleared', '클리어')}
+                                        {renderJoinButton(run, slotPeople.length)}
                                       </div>
                                     )}
                                     {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
                                     {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
                                       <div className="day-raid-rally-waiting">
-                                        <span className="day-raid-rally-waiting-label">대기 {waitingNicknames.length}명</span>
+                                        <span className="day-raid-rally-waiting-label">아직 {waitingNicknames.length}명</span>
                                         {waitingNicknames.map((name) => (
                                           <span
                                             key={`${rowKey}-waiting-${name}`}
@@ -4628,11 +5081,15 @@ function App() {
                                     )}
                                     {isExpanded && (
                                       <div className="day-raid-members">
-                                        {timeVoters.map((member) => renderMember(
+                                        {timeVoters.filter((member) => rosterNicknames.includes(member.nickname)).map((member) => renderMember(
                                           member,
                                           rowKey,
                                           isRallyCalled ? (rallyCheckins.includes(member.nickname) ? 'checked' : 'waiting') : undefined,
                                         ))}
+                                        {overflowCount > 0 && (
+                                          <span className="day-raid-overflow-label">대기 (신청 순)</span>
+                                        )}
+                                        {slotPeople.slice(RAID_FULL_SIZE).map((member) => renderMember(member, `${rowKey}-overflow`))}
                                       </div>
                                     )}
                                   </div>
@@ -4654,7 +5111,7 @@ function App() {
                       })}
                     </div>
                   ) : (
-                    <div className="empty-role">{showOnlyMine ? '내 신청 없음' : '신청 인원 없음'}</div>
+                    <div className="empty-role">{getEmptyText(showOnlyMine ? '내 신청 없음' : '신청 인원 없음')}</div>
                   )}
                 </div>
                 )
@@ -4714,11 +5171,11 @@ function App() {
                   type="button"
                   role="tab"
                   aria-selected={mobileCalendarDayIndex === dayIndex}
-                  className={`mobile-day-tab${mobileCalendarDayIndex === dayIndex ? ' active' : ''}${date.getTime() < todayStartTime ? ' is-past' : ''}`}
+                  className={`mobile-day-tab${mobileCalendarDayIndex === dayIndex ? ' active' : ''}${date.getTime() < todayStartTime ? ' is-past' : ''}${date.getTime() === todayStartTime ? ' is-today' : ''}${holidaySet.has(formatIsoDate(date)) ? ' is-holiday' : ''}`}
                   onClick={() => setMobileCalendarDayIndex(dayIndex)}
                 >
                   <span>{day}</span>
-                  <small>{date.getDate()}</small>
+                  <small>{date.getTime() === todayStartTime ? '오늘' : date.getDate()}</small>
                   {hasPeople && <span className="mobile-day-tab-dot" aria-hidden="true" />}
                 </button>
               )
@@ -4729,11 +5186,18 @@ function App() {
             <div className="calendar-corner">시간</div>
             {weekDates.map((date, dayIndex) => {
               const label = date.toLocaleDateString('ko-KR', { weekday: 'short' })
+              const isToday = date.getTime() === todayStartTime
+              const isHoliday = holidaySet.has(formatIsoDate(date))
 
               return (
-                <div key={date.toISOString()} className="day-header" data-day-index={dayIndex}>
-                  <span className="day-name">{label}</span>
+                <div
+                  key={date.toISOString()}
+                  className={`day-header${isToday ? ' is-today' : ''}${isHoliday ? ' is-holiday' : ''}`}
+                  data-day-index={dayIndex}
+                >
+                  <span className="day-name">{label}{isToday && <span className="day-raid-today-chip">오늘</span>}</span>
                   <strong>{date.getDate()}일</strong>
+                  {isHoliday && <small className="day-holiday-label">공휴일</small>}
                 </div>
               )
             })}
@@ -4751,7 +5215,7 @@ function App() {
 
               return (
                 <Fragment key={time}>
-                  <div className={`time-label${offDayClasses}`}>{time}</div>
+                  <div className={`time-label${offDayClasses}`}>{formatTimeLabel(time)}</div>
                   {weekDates.map((date, dayIndex) => {
                     const currentDaySlots = getDayTimeSlots(date)
                     const isVisibleTime = currentDaySlots.includes(time)
@@ -4801,6 +5265,10 @@ function App() {
                             {people.length}/{RAID_FULL_SIZE}
                           </span>
                           {!hasLeader && <span className="slot-warn">리더 없음</span>}
+                          {renderJoinButton(
+                            { raidName: activeTabMeta.raid, difficulty: activeTabMeta.difficulty, mode: activeModeTab, day: dayLabel, time },
+                            people.length,
+                          )}
                         </div>
 
                         <div className="raid-group-list">
@@ -4871,7 +5339,7 @@ function App() {
                   </div>
                 ))
               ) : (
-                <span className="empty-role">선택 인원 없음</span>
+                <span className="empty-role">{getEmptyText('선택 인원 없음')}</span>
               )}
             </div>
           </div>

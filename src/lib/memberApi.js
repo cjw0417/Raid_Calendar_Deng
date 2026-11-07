@@ -276,7 +276,7 @@ export function setRaidRunStatus(nickname, password, run, field, value) {
   })
 }
 
-// 시간대별 준비 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel'
+// 시간대별 준비 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel' | 'remind' | 'start'
 // 호출하거나 모두 체크하면 DB가 디스코드 웹후크로 알림을 보낸다. 반환값: { run, notified } 또는 { error, run? }
 export function setRaidRally(nickname, password, run, action) {
   return callRpc('member_raid_rally', {
