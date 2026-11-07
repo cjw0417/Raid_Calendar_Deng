@@ -4626,3 +4626,77 @@ input::placeholder {
     padding: 0 10px 0 12px;
   }
 }
+
+/* 모바일: 다 고른 '신청할 레이드'를 한 줄로 */
+.target-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.target-summary strong {
+  min-width: 0;
+  color: #edf5ff;
+  font-size: 0.9rem;
+}
+
+.target-summary .small-toggle {
+  flex-shrink: 0;
+  width: auto;
+}
+
+/* 모바일 내 신청 목록: 보기 전용 요일 · 시간 */
+.saved-slot-day-tag,
+.saved-slot-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.saved-slot-day-tag {
+  flex-shrink: 0;
+  width: 28px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(129, 136, 234, 0.12);
+  color: #edf5ff;
+}
+
+.saved-slot-day-tag.is-sat {
+  color: #8fc4ff;
+}
+
+.saved-slot-day-tag.is-sun {
+  color: #ff9b9b;
+}
+
+.saved-slot-tag {
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(94, 224, 170, 0.26);
+  background: rgba(94, 224, 170, 0.1);
+  color: #dffcf2;
+}
+
+@media (max-width: 640px) {
+  /* 로그인 화면: 작은 체크칸을 누르기 쉽게 한다 */
+  .remember-row {
+    min-height: 40px;
+  }
+
+  .remember-row input {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* 수정을 누르면 고정된 상단 바에 가리지 않는 곳까지 스크롤한다 */
+  #schedule-day-field {
+    scroll-margin-top: 76px;
+  }
+}

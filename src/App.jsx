@@ -114,6 +114,8 @@ function App() {
   const [guideOpen, setGuideOpen] = useState(false)
   // 모바일 이번 주 화면의 추천 시간은 접어 두고 요일별 현황을 먼저 보여 준다.
   const [recommendOpen, setRecommendOpen] = useState(false)
+  // 모바일에서 다 고른 '신청할 레이드'는 한 줄로 접어 둔다. '변경'을 누르면 펼친다.
+  const [targetEditOpen, setTargetEditOpen] = useState(false)
   // 모바일 뒤로 가기: 현재 기록의 탭, 기록에 쌓아 둔 팝업 수, 코드가 직접 되돌린 기록을 무시할지
   const historySectionRef = useRef(null)
   const historyPopupCountRef = useRef(0)
@@ -1240,7 +1242,18 @@ function App() {
 
   const editSavedSchedule = (entry) => {
     loadScheduleIntoForm(entry)
-    document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+    // 모바일은 그 신청이 있는 요일을 열어 바로 고칠 수 있게 한다. 지나지 않은 요일을 먼저 고른다.
+    if (isMobile) {
+      const entryDays = weekdayNames.filter((day) => (entry.dayTimeSelection?.[day] ?? []).length > 0)
+      const targetDay = entryDays.find((day) => weekDates[weekdayNames.indexOf(day)].getTime() >= activeDayStartTime) ?? entryDays[0]
+
+      if (targetDay) {
+        setMobileCalendarDayIndex(weekdayNames.indexOf(targetDay))
+      }
+    }
+
+    document.getElementById('schedule-day-field')?.scrollIntoView({ behavior: 'smooth', block: isMobile ? 'start' : 'center' })
   }
 
   const handleLogin = async (event) => {
@@ -1293,6 +1306,7 @@ function App() {
     setLoggedInNickname(nickname)
     setActiveCharacter('')
     setCharacterEditOpen(false)
+    setTargetEditOpen(false)
     setExpandedPastDays({})
     // 다른 기기에서 연결한 부캐도 보이도록 로그인할 때 다시 불러온다.
     reloadMemberAlts()
@@ -2869,8 +2883,7 @@ function App() {
           )}
 
           <p className="login-subtitle">
-            로그인한 닉네임으로 자신의 레이드 가능 시간을 저장하고 조회할 수 있어요.
-            처음 로그인할 때는 안내받은 초기 비밀번호를 입력한 뒤 본인 비밀번호를 정해요.
+            닉네임과 비밀번호로 로그인해요. 처음이면 안내받은 초기 비밀번호를 입력해 주세요.
           </p>
 
           <label htmlFor="loginNickname" className="login-label">닉네임</label>
@@ -2926,6 +2939,10 @@ function App() {
 
           {savePassword && (
             <p className="remember-hint">개인 기기에서만 사용하세요. 로그아웃하면 저장된 비밀번호도 지워져요.</p>
+          )}
+
+          {!savePassword && isMobile && (
+            <p className="remember-hint">내 휴대폰이면 '비밀번호 저장'을 켜 두세요. 다음부터 바로 들어와요.</p>
           )}
 
           <button type="submit" className="primary-button login-button" disabled={isLoginPending}>
@@ -4014,6 +4031,15 @@ function App() {
               </div>
             )}
 
+            {isMobile && isScheduleTargetSelected && !targetEditOpen ? (
+              <div className="target-summary">
+                <strong>{selectedRaidLabel} · {profile.difficulty} · {profile.mode}</strong>
+                <button type="button" className="secondary-button small-toggle" onClick={() => setTargetEditOpen(true)}>
+                  변경
+                </button>
+              </div>
+            ) : (
+            <>
             <div className={`field-group ${showTargetWarning && !selectedRaidLabel ? 'is-missing' : ''}`}>
               <label>레이드</label>
               <div className="chip-grid segmented" role="group" aria-label="레이드">
@@ -4066,6 +4092,14 @@ function App() {
                 </div>
               </div>
             </div>
+
+            {isMobile && isScheduleTargetSelected && (
+              <button type="button" className="text-link-button character-collapse-button" onClick={() => setTargetEditOpen(false)}>
+                한 줄로 접기
+              </button>
+            )}
+            </>
+            )}
 
           </div>
 
@@ -4230,7 +4264,11 @@ function App() {
             </div>
             {mySavedSchedules.length > 0 ? (
               <>
-                <p className="saved-schedule-hint">시간을 누르면 그 시간만, 요일을 누르면 그 요일 전체를 지울 수 있어요.</p>
+                <p className="saved-schedule-hint">
+                  {isMobile
+                    ? "시간을 고치려면 '수정'을 눌러 주세요."
+                    : '시간을 누르면 그 시간만, 요일을 누르면 그 요일 전체를 지울 수 있어요.'}
+                </p>
                 <ul>
                   {mySavedSchedules.map((entry) => {
                     const entryKey = getScheduleKey(entry)
@@ -4255,7 +4293,7 @@ function App() {
                               type="button"
                               className="saved-schedule-edit"
                               onClick={() => editSavedSchedule(entry)}
-                              disabled={isEditing}
+                              disabled={isEditing && !isMobile}
                               aria-label={`${entry.raidName} ${entry.difficulty} ${entry.mode} 신청 수정`}
                             >
                               {isEditing ? '수정 중' : '수정'}
@@ -4275,6 +4313,10 @@ function App() {
                             .filter((day) => (entry.dayTimeSelection?.[day] ?? []).length > 0)
                             .map((day) => (
                               <div key={day} className="saved-slot-day">
+                                {/* 모바일은 스크롤하다 잘못 눌러 지워지지 않도록 보기 전용으로 두고, '수정'에서 고치게 한다. */}
+                                {isMobile ? (
+                                  <span className={`saved-slot-day-tag${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}>{day}</span>
+                                ) : (
                                 <button
                                   type="button"
                                   className={`saved-slot-day-label${day === '토' ? ' is-sat' : ''}${day === '일' ? ' is-sun' : ''}`}
@@ -4284,10 +4326,13 @@ function App() {
                                 >
                                   {day}
                                 </button>
+                                )}
                                 <div className="saved-slot-times">
                                   {[...entry.dayTimeSelection[day]]
                                     .sort((a, b) => timeSlots.indexOf(a) - timeSlots.indexOf(b))
-                                    .map((time) => (
+                                    .map((time) => (isMobile ? (
+                                      <span key={time} className="saved-slot-tag">{formatTimeLabel(time)}</span>
+                                    ) : (
                                       <button
                                         key={time}
                                         type="button"
@@ -4298,7 +4343,7 @@ function App() {
                                         <span className="saved-slot-chip-time">{formatTimeLabel(time)}</span>
                                         <span className="saved-slot-chip-x" aria-hidden="true">×</span>
                                       </button>
-                                    ))}
+                                    )))}
                                 </div>
                               </div>
                             ))}

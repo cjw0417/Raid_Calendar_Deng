@@ -107,6 +107,8 @@ const login = async (page) => {
 }
 
 const pickTarget = async (page, raid = '무스펠', difficulty = '보통', mode = '트라이') => {
+  // 모바일에서 이미 골라 접혀 있으면 먼저 펼친다.
+  if (await page.locator('.target-summary').count()) await page.locator('.target-summary button').click()
   await page.locator('[aria-label="레이드"] button', { hasText: raid }).click()
   await page.locator('[aria-label="난이도"] button', { hasText: difficulty }).click()
   await page.locator('[aria-label="공략 방식"] button', { hasText: mode }).click()
@@ -330,9 +332,23 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await taken.tap({ force: true })
   check('#14 터치로 막힌 칸을 눌러도 이유 표시', (await toastText(page)).includes('이미 신청한 시간'))
 
-  // 17. 터치 영역
-  const chip = await page.locator('.saved-slot-chip').first().boundingBox()
-  check('#17 터치 칩 높이 36px 이상', chip.height >= 36)
+  // 내 신청 목록은 보기 전용: 스크롤하다 잘못 눌러 지워지지 않는다.
+  check('모바일: 목록의 시간은 버튼이 아님', [await page.locator('.saved-slot-chip').count(), await page.locator('.saved-slot-day-label').count()], [0, 0])
+  check('모바일: 목록에 시간 표시', (await page.locator('.saved-slot-tag').allInnerTexts()).includes('21:00'))
+  const savedBefore = await page.evaluate(() => JSON.parse(localStorage.getItem('raid-calendar-raid-schedules-v1')).find((e) => e.nickname === '테스트본캐').dayTimeSelection)
+  await page.locator('.saved-slot-tag').first().tap()
+  await page.locator('.saved-slot-day-tag').first().tap()
+  check('모바일: 목록을 눌러도 안 지워짐', await page.evaluate(() => JSON.parse(localStorage.getItem('raid-calendar-raid-schedules-v1')).find((e) => e.nickname === '테스트본캐').dayTimeSelection), savedBefore)
+  check('모바일: 목록 안내 문구', (await page.locator('.saved-schedule-hint').innerText()).includes('수정'))
+
+  // 수정을 누르면 그 신청의 요일과 시간 버튼으로 간다.
+  await page.locator('.mobile-day-tabs[data-section="form"] .mobile-day-tab', { hasText: '월' }).tap()
+  await page.locator('.saved-schedule-edit').first().tap()
+  check('모바일: 수정을 누르면 그 레이드로', (await page.locator('.target-summary strong').count()) + (await page.locator('[aria-label="레이드"] .chip.active').count()) >= 1)
+  check('모바일: 수정을 누르면 신청이 있는 요일로', await page.locator('.mobile-day-tabs[data-section="form"] .mobile-day-tab.active span').first().innerText(), '금')
+  await page.waitForTimeout(600)
+  const pickerBox = await page.locator('#schedule-day-field').boundingBox()
+  check('모바일: 수정을 누르면 시간 고르는 곳이 화면에 보임', pickerBox.y >= 0 && pickerBox.y < 300)
   await context.close()
 }
 
@@ -371,8 +387,21 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await page.selectOption('#power', '700~800k')
   await page.locator('[aria-label="리딩 여부"] button').first().tap()
   check('모바일: 1단계 완료 표시', await page.locator('.form-step-number').first().innerText(), '✓')
+  check('모바일: 레이드를 다 고르기 전에는 펼침', await page.locator('[aria-label="레이드"] button').count(), 2)
+  const beforeCollapse = await page.locator('.mobile-time-list').evaluate((el) => el.getBoundingClientRect().top + window.scrollY)
   await pickTarget(page)
   check('모바일: 2단계 완료 표시', await page.locator('.form-step-number').nth(1).innerText(), '✓')
+  check('모바일: 다 고르면 한 줄로 접힘', await page.locator('.target-summary strong').innerText(), '무스펠 · 보통 · 트라이')
+  const afterCollapse = await page.locator('.mobile-time-list').evaluate((el) => el.getBoundingClientRect().top + window.scrollY)
+  console.log(`INFO 모바일 2단계 접기로 시간 버튼 이동 ${Math.round(beforeCollapse - afterCollapse)}px`)
+  check('모바일: 접으면 시간 버튼이 위로', afterCollapse < beforeCollapse - 80)
+  await page.locator('.target-summary button').tap()
+  check('모바일: 변경을 누르면 펼침', await page.locator('[aria-label="난이도"] button').count(), 2)
+  await page.locator('[aria-label="공략 방식"] button', { hasText: '반숙이상' }).tap()
+  check('모바일: 고치는 중에는 접히지 않음', await page.locator('[aria-label="공략 방식"] button').count(), 2)
+  await page.locator('[aria-label="공략 방식"] button', { hasText: '트라이' }).tap()
+  await page.locator('#schedule-target-field .character-collapse-button').tap()
+  check('모바일: 한 줄로 접기', await page.locator('.target-summary').count(), 1)
 
   // 시간 고르기
   check('모바일: 그 시간 신청 인원 표시', await page.locator('[aria-label="금요일 21:00"] small').innerText(), '12명 신청')
@@ -512,6 +541,18 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await context.close()
 }
 
+// ---------- 모바일 로그인 화면 ----------
+{
+  const { page, context } = await open(LOCAL, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  check('로그인: 비밀번호 저장 권장', (await page.locator('.remember-hint').innerText()).includes('비밀번호 저장'))
+  check('로그인: 기본은 꺼짐', await page.locator('#savePassword').isChecked(), false)
+  await page.locator('#savePassword').check()
+  check('로그인: 켜면 주의 문구로', (await page.locator('.remember-hint').innerText()).includes('개인 기기'))
+  const subtitle = await page.locator('.login-subtitle').boundingBox()
+  check('로그인: 설명이 두 줄 이하', subtitle.height <= 56)
+  await context.close()
+}
+
 // ---------- 페이지 기본 설정 ----------
 {
   const { page, context } = await open(LOCAL)
@@ -531,9 +572,12 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
 // ---------- PC는 기존 방식 유지 ----------
 {
-  const { page, context } = await open(LOCAL, { schedules: crowd, showGuide: true })
+  const { page, context } = await open(LOCAL, { schedules: [...crowd, sched(NICK, 0, { 토: ['22:00'] }, { id: 'mine' })], showGuide: true })
+  check('PC: 로그인 화면에 휴대폰 안내 없음', await page.locator('.remember-hint').count(), 0)
   await login(page)
   check('PC: 사용법 팝업 없음', await page.locator('.mobile-guide').count(), 0)
+  check('PC: 레이드 선택은 접지 않음', [await page.locator('.target-summary').count(), await page.locator('[aria-label="레이드"] button').count()], [0, 2])
+  check('PC: 목록의 시간 칩은 눌러 지우기 유지', [(await page.locator('.saved-slot-chip').count()) > 0, await page.locator('.saved-slot-tag').count()], [true, 0])
   const pcHistory = await page.evaluate(() => history.length)
   await page.locator('.saved-schedule-clear').count()
   check('PC: 추천 목록은 항상 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [1, 0])
