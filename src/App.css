@@ -4107,3 +4107,67 @@ input::placeholder {
     display: none;
   }
 }
+
+/* 수요일 새벽: 지난주 화요일 레이드 마무리 */
+.last-week-raids {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 196, 77, 0.07);
+  border: 1px solid rgba(255, 196, 77, 0.42);
+  font-size: 0.82rem;
+}
+
+.last-week-raids-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.last-week-raids-head strong {
+  color: #ffd27a;
+}
+
+.last-week-raids-head span {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.last-week-raids ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.last-week-raids li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+/* PC 알림: 가운데 조작 영역을 덜 가리도록 오른쪽 아래로 옮긴다 */
+@media (min-width: 641px) {
+  .toast-stack {
+    left: auto;
+    right: 24px;
+    align-items: flex-end;
+    width: min(380px, calc(100vw - 48px));
+    transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  /* 좁은 추천 카드에서 인원 줄이 잘리지 않게 한다 */
+  .recommend-meta,
+  .recommend-status {
+    overflow: visible;
+    white-space: normal;
+  }
+}

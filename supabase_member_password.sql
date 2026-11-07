@@ -29,7 +29,7 @@ create table if not exists public.app_settings (
 );
 
 insert into public.app_settings (key, value)
-values ('initial_password', '0801')
+values ('initial_password', lpad(floor(random() * 100000000)::text, 8, '0'))
 on conflict (key) do nothing;
 
 create table if not exists public.member_credentials (

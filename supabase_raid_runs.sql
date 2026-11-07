@@ -7,6 +7,8 @@
 --   - 그 시간대에 투표한 사람만 로그인해서 바꿀 수 있고, 누가 바꿨는지 함께 남긴다.
 --   - 시간대별 신청 순서: raid_schedules.slot_signed_at에 시간대마다 처음 신청한 시각을 남긴다. (트리거가 채운다)
 --     먼저 신청한 10명이 정원이고, 나머지는 대기다. 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
+--     시간대를 뺐다가 1분 안에 다시 넣으면(삭제 되돌리기 포함) 원래 순서로 돌아가고, 그 뒤에는 맨 뒤로 간다.
+--   - 정원에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
 --   - 준비: 한 명이 "준비 확인"을 누르면 디스코드로 알림이 가고, 정원에 든 사람이 각자 "준비 완료"를 누른다.
 --     정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 되고 디스코드로 완료 알림이 간다.
 --     안 오는 사람이 있으면 "이 인원으로 시작"으로 기다리지 않고 넘어갈 수 있다.
@@ -87,8 +89,26 @@ $$;
 -- 값이 없는 시간대는 updated_at을 신청 시각으로 본다.
 alter table public.raid_schedules add column if not exists slot_signed_at jsonb not null default '{}';
 
+-- 방금 뺀 시간대의 신청 시각. 되돌리기로 다시 넣으면 순서를 유지하려고 잠깐 남겨 둔다. (앱에서 직접 읽지 않는다)
+create table if not exists public.raid_slot_removed (
+  nickname text not null,
+  raid_name text not null,
+  difficulty text not null,
+  mode text not null,
+  slot_key text not null,
+  signed_at text not null,
+  removed_at timestamptz not null default now(),
+  primary key (nickname, raid_name, difficulty, mode, slot_key)
+);
+
+alter table public.raid_slot_removed enable row level security;
+
+-- 예전 방식으로 members에 남은 요일 · 시간을 비운다. 신청은 raid_schedules에만 있고, 앱도 더 이상 members의 시간을 읽지 않는다.
+update public.members set days = '{}', times = '{}' where days <> '{}' or times <> '{}';
+
 -- 저장할 때 시간대별 신청 시각을 채운다. 이번 주에 이미 있던 시간대는 원래 시각을 그대로 둔다.
 -- 지난주에 저장한 행을 다시 저장하면 새 주의 신청이므로 모두 지금 시각이 된다.
+-- 1분 안에 뺐던 시간대를 다시 넣으면 뺄 때의 시각으로 돌아간다.
 create or replace function public._stamp_slot_signed_at()
 returns trigger
 language plpgsql
@@ -97,7 +117,7 @@ set search_path = public, extensions
 as $$
 declare
   slot record;
-  slot_key text;
+  slot_key_value text;
   previous_value text;
   stamped jsonb := '{}'::jsonb;
   was_this_week boolean := tg_op = 'UPDATE' and old.updated_at >= public._current_week_start();
@@ -107,18 +127,29 @@ begin
     from jsonb_each(case when jsonb_typeof(new.day_time_selection) = 'object' then new.day_time_selection else '{}'::jsonb end) d
     cross join lateral jsonb_array_elements_text(case when jsonb_typeof(d.value) = 'array' then d.value else '[]'::jsonb end) t
   loop
-    slot_key := slot.slot_day || '|' || slot.slot_time;
+    slot_key_value := slot.slot_day || '|' || slot.slot_time;
     previous_value := null;
 
     if was_this_week then
-      previous_value := old.slot_signed_at ->> slot_key;
+      previous_value := old.slot_signed_at ->> slot_key_value;
 
       if previous_value is null and coalesce(old.day_time_selection -> slot.slot_day, '[]'::jsonb) ? slot.slot_time then
         previous_value := to_jsonb(old.updated_at) #>> '{}';
       end if;
     end if;
 
-    stamped := stamped || jsonb_build_object(slot_key, coalesce(previous_value, to_jsonb(now()) #>> '{}'));
+    if previous_value is null then
+      select r.signed_at into previous_value
+      from public.raid_slot_removed r
+      where r.nickname = new.nickname
+        and r.raid_name = new.raid_name
+        and r.difficulty = new.difficulty
+        and r.mode = new.mode
+        and r.slot_key = slot_key_value
+        and r.removed_at > now() - interval '1 minute';
+    end if;
+
+    stamped := stamped || jsonb_build_object(slot_key_value, coalesce(previous_value, to_jsonb(now()) #>> '{}'));
   end loop;
 
   new.slot_signed_at := stamped;
@@ -227,6 +258,114 @@ as $$
 $$;
 
 revoke execute on function public._raid_slot_roster(date, text, text, text, text, text) from public, anon, authenticated;
+
+-- 신청에서 시간대가 빠졌을 때: 되돌리기에 쓸 신청 시각을 남기고, 대기 1번이 정원으로 올라갔으면 디스코드로 알린다.
+-- 이 트리거의 실패가 신청 저장 · 삭제를 막지 않도록 오류는 경고로만 남긴다.
+create or replace function public._after_raid_slot_removed()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  removed record;
+  slot_key_value text;
+  removed_order timestamptz;
+  week_start_value date;
+  slot_date date;
+  slot_start timestamptz;
+  tenth public.raid_schedules;
+  tenth_order timestamptz;
+  promoted_lines text[] := '{}';
+begin
+  if old.attendance <> '참' or old.updated_at < public._current_week_start() then
+    return null;
+  end if;
+
+  week_start_value := (public._current_week_start() at time zone 'Asia/Seoul')::date;
+  delete from public.raid_slot_removed where removed_at < now() - interval '1 hour';
+
+  for removed in
+    select d.key as slot_day, t.value as slot_time
+    from jsonb_each(case when jsonb_typeof(old.day_time_selection) = 'object' then old.day_time_selection else '{}'::jsonb end) d
+    cross join lateral jsonb_array_elements_text(case when jsonb_typeof(d.value) = 'array' then d.value else '[]'::jsonb end) t
+    where tg_op = 'DELETE'
+       or new.attendance <> '참'
+       or not coalesce(new.day_time_selection -> d.key, '[]'::jsonb) ? t.value
+  loop
+    slot_key_value := removed.slot_day || '|' || removed.slot_time;
+    removed_order := date_trunc('milliseconds', coalesce((old.slot_signed_at ->> slot_key_value)::timestamptz, old.updated_at));
+
+    insert into public.raid_slot_removed (nickname, raid_name, difficulty, mode, slot_key, signed_at)
+    values (old.nickname, old.raid_name, old.difficulty, old.mode, slot_key_value, to_jsonb(removed_order) #>> '{}')
+    on conflict (nickname, raid_name, difficulty, mode, slot_key) do update
+    set signed_at = excluded.signed_at,
+        removed_at = now();
+
+    slot_date := week_start_value + (array_position(array['수', '목', '금', '토', '일', '월', '화'], removed.slot_day) - 1);
+
+    if slot_date is null then
+      continue;
+    end if;
+
+    slot_start := (slot_date + case when removed.slot_time = '00:00' then 1 else 0 end + removed.slot_time::time) at time zone 'Asia/Seoul';
+
+    if slot_start <= now() then
+      continue;
+    end if;
+
+    -- 뺀 뒤의 10번째가 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
+    select * into tenth
+    from public._raid_slot_roster(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode)
+    offset 9
+    limit 1;
+
+    if tenth.nickname is null then
+      continue;
+    end if;
+
+    tenth_order := date_trunc('milliseconds', coalesce((tenth.slot_signed_at ->> slot_key_value)::timestamptz, tenth.updated_at));
+
+    if removed_order < tenth_order or (removed_order = tenth_order and (old.nickname collate "C") < (tenth.nickname collate "C")) then
+      promoted_lines := promoted_lines || format(
+        '%s월 %s일 (%s) %s · %s · %s · %s: %s',
+        extract(month from slot_date),
+        extract(day from slot_date),
+        removed.slot_day,
+        case when removed.slot_time = '00:00' then '24:00' else removed.slot_time end,
+        old.raid_name,
+        old.difficulty,
+        old.mode,
+        tenth.nickname
+      );
+    end if;
+  end loop;
+
+  if array_length(promoted_lines, 1) > 0 then
+    perform public._send_discord(jsonb_build_object(
+      'username', '레이드 캘린더',
+      'embeds', jsonb_build_array(jsonb_build_object(
+        'title', '🎟 대기에서 정원으로',
+        'color', 5793266,
+        'description', left(array_to_string(promoted_lines, E'\n'), 3500)
+      ))
+    ));
+  end if;
+
+  return null;
+exception when others then
+  raise warning '_after_raid_slot_removed 실패: %', sqlerrm;
+  return null;
+end;
+$$;
+
+revoke execute on function public._after_raid_slot_removed() from public, anon, authenticated;
+
+drop trigger if exists raid_schedules_slot_removed on public.raid_schedules;
+create trigger raid_schedules_slot_removed
+after update or delete on public.raid_schedules
+for each row
+execute procedure public._after_raid_slot_removed();
 
 -- 준비 확인을 시작했고, 그 시간대 정원에 든 사람이 모두 체크했는지
 create or replace function public._raid_run_all_gathered(p_run public.raid_runs)
@@ -663,6 +802,15 @@ notify pgrst, 'reload schema';
 -- where week_start = (current_date - ((extract(isodow from current_date)::int + 4) % 7))
 --   and day = '수' and time = '21:00'
 --   and raid_name = '무스펠' and difficulty = '보통' and mode = '트라이';
+
+-- [7] 준비 확인이 끝까지 가는 비율 (이 인원으로 시작을 넣은 효과 확인용)
+-- select week_start,
+--        count(*) filter (where rally_called_at is not null) as 호출,
+--        count(*) filter (where gathered_at is not null) as 전원준비,
+--        count(*) filter (where cleared is not null) as 클리어표시
+-- from public.raid_runs
+-- group by week_start
+-- order by week_start desc;
 
 -- [6] 디스코드 전송 결과 확인 (알림이 안 올 때)
 --     status_code 204 = 성공, 다른 값이면 error_msg를 본다.

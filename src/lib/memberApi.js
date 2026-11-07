@@ -5,7 +5,7 @@ import { supabase } from './supabase'
 // 연결되지 않은 로컬 모드에서는 이 브라우저의 localStorage에 비밀번호 해시를 둔다.
 
 // 로컬 모드에서만 쓰는 초기 비밀번호. Supabase 모드의 초기 비밀번호는 DB app_settings에 있다.
-const LOCAL_INITIAL_PASSWORD = '0801'
+const LOCAL_INITIAL_PASSWORD = '0000'
 const LOCAL_CREDENTIALS_KEY = 'raid-calendar-credentials-v1'
 
 export const PASSWORD_RULE = /^[0-9]{4,}$/
