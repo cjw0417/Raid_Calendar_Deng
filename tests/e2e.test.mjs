@@ -565,7 +565,7 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
     const icons = await Promise.all(data.icons.map(async (icon) => (await fetch(icon.src)).ok))
     return { name: data.short_name, icons }
   })
-  check('홈 화면 이름', manifest.name, '설원 스케줄')
+  check('홈 화면 이름', manifest.name, '그루 성역스케줄')
   check('홈 화면 아이콘 파일', manifest.icons, [true, true])
   await context.close()
 }
