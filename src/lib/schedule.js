@@ -14,6 +14,18 @@ export const raidOptions = [
   },
 ]
 
+// 아직 열리지 않은 레이드. 버튼만 보여 주고 누르면 오픈 날짜를 알린다.
+// 난이도 · 공략 방식이 정해지면 여기서 빼고 raidOptions · raidTabOptions · raidDifficultyAvailability에 추가한다.
+export const upcomingRaids = [
+  // tag는 이름 아래 줄에 작게 붙는다.
+  { id: 'rudra-challenge', label: '루드라 챌린지', tag: '(event)', openDate: '12/2' },
+  { id: 'ascension-fortress', label: '승천의 요새', tag: '(5성역)', openDate: '1/20' },
+]
+
+export function getUpcomingRaidMessage(raid) {
+  return `${raid.openDate}일 오픈 예정입니다.`
+}
+
 export const difficultyOptions = ['보통', '어려움']
 
 // 요일별 신청 현황에서 접힌 시간 줄에 미리 보여줄 직업 아이콘 수

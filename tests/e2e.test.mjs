@@ -387,7 +387,8 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await page.selectOption('#power', '700~800k')
   await page.locator('[aria-label="리딩 여부"] button').first().tap()
   check('모바일: 1단계 완료 표시', await page.locator('.form-step-number').first().innerText(), '✓')
-  check('모바일: 레이드를 다 고르기 전에는 펼침', await page.locator('[aria-label="레이드"] button').count(), 2)
+  // 무스펠 · 비탄의 설원 + 오픈 예정 2개
+  check('모바일: 레이드를 다 고르기 전에는 펼침', await page.locator('[aria-label="레이드"] button').count(), 4)
   const beforeCollapse = await page.locator('.mobile-time-list').evaluate((el) => el.getBoundingClientRect().top + window.scrollY)
   await pickTarget(page)
   check('모바일: 2단계 완료 표시', await page.locator('.form-step-number').nth(1).innerText(), '✓')
@@ -443,6 +444,13 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('모바일: 빈 시간에 바로 신청', await page.locator('[id="calendar-slot-토-19:00"] .my-slot-badge').count(), 1)
   await page.selectOption('.mobile-raid-select select >> nth=0', '비탄의 설원 보통')
   check('모바일: 레이드를 바꾸면 그 레이드 시간표', await page.locator('[id="calendar-slot-토-19:00"] .my-slot-badge').count(), 0)
+  await page.selectOption('.mobile-raid-select select >> nth=0', 'upcoming:rudra-challenge')
+  check('모바일: 오픈 예정 레이드는 팝업만 띄우고 선택 유지', [
+    await page.locator('.upcoming-raid-modal p').innerText(),
+    await page.locator('.mobile-raid-select select >> nth=0').inputValue(),
+  ], ['12/2일 오픈 예정입니다.', '비탄의 설원 보통'])
+  await page.locator('.upcoming-raid-modal button', { hasText: '확인' }).tap()
+  check('모바일: 확인을 누르면 팝업 닫힘', await page.locator('.upcoming-raid-modal').count(), 0)
 
   const overflowing = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   check('모바일: 가로 스크롤 없음', overflowing, false)
@@ -576,7 +584,18 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('PC: 로그인 화면에 휴대폰 안내 없음', await page.locator('.remember-hint').count(), 0)
   await login(page)
   check('PC: 사용법 팝업 없음', await page.locator('.mobile-guide').count(), 0)
-  check('PC: 레이드 선택은 접지 않음', [await page.locator('.target-summary').count(), await page.locator('[aria-label="레이드"] button').count()], [0, 2])
+  check('PC: 레이드 선택은 접지 않음', [await page.locator('.target-summary').count(), await page.locator('[aria-label="레이드"] button').count()], [0, 4])
+  await page.locator('[aria-label="레이드"] .chip.upcoming', { hasText: '루드라 챌린지' }).click()
+  check('PC: 오픈 예정 레이드는 가운데 팝업으로 날짜 알림', [
+    await page.locator('.save-confirm-backdrop .upcoming-raid-modal p').innerText(),
+    await page.locator('[aria-label="레이드"] .chip.upcoming.active').count(),
+  ], ['12/2일 오픈 예정입니다.', 0])
+  await page.locator('.upcoming-raid-modal button', { hasText: '확인' }).click()
+  check('PC: 확인을 누르면 팝업 닫힘', await page.locator('.upcoming-raid-modal').count(), 0)
+  await page.locator('.raid-tab.upcoming', { hasText: '승천의 요새' }).click()
+  check('PC: 레이드 탭에서도 오픈 날짜 팝업', await page.locator('.upcoming-raid-modal p').innerText(), '1/20일 오픈 예정입니다.')
+  await page.keyboard.press('Escape')
+  check('PC: Esc로 팝업 닫힘', await page.locator('.upcoming-raid-modal').count(), 0)
   check('PC: 목록의 시간 칩은 눌러 지우기 유지', [(await page.locator('.saved-slot-chip').count()) > 0, await page.locator('.saved-slot-tag').count()], [true, 0])
   const pcHistory = await page.evaluate(() => history.length)
   await page.locator('.saved-schedule-clear').count()

@@ -29,6 +29,8 @@ import {
 } from './components/common'
 import {
   raidOptions,
+  upcomingRaids,
+  getUpcomingRaidMessage,
   difficultyOptions,
   SUMMARY_ICON_PREVIEW_LIMIT,
   RAID_FULL_SIZE,
@@ -212,6 +214,8 @@ function App() {
   const [showDaytimeSlots, setShowDaytimeSlots] = useState(false)
   // '내 스케줄 전체 삭제' 확인 팝업 (한 건 · 한 시간 삭제는 확인 없이 지우고 되돌리기를 띄운다)
   const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false)
+  // 오픈 예정 레이드를 눌렀을 때 가운데 띄우는 안내 (누른 레이드)
+  const [upcomingRaidNotice, setUpcomingRaidNotice] = useState(null)
   // 요일별 신청 현황에서 내가 신청한 시간대만 보기 (이 브라우저에 기억)
   const [showOnlyMine, setShowOnlyMine] = useState(() => {
     try {
@@ -514,6 +518,11 @@ function App() {
     setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, action ? TOAST_ACTION_DURATION : (TOAST_DURATION[type] ?? TOAST_DURATION.info))
+  }
+
+  // 오픈 전 레이드 버튼을 누르면 선택은 바꾸지 않고 오픈 날짜만 가운데 팝업으로 알린다.
+  const notifyUpcomingRaid = (raid) => {
+    setUpcomingRaidNotice(raid)
   }
 
   const dismissToast = (id) => {
@@ -1361,7 +1370,9 @@ function App() {
 
   // 맨 위 팝업부터 닫는다. Esc와 모바일 뒤로 가기가 함께 쓴다.
   const closeTopPopup = () => {
-    if (guideOpen) {
+    if (upcomingRaidNotice) {
+      setUpcomingRaidNotice(null)
+    } else if (guideOpen) {
       closeGuide()
     } else if (memberDetail) {
       setMemberDetail(null)
@@ -1398,7 +1409,7 @@ function App() {
 
   // 모바일 뒤로 가기: 팝업이 열려 있으면 닫고, 아니면 이전 탭으로 돌아간다. 처음 탭에서 누르면 그때 앱을 벗어난다.
   const openPopupCount = [
-    guideOpen, memberDetail, pendingRunStatus, clearAllConfirmOpen, restoreConfirmOpen, altManagerOpen, passwordChangeOpen, mobileMenuOpen,
+    upcomingRaidNotice, guideOpen, memberDetail, pendingRunStatus, clearAllConfirmOpen, restoreConfirmOpen, altManagerOpen, passwordChangeOpen, mobileMenuOpen,
   ].filter(Boolean).length
 
   useEffect(() => {
@@ -3655,6 +3666,28 @@ function App() {
         </div>
       )}
 
+      {upcomingRaidNotice && (
+        <div className="save-confirm-backdrop" onClick={() => setUpcomingRaidNotice(null)}>
+          <div
+            className="save-confirm-modal upcoming-raid-modal"
+            role="alertdialog"
+            aria-label={`${upcomingRaidNotice.label} 오픈 안내`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3>
+              {upcomingRaidNotice.label}
+              <small>{upcomingRaidNotice.tag}</small>
+            </h3>
+            <p>{getUpcomingRaidMessage(upcomingRaidNotice)}</p>
+            <div className="save-confirm-actions">
+              <button type="button" className="primary-button" autoFocus onClick={() => setUpcomingRaidNotice(null)}>
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {clearAllConfirmOpen && (
         <div className="save-confirm-backdrop" onClick={() => setClearAllConfirmOpen(false)}>
           <div className="save-confirm-modal" onClick={(event) => event.stopPropagation()}>
@@ -4042,7 +4075,7 @@ function App() {
             <>
             <div className={`field-group ${showTargetWarning && !selectedRaidLabel ? 'is-missing' : ''}`}>
               <label>레이드</label>
-              <div className="chip-grid segmented" role="group" aria-label="레이드">
+              <div className="chip-grid segmented raid-chip-grid" role="group" aria-label="레이드">
                 {raidOptions.map((raid) => (
                   <button
                     key={raid.id}
@@ -4052,6 +4085,18 @@ function App() {
                     onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
                   >
                     {raid.label}
+                  </button>
+                ))}
+                {upcomingRaids.map((raid) => (
+                  <button
+                    key={raid.id}
+                    type="button"
+                    className="chip upcoming"
+                    aria-haspopup="dialog"
+                    onClick={() => notifyUpcomingRaid(raid)}
+                  >
+                    <span className="upcoming-label">{raid.label}<br />{raid.tag}</span>
+                    <small className="upcoming-date">{raid.openDate} 오픈 예정</small>
                   </button>
                 ))}
               </div>
@@ -4801,10 +4846,27 @@ function App() {
           {/* 모바일은 탭 묶음 대신 고르기 칸 두 개로 줄여 시간표가 바로 보이게 한다. */}
           {isMobile ? (
             <div className="mobile-raid-select" data-section="calendar">
-              <select aria-label="레이드" value={activeRaidTab} onChange={(event) => setActiveRaidTab(event.target.value)}>
+              <select
+                aria-label="레이드"
+                value={activeRaidTab}
+                onChange={(event) => {
+                  // 오픈 예정 레이드를 고르면 알림만 띄우고 선택은 그대로 둔다.
+                  const upcoming = upcomingRaids.find((raid) => `upcoming:${raid.id}` === event.target.value)
+                  if (upcoming) {
+                    notifyUpcomingRaid(upcoming)
+                    return
+                  }
+                  setActiveRaidTab(event.target.value)
+                }}
+              >
                 {visibleRaidTabs.map((tab) => (
                   <option key={tab.id} value={tab.label}>
                     {tab.label} · {countTabMembers(tab.raid, tab.difficulty, modeOptions)}명
+                  </option>
+                ))}
+                {upcomingRaids.map((raid) => (
+                  <option key={raid.id} value={`upcoming:${raid.id}`}>
+                    {raid.label} {raid.tag} · {raid.openDate} 오픈 예정
                   </option>
                 ))}
               </select>
@@ -4835,6 +4897,18 @@ function App() {
                 >
                   {tab.label}
                   <TabCount count={countTabMembers(tab.raid, tab.difficulty, modeOptions)} />
+                </button>
+              ))}
+              {upcomingRaids.map((raid) => (
+                <button
+                  key={raid.id}
+                  type="button"
+                  className="raid-tab upcoming"
+                  aria-haspopup="dialog"
+                  onClick={() => notifyUpcomingRaid(raid)}
+                >
+                  <span className="upcoming-label">{raid.label}<br />{raid.tag}</span>
+                  <small className="upcoming-date">{raid.openDate} 오픈 예정</small>
                 </button>
               ))}
             </div>
