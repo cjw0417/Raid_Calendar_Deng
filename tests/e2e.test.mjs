@@ -167,6 +167,8 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('#3 공휴일 낮시간 선택됨', await page.locator('[aria-label="금요일 12:00"]').getAttribute('aria-pressed'), 'true')
 
   // 13/14. 지난 시간은 막히고 이유를 알려 줌 (오늘 수요일 20:30 기준 수 19:00은 지남)
+  // 화면 아래 '저장 안 됨' 안내에 가리지 않게 가운데로 옮긴 뒤 누른다.
+  await page.locator('[aria-label="수요일 19:00"]').evaluate((el) => el.scrollIntoView({ block: 'center' }))
   await page.locator('[aria-label="수요일 19:00"]').click({ force: true })
   check('#13 지난 시간은 안 골라짐', await page.locator('[aria-label="수요일 19:00"]').getAttribute('aria-pressed'), 'false')
   check('#14 지난 시간을 누르면 이유 표시', (await toastText(page)).includes('이미 지난 시간'))
@@ -387,8 +389,8 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await page.selectOption('#power', '700~800k')
   await page.locator('[aria-label="리딩 여부"] button').first().tap()
   check('모바일: 1단계 완료 표시', await page.locator('.form-step-number').first().innerText(), '✓')
-  // 무스펠 · 비탄의 설원 + 오픈 예정 2개
-  check('모바일: 레이드를 다 고르기 전에는 펼침', await page.locator('[aria-label="레이드"] button').count(), 4)
+  // 무스펠 · 비탄의 설원 · 에라쿠스 유적 + 오픈 예정 2개
+  check('모바일: 레이드를 다 고르기 전에는 펼침', await page.locator('[aria-label="레이드"] button').count(), 5)
   const beforeCollapse = await page.locator('.mobile-time-list').evaluate((el) => el.getBoundingClientRect().top + window.scrollY)
   await pickTarget(page)
   check('모바일: 2단계 완료 표시', await page.locator('.form-step-number').nth(1).innerText(), '✓')
@@ -578,13 +580,83 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await context.close()
 }
 
+// ---------- 횟수 제한 레이드 (에라쿠스 유적 주 5회) ----------
+{
+  // 클리어 O 3번(1단계 2번 · 2단계 1번) + 클리어 X 1번(세지 않음) → 남은 2/5
+  const erakus = (difficulty, sel, id) => sched(NICK, 0, sel, { id, raidName: '에라쿠스 유적', difficulty })
+  const run = (difficulty, day, time, cleared) => ({ weekStart: '2026-12-23', day, time, raidName: '에라쿠스 유적', difficulty, mode: '트라이', gatheredAt: THIS_WEEK, cleared })
+  const runs = [
+    run('1단계', '수', '19:00', 'O'),
+    run('1단계', '목', '19:00', 'O'),
+    run('2단계', '목', '21:00', 'O'),
+    run('1단계', '금', '19:00', 'X'),
+  ]
+  const { page, context } = await open(LOCAL, {
+    schedules: [
+      erakus('1단계', { 수: ['19:00'], 목: ['19:00'], 금: ['19:00'] }, 'e1'),
+      erakus('2단계', { 목: ['21:00'] }, 'e2'),
+    ],
+    extraStorage: { 'raid-calendar-raid-runs-v1': JSON.stringify(runs) },
+  })
+  await login(page)
+  await pickTarget(page, '에라쿠스 유적', '1단계', '트라이')
+  const panelText = () => page.locator('.entries-left-panel').innerText()
+  check('횟수: 클리어 O만 1~3단계 합산', [(await panelText()).includes('2/5'), (await panelText()).includes('클리어 3회')], [true, true])
+  check('횟수: 레이드별 인원에도 남은 횟수', await page.locator('.member-tag .entries-left-badge').allInnerTexts(), ['2/5', '2/5'])
+  await page.locator('.day-raid-time-toggle').first().click()
+  check('횟수: 펼친 파티 명단에도 남은 횟수', await page.locator('.day-raid-member .entries-left-badge').first().innerText(), '2/5')
+  check('횟수: 파티 보기에도 남은 횟수', (await page.locator('.time-member-pill > .entries-left-badge').allInnerTexts()).includes('2/5'))
+
+  await page.locator('.entries-adjust button', { hasText: '+1' }).click()
+  await page.locator('.entries-adjust button', { hasText: '+1' }).click()
+  check('횟수: 직접 +1 두 번이면 0/5', [(await panelText()).includes('0/5'), (await panelText()).includes('직접 조정 +2회')], [true, true])
+  check('횟수: 0이면 +1 막힘', await page.locator('.entries-adjust button', { hasText: '+1' }).isDisabled(), true)
+  await page.locator('#schedule-target-field').screenshot({ path: join(out, 'pc-erakus-entries.png') })
+  check('횟수: 신청 목록에 소진 표시', await page.locator('.saved-schedule-tag.tag-exhausted').count(), 2)
+  const cell = page.locator('[aria-label="토요일 21:00"]')
+  await cell.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+  await cell.click({ force: true })
+  check('횟수: 다 쓰면 새 시간 막힘', [await cell.getAttribute('aria-pressed'), (await toastText(page)).includes('횟수(5회)를 다 써서')], ['false', true])
+  check('횟수: 다 쓰면 바로 신청 버튼 숨김', await page.locator('.join-slot-button').count(), 0)
+
+  await page.locator('.entries-adjust button', { hasText: '−1' }).click()
+  check('횟수: −1이면 1/5', (await panelText()).includes('1/5'))
+  await cell.click({ force: true })
+  check('횟수: 남으면 다시 고를 수 있음', await cell.getAttribute('aria-pressed'), 'true')
+
+  await page.reload()
+  await login(page)
+  await pickTarget(page, '에라쿠스 유적', '1단계', '트라이')
+  check('횟수: 조정은 새로고침해도 유지', (await panelText()).includes('1/5'))
+
+  await pickTarget(page, '무스펠', '보통', '트라이')
+  check('횟수: 성역 레이드는 남은 횟수 칸 없음', await page.locator('.entries-left-panel').count(), 0)
+  await context.close()
+}
+
 // ---------- PC는 기존 방식 유지 ----------
 {
   const { page, context } = await open(LOCAL, { schedules: [...crowd, sched(NICK, 0, { 토: ['22:00'] }, { id: 'mine' })], showGuide: true })
   check('PC: 로그인 화면에 휴대폰 안내 없음', await page.locator('.remember-hint').count(), 0)
   await login(page)
   check('PC: 사용법 팝업 없음', await page.locator('.mobile-guide').count(), 0)
-  check('PC: 레이드 선택은 접지 않음', [await page.locator('.target-summary').count(), await page.locator('[aria-label="레이드"] button').count()], [0, 4])
+  check('PC: 레이드 선택은 접지 않음', [await page.locator('.target-summary').count(), await page.locator('[aria-label="레이드"] button').count()], [0, 5])
+  // 초월 레이드는 난이도가 1~3단계. 성역 레이드로 돌아가면 난이도를 다시 고르게 비운다.
+  await page.locator('[aria-label="레이드"] button', { hasText: '에라쿠스 유적' }).click()
+  check('PC: 초월 레이드는 1~3단계', [
+    await page.locator('[aria-label="난이도"] button').allInnerTexts(),
+    await page.locator('[aria-label="난이도"] button.active').count(),
+  ], [['1단계', '2단계', '3단계'], 0])
+  check('PC: 1~3단계는 난이도를 한 줄 전체로', await page.locator('.two-column.is-stacked [aria-label="난이도"]').count(), 1)
+  await page.locator('[aria-label="난이도"]').screenshot({ path: join(out, 'pc-erakus-difficulty.png') })
+  await page.locator('[aria-label="난이도"] button', { hasText: '2단계' }).click()
+  check('PC: 초월 레이드를 고르면 시간표도 그 탭', (await page.locator('.raid-tab.active').innerText()).startsWith('에라쿠스 유적 2단계'))
+  await page.locator('[aria-label="레이드"] button', { hasText: '무스펠' }).click()
+  check('PC: 성역 레이드로 바꾸면 난이도 비움', [
+    await page.locator('[aria-label="난이도"] button').allInnerTexts(),
+    await page.locator('[aria-label="난이도"] button.active').count(),
+  ], [['보통', '어려움'], 0])
+  await pickTarget(page)
   await page.locator('[aria-label="레이드"] .chip.upcoming', { hasText: '루드라 챌린지' }).click()
   check('PC: 오픈 예정 레이드는 가운데 팝업으로 날짜 알림', [
     await page.locator('.save-confirm-backdrop .upcoming-raid-modal p').innerText(),

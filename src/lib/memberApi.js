@@ -28,6 +28,7 @@ const resultMessages = {
   no_hint: '비밀번호 찾기 질문을 정하지 않은 닉네임이에요. 관리자에게 비밀번호 초기화를 요청해 주세요.',
   no_password: '아직 개인 비밀번호를 정하지 않은 닉네임이에요. 초기 비밀번호로 로그인해 비밀번호를 정해 주세요.',
   not_gathered: '전원 준비가 된 뒤에 클리어 여부를 정할 수 있어요.',
+  invalid_request: '잘못된 요청이에요. 새로고침한 뒤 다시 해 주세요.',
   already_called: '이미 다른 사람이 준비 확인을 시작했어요. 준비 완료만 눌러 주세요.',
   not_called: '아직 준비 확인이 없거나 취소됐어요.',
   already_gathered: '이미 전원 준비가 되어 준비를 취소할 수 없어요. 필요하면 준비 확인을 취소해 주세요.',
@@ -273,6 +274,17 @@ export function setRaidRunStatus(nickname, password, run, field, value) {
     p_mode: run.mode,
     p_field: field,
     p_value: value,
+  })
+}
+
+// 횟수 제한 레이드(에라쿠스 유적)의 이번 주 쓴 횟수를 1회 더하거나(delta 1) 뺀다(delta -1). (supabase_raid_entries.sql)
+// nickname은 조정할 캐릭터(부캐면 본캐 비밀번호). 반환값: { weekStart, nickname, raidName, adjustment } 또는 { error }
+export function adjustRaidEntries(nickname, password, raidName, delta) {
+  return callRpc('member_adjust_raid_entries', {
+    p_nickname: nickname,
+    p_password: password,
+    p_raid_name: raidName,
+    p_delta: delta,
   })
 }
 

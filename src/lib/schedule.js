@@ -1,18 +1,85 @@
 // 시간표 계산, 신청 데이터 변환, 브라우저 저장 등 화면과 무관한 함수 모음
 import { supabase } from './supabase'
 
+export const difficultyOptions = ['보통', '어려움']
+
+// difficulties: 그 레이드에서 고를 수 있는 난이도. (성역은 보통 · 어려움, 초월은 1~3단계)
+// tag: 있으면 신청 폼 버튼에서 이름 아래 줄에 작게 붙는다.
 export const raidOptions = [
   {
     id: 'muspel',
     label: '무스펠',
+    difficulties: difficultyOptions,
     modes: ['보통(트라이)', '어려움(트라이)', '보통(반숙이상)', '어려움(반숙이상)'],
   },
   {
     id: 'snow',
     label: '비탄의 설원',
+    difficulties: difficultyOptions,
     modes: ['보통(트라이)', '어려움(트라이)', '보통(반숙이상)', '어려움(반숙이상)'],
   },
+  {
+    id: 'erakus',
+    label: '에라쿠스 유적',
+    tag: '(초월)',
+    difficulties: ['1단계', '2단계', '3단계'],
+    // 캐릭터마다 일주일에 들어갈 수 있는 횟수 (1~3단계 · 공략 방식 합쳐서)
+    weeklyLimit: 5,
+    modes: ['1단계(트라이)', '2단계(트라이)', '3단계(트라이)', '1단계(반숙이상)', '2단계(반숙이상)', '3단계(반숙이상)'],
+  },
 ]
+
+// 레이드에서 고를 수 있는 난이도. 레이드를 아직 안 골랐으면 기본(보통 · 어려움)을 보여 준다.
+export function getRaidDifficulties(raidLabel) {
+  return raidOptions.find((raid) => raid.label === raidLabel)?.difficulties ?? difficultyOptions
+}
+
+// 일주일 입장 횟수 제한. 0이면 제한 없음.
+export function getRaidWeeklyLimit(raidLabel) {
+  return raidOptions.find((raid) => raid.label === raidLabel)?.weeklyLimit ?? 0
+}
+
+// 이번 주 입장 횟수 ("레이드|닉네임" → 횟수).
+// 클리어 O로 표시된 시간대에서 정원(먼저 신청한 RAID_FULL_SIZE명) 안에 있던 캐릭터마다 1회로 센다.
+// 클리어 X(실패)와 표시 안 한 시간대는 세지 않는다. 횟수 제한이 있는 레이드만 센다.
+// getSlotPeople(run): 그 시간대 · 레이드 조합의 신청 인원 (신청 순서대로)
+export function countWeeklyEntries(raidRuns, weekStartKey, getSlotPeople) {
+  const counts = new Map()
+
+  raidRuns.forEach((run) => {
+    if (run.weekStart !== weekStartKey || run.cleared !== 'O' || !getRaidWeeklyLimit(run.raidName)) {
+      return
+    }
+
+    const roster = new Set(getSlotPeople(run).slice(0, RAID_FULL_SIZE).map((person) => person.nickname))
+    roster.forEach((nickname) => {
+      const key = `${run.raidName}|${nickname}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    })
+  })
+
+  return counts
+}
+
+// 신청 목록 · 레이드별 인원을 늘어놓는 순서 (raidOptions · 난이도 순서를 따른다)
+export function compareRaidTarget(a, b) {
+  const raidIndex = (label) => {
+    const index = raidOptions.findIndex((raid) => raid.label === label)
+    return index === -1 ? 99 : index
+  }
+  const raidDiff = raidIndex(a.raidName) - raidIndex(b.raidName)
+  if (raidDiff !== 0) return raidDiff
+
+  const difficulties = getRaidDifficulties(a.raidName)
+  const difficultyIndex = (difficulty) => {
+    const index = difficulties.indexOf(difficulty)
+    return index === -1 ? 99 : index
+  }
+  const difficultyDiff = difficultyIndex(a.difficulty) - difficultyIndex(b.difficulty)
+  if (difficultyDiff !== 0) return difficultyDiff
+
+  return (a.mode ?? '').localeCompare(b.mode ?? '')
+}
 
 // 아직 열리지 않은 레이드. 버튼만 보여 주고 누르면 오픈 날짜를 알린다.
 // 난이도 · 공략 방식이 정해지면 여기서 빼고 raidOptions · raidTabOptions · raidDifficultyAvailability에 추가한다.
@@ -25,8 +92,6 @@ export const upcomingRaids = [
 export function getUpcomingRaidMessage(raid) {
   return `${raid.openDate}일 오픈 예정입니다.`
 }
-
-export const difficultyOptions = ['보통', '어려움']
 
 // 요일별 신청 현황에서 접힌 시간 줄에 미리 보여줄 직업 아이콘 수
 export const SUMMARY_ICON_PREVIEW_LIMIT = 4
@@ -75,11 +140,15 @@ export const raidTabOptions = [
   { id: 'muspel-hard', label: '무스펠 어려움', raid: '무스펠', difficulty: '어려움' },
   { id: 'snow-normal', label: '비탄의 설원 보통', raid: '비탄의 설원', difficulty: '보통' },
   { id: 'snow-hard', label: '비탄의 설원 어려움', raid: '비탄의 설원', difficulty: '어려움' },
+  { id: 'erakus-1', label: '에라쿠스 유적 1단계', raid: '에라쿠스 유적', difficulty: '1단계' },
+  { id: 'erakus-2', label: '에라쿠스 유적 2단계', raid: '에라쿠스 유적', difficulty: '2단계' },
+  { id: 'erakus-3', label: '에라쿠스 유적 3단계', raid: '에라쿠스 유적', difficulty: '3단계' },
 ]
 
 export const raidDifficultyAvailability = {
   무스펠: ['보통', '어려움'],
   '비탄의 설원': ['보통', '어려움'],
+  '에라쿠스 유적': ['1단계', '2단계', '3단계'],
 }
 
 export const STORAGE_KEY = 'raid-calendar-members-v1'
@@ -728,6 +797,49 @@ export function normalizeRaidRun(entry) {
     // 준비 확인 알림을 보낸 횟수 (시간대마다 최대 2번). 클리어 알림은 한 번만 보낸다.
     rallyNotifyCount: entry.rally_notify_count ?? entry.rallyNotifyCount ?? (entry.rally_notified_at ? 1 : 0),
     clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),
+  }
+}
+
+// 횟수 제한 레이드의 쓴 횟수 직접 조정 (supabase_raid_entries.sql). 로컬 모드는 이 브라우저에 저장한다.
+export const ENTRY_ADJUSTMENTS_STORAGE_KEY = 'raid-calendar-entry-adjustments-v1'
+
+export function normalizeEntryAdjustment(entry) {
+  if (!entry) {
+    return null
+  }
+
+  return {
+    weekStart: entry.week_start ?? entry.weekStart,
+    nickname: entry.nickname,
+    raidName: entry.raid_name ?? entry.raidName,
+    adjustment: Number(entry.adjustment) || 0,
+  }
+}
+
+// 조정 목록에서 같은 주 · 캐릭터 · 레이드 한 건을 바꾸거나 추가한다.
+export function upsertEntryAdjustment(list, next) {
+  if (!next) {
+    return list
+  }
+
+  const isSame = (entry) => entry.weekStart === next.weekStart && entry.nickname === next.nickname && entry.raidName === next.raidName
+  return list.some(isSame) ? list.map((entry) => (isSame(entry) ? next : entry)) : [...list, next]
+}
+
+export function loadLocalEntryAdjustments() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ENTRY_ADJUSTMENTS_STORAGE_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.map((entry) => normalizeEntryAdjustment(entry)).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveLocalEntryAdjustments(list) {
+  try {
+    localStorage.setItem(ENTRY_ADJUSTMENTS_STORAGE_KEY, JSON.stringify(list))
+  } catch {
+    // Ignore storage errors.
   }
 }
 

@@ -247,5 +247,31 @@ const beforeCalled = await reminderSentCount()
 check('이미 준비 확인을 시작했으면 알림 없음', await remind('22:40'), 0)
 check('자동 알림 추가 전송 없음', await reminderSentCount(), beforeCalled)
 
+// ---------- 횟수 제한 레이드 쓴 횟수 조정 (supabase_raid_entries.sql) ----------
+await db.exec(read('supabase_raid_entries.sql'))
+await db.exec(read('supabase_raid_entries.sql'))
+console.log('PASS 횟수 조정 SQL 실행 (2회)')
+check('횟수 조정 표도 실시간 대상', (await rows(`select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='raid_entry_adjustments'`)).length, 1)
+
+const adjust = async (nick, delta, raid = '에라쿠스 유적') => (await rows(`select public.member_adjust_raid_entries($1,'pw',$2,$3) r`, [nick, raid, delta]))[0].r
+check('쓴 횟수 +1', await adjust('조정캐', 1), { nickname: '조정캐', raidName: '에라쿠스 유적', weekStart, adjustment: 1 })
+check('한 번 더 +1', (await adjust('조정캐', 1)).adjustment, 2)
+check('-1', (await adjust('조정캐', -1)).adjustment, 1)
+check('다른 캐릭터는 따로', (await adjust('다른캐', -1)).adjustment, -1)
+check('1 · -1 말고는 거절', await adjust('조정캐', 3), { error: 'invalid_request' })
+check('레이드 이름 없으면 거절', await adjust('조정캐', 1, ' '), { error: 'invalid_request' })
+for (let i = 0; i < 15; i += 1) await adjust('많이누름', 1)
+check('조정 값은 10까지', (await adjust('많이누름', 1)).adjustment, 10)
+check('이번 주로 저장', (await rows(`select week_start::text w from public.raid_entry_adjustments where nickname='조정캐'`))[0].w, weekStart)
+check('누구나 읽기 가능', (await rows(`select has_table_privilege('anon', 'public.raid_entry_adjustments', 'select') ok`))[0].ok, true)
+check('표에 직접 쓰기 불가', (await rows(`select has_table_privilege('anon', 'public.raid_entry_adjustments', 'insert') ok`))[0].ok, false)
+
+await db.exec(`
+  create or replace function public._verify_member_password(p_nickname text, p_password text, p_allow_initial boolean)
+  returns text language sql as $$ select 'invalid'::text $$;
+`)
+check('비밀번호가 틀리면 거절', await adjust('조정캐', 1), { error: 'invalid' })
+check('거절되면 값 그대로', (await rows(`select adjustment from public.raid_entry_adjustments where nickname='조정캐'`))[0].adjustment, 1)
+
 console.log(failures ? `\n실패 ${failures}건` : '\n모두 통과')
 process.exit(failures ? 1 : 0)

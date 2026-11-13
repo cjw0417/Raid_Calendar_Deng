@@ -14,6 +14,7 @@ import {
   memberSetupPassword,
   normalizeHintAnswer,
   saveMemberSchedule,
+  adjustRaidEntries,
   setRaidRally,
   setRaidRunStatus,
   unlinkMemberAlt,
@@ -31,7 +32,10 @@ import {
   raidOptions,
   upcomingRaids,
   getUpcomingRaidMessage,
-  difficultyOptions,
+  getRaidDifficulties,
+  compareRaidTarget,
+  getRaidWeeklyLimit,
+  countWeeklyEntries,
   SUMMARY_ICON_PREVIEW_LIMIT,
   RAID_FULL_SIZE,
   RAID_ONGOING_MS,
@@ -100,6 +104,10 @@ import {
   loadLocalRaidRuns,
   saveLocalRaidRuns,
   upsertRaidRun,
+  normalizeEntryAdjustment,
+  upsertEntryAdjustment,
+  loadLocalEntryAdjustments,
+  saveLocalEntryAdjustments,
   readStoredLoginNickname,
   writeStoredLoginNickname,
   readStoredLoginPassword,
@@ -244,6 +252,9 @@ function App() {
     return formatDateKey(lastWeekStart)
   }, [weekStartTime])
   const [raidRuns, setRaidRuns] = useState(() => (supabase ? [] : loadLocalRaidRuns()))
+  // 횟수 제한 레이드(에라쿠스 주 5회)의 쓴 횟수 직접 조정 기록 (레기온 밖에서 쓴 횟수 등)
+  const [entryAdjustments, setEntryAdjustments] = useState(() => (supabase ? [] : loadLocalEntryAdjustments()))
+  const [isAdjustingEntries, setIsAdjustingEntries] = useState(false)
   // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'cleared', alreadyNotified }
   const [pendingRunStatus, setPendingRunStatus] = useState(null)
   // 저장 중인 기록 키 (중복 클릭 방지)
@@ -422,6 +433,12 @@ function App() {
     }
   }, [raidRuns])
 
+  useEffect(() => {
+    if (!supabase) {
+      saveLocalEntryAdjustments(entryAdjustments)
+    }
+  }, [entryAdjustments])
+
   // 화면에 보이는 지난 신청을 보관 목록에 모아 둔다.
   // 다시 등록해서 덮어쓰거나 지운 뒤에도 불러오기 목록에 남기기 위해서다. (DB에서는 트리거가 같은 일을 한다)
   useEffect(() => {
@@ -482,6 +499,47 @@ function App() {
       supabase.removeChannel(raidRunChannel)
     }
   }, [weekStartKey, lastWeekStartKey])
+
+  // 이번 주 쓴 횟수 조정 기록을 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  // supabase_raid_entries.sql을 아직 실행하지 않았으면 표가 없어 조정 없이(자동 집계만) 보인다.
+  // 표가 없을 때 실시간 구독 오류가 다른 구독에 번지지 않게 채널을 따로 둔다.
+  useEffect(() => {
+    if (!supabase) {
+      return undefined
+    }
+
+    let isMounted = true
+
+    supabase
+      .from('raid_entry_adjustments')
+      .select('*')
+      .eq('week_start', weekStartKey)
+      .then(({ data, error }) => {
+        if (isMounted && !error && Array.isArray(data)) {
+          setEntryAdjustments(data.map((entry) => normalizeEntryAdjustment(entry)).filter(Boolean))
+        }
+      })
+
+    const adjustmentChannel = supabase
+      .channel('raid-entry-adjustments-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'raid_entry_adjustments' },
+        (payload) => {
+          const next = normalizeEntryAdjustment(payload.new)
+
+          if (next?.weekStart === weekStartKey) {
+            setEntryAdjustments((prev) => upsertEntryAdjustment(prev, next))
+          }
+        },
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      supabase.removeChannel(adjustmentChannel)
+    }
+  }, [weekStartKey, raidRunsReloadTick])
 
   useEffect(() => {
     // 분이 바뀌었을 때만 새 시각을 넣는다. (같은 값이면 다시 그리지 않는다)
@@ -670,6 +728,10 @@ function App() {
           return
         }
 
+        if (isCurrentEntriesExhausted) {
+          return
+        }
+
         if (!dayTimes.includes(time) && getSelectableTimesForSelectedDay(day).includes(time) && !takenSlots.has(`${day}|${time}`) && !isPastSlot(day, time)) {
           nextSelection[day] = [...dayTimes, time]
         }
@@ -717,7 +779,11 @@ function App() {
       return `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}`
     }
 
-    return isPastSlot(day, time) ? '이미 지난 시간이라 고를 수 없어요.' : ''
+    if (isPastSlot(day, time)) {
+      return '이미 지난 시간이라 고를 수 없어요.'
+    }
+
+    return isCurrentEntriesExhausted ? entriesExhaustedMessage : ''
   }
 
   // 마우스로 시간표 칸을 누르면 그 칸을 바꾸고, 누른 채 끌면 지나가는 칸에도 같은 동작을 한다.
@@ -893,17 +959,7 @@ function App() {
       map.set(key, current)
     })
 
-    return [...map.values()].sort((a, b) => {
-      const raidOrder = { 무스펠: 0, '비탄의 설원': 1 }
-      const raidDiff = (raidOrder[a.raidName] ?? 99) - (raidOrder[b.raidName] ?? 99)
-      if (raidDiff !== 0) return raidDiff
-
-      const difficultyOrder = { 보통: 0, 어려움: 1 }
-      const difficultyDiff = (difficultyOrder[a.difficulty] ?? 99) - (difficultyOrder[b.difficulty] ?? 99)
-      if (difficultyDiff !== 0) return difficultyDiff
-
-      return (a.mode ?? '').localeCompare(b.mode ?? '')
-    })
+    return [...map.values()].sort(compareRaidTarget)
   }, [allScheduleEntries])
 
   const dayRaidSummary = useMemo(() => {
@@ -1018,6 +1074,104 @@ function App() {
 
     return map
   }, [raidSchedules])
+
+  // 횟수 제한 레이드(에라쿠스 유적 주 5회)의 이번 주 사용 횟수. 클리어 O인 시간대의 정원만 센다.
+  const weeklyEntryCounts = useMemo(
+    () => countWeeklyEntries(raidRuns, weekStartKey, (run) => (
+      memberByRaidDateTime.get(`${run.day}-${run.time}`)?.[`${run.raidName} ${run.difficulty} ${run.mode}`] ?? []
+    )),
+    [raidRuns, weekStartKey, memberByRaidDateTime],
+  )
+
+  // 이번 주 직접 조정 ("레이드|닉네임" → +n / -n)
+  const entryAdjustmentByKey = useMemo(
+    () => new Map(entryAdjustments
+      .filter((entry) => entry.weekStart === weekStartKey)
+      .map((entry) => [`${entry.raidName}|${entry.nickname}`, entry.adjustment])),
+    [entryAdjustments, weekStartKey],
+  )
+
+  // 횟수 제한 레이드의 이번 주 사용 현황. 제한이 없는 레이드면 null.
+  // cleared: 클리어 O로 자동으로 센 횟수, adjustment: 직접 조정, used: 합계, left: 남은 횟수
+  const getEntryUsage = (raidName, nickname) => {
+    const limit = getRaidWeeklyLimit(raidName)
+
+    if (!limit) {
+      return null
+    }
+
+    const cleared = weeklyEntryCounts.get(`${raidName}|${nickname}`) ?? 0
+    const adjustment = entryAdjustmentByKey.get(`${raidName}|${nickname}`) ?? 0
+    const used = Math.max(0, cleared + adjustment)
+    return { limit, cleared, adjustment, used, left: Math.max(0, limit - used) }
+  }
+
+  // 남은 횟수. 횟수 제한이 없는 레이드면 null.
+  const getEntriesLeft = (raidName, nickname) => getEntryUsage(raidName, nickname)?.left ?? null
+
+  // 이름 옆에 붙이는 남은 횟수 표시 (예: 3/5)
+  const renderEntriesLeft = (raidName, nickname) => {
+    const usage = getEntryUsage(raidName, nickname)
+
+    if (!usage) {
+      return null
+    }
+
+    return (
+      <span
+        className={`entries-left-badge${usage.left === 0 ? ' is-empty' : ''}`}
+        title={`이번 주 남은 횟수 ${usage.left}/${usage.limit}`}
+        aria-label={`남은 횟수 ${usage.left}/${usage.limit}`}
+      >
+        {usage.left}/{usage.limit}
+      </span>
+    )
+  }
+
+  // 지금 폼의 캐릭터가 고른 레이드의 사용 현황. 횟수를 다 썼으면 새 시간을 고를 수 없다.
+  const currentEntryUsage = getEntryUsage(selectedRaidLabel, currentNickname)
+  const isCurrentEntriesExhausted = currentEntryUsage?.left === 0
+  const entriesExhaustedMessage = `이번 주 ${selectedRaidLabel} 횟수(${getRaidWeeklyLimit(selectedRaidLabel)}회)를 다 써서 새로 신청할 수 없어요.`
+
+  // 폼의 캐릭터가 고른 레이드의 쓴 횟수를 직접 1회 더하거나(delta 1) 뺀다(delta -1).
+  // 레기온 밖에서 쓴 횟수는 +, 클리어로 셌지만 실제로 안 들어갔으면 −.
+  const adjustEntryCount = async (delta) => {
+    const nickname = currentNickname
+    const raidName = selectedRaidLabel
+
+    if (!nickname || !currentEntryUsage || isAdjustingEntries) {
+      return
+    }
+
+    let next
+
+    if (supabase) {
+      setIsAdjustingEntries(true)
+
+      let result
+
+      try {
+        result = await adjustRaidEntries(nickname, sessionPassword, raidName, delta)
+      } catch (error) {
+        showToast(`횟수를 바꾸지 못했어요. (${error.message})`, 'error', 'entry-adjust')
+        return
+      } finally {
+        setIsAdjustingEntries(false)
+      }
+
+      if (result?.error) {
+        showToast(`횟수를 바꾸지 못했어요. ${describeAuthResult(result.error)}`, 'error', 'entry-adjust')
+        return
+      }
+
+      next = normalizeEntryAdjustment(result)
+    } else {
+      next = { weekStart: weekStartKey, nickname, raidName, adjustment: currentEntryUsage.adjustment + delta }
+    }
+
+    setEntryAdjustments((prev) => upsertEntryAdjustment(prev, next))
+    showToast(`${nickname} 쓴 횟수를 1회 ${delta > 0 ? '더했어요' : '뺐어요'}.`, 'success', 'entry-adjust')
+  }
 
   // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
   const mySavedSchedules = useMemo(
@@ -2193,12 +2347,19 @@ function App() {
     )
     const skipped = []
     const skippedPast = []
+    const skippedExhausted = []
     let restoredCount = 0
 
     setIsSaving(true)
 
     try {
       for (const entry of selectedRestoreSchedules) {
+        // 이번 주 횟수를 다 쓴 레이드(에라쿠스 주 5회)는 다시 등록하지 않는다.
+        if (getEntriesLeft(entry.raidName, nickname) === 0) {
+          skippedExhausted.push(entry.raidName)
+          continue
+        }
+
         const selection = normalizeDayTimeSelection(entry.dayTimeSelection)
 
         weekdayNames.forEach((day) => {
@@ -2252,6 +2413,10 @@ function App() {
 
     if (skippedPast.length > 0) {
       showToast(`이미 지나서 뺀 시간: ${skippedPast.join(', ')}`, 'info')
+    }
+
+    if (skippedExhausted.length > 0) {
+      showToast(`이번 주 횟수를 다 써서 뺀 레이드: ${[...new Set(skippedExhausted)].join(', ')}`, 'info')
     }
   }
 
@@ -2430,7 +2595,12 @@ function App() {
   ), [raidSchedules, myCharacters])
 
   // '나도 참여'를 보여 줄 시간대인지. 지났거나 내 캐릭터가 그 시간에 이미 다른 신청을 했으면 보여 주지 않는다.
-  const canJoinSlot = ({ day, time }) => !isPastSlot(day, time) && !myAllTakenSlots.has(`${day}|${time}`)
+  // 횟수를 다 쓴 레이드(에라쿠스 주 5회)는 바로 신청 버튼을 숨긴다.
+  const canJoinSlot = ({ day, time, raidName }) => (
+    !isPastSlot(day, time)
+    && !myAllTakenSlots.has(`${day}|${time}`)
+    && getEntriesLeft(raidName, currentNickname) !== 0
+  )
 
   // 현황을 보다가 그 시간대에 바로 신청한다. 지금 폼에서 고른 캐릭터로 저장한다.
   const joinSlot = async ({ raidName, difficulty, mode, day, time }) => {
@@ -3163,6 +3333,11 @@ function App() {
 
   // 고른 요일의 시간을 다른 요일에도 넣는다. 그 요일에 없거나 지났거나 이미 신청한 시간은 뺀다. 저장 전이라 되돌릴 수 있다.
   const copyTimesToOtherDays = (sourceDay) => {
+    if (isCurrentEntriesExhausted) {
+      showToast(entriesExhaustedMessage, 'info', 'copy-times')
+      return
+    }
+
     const times = currentDayTimeSelection[sourceDay] ?? []
     const pairs = weekdayNames
       .filter((day) => day !== sourceDay)
@@ -4067,6 +4242,7 @@ function App() {
             {isMobile && isScheduleTargetSelected && !targetEditOpen ? (
               <div className="target-summary">
                 <strong>{selectedRaidLabel} · {profile.difficulty} · {profile.mode}</strong>
+                {renderEntriesLeft(selectedRaidLabel, currentNickname)}
                 <button type="button" className="secondary-button small-toggle" onClick={() => setTargetEditOpen(true)}>
                   변경
                 </button>
@@ -4082,9 +4258,14 @@ function App() {
                     type="button"
                     className={selectedRaidLabel === raid.label ? 'chip active' : 'chip'}
                     aria-pressed={selectedRaidLabel === raid.label}
-                    onClick={() => setProfile((prev) => ({ ...prev, raidFocus: raid.id }))}
+                    onClick={() => setProfile((prev) => ({
+                      ...prev,
+                      raidFocus: raid.id,
+                      // 성역(보통 · 어려움) ↔ 초월(1~3단계)처럼 난이도 종류가 바뀌면 다시 고르게 비운다.
+                      difficulty: raid.difficulties.includes(prev.difficulty) ? prev.difficulty : '',
+                    }))}
                   >
-                    {raid.label}
+                    {raid.tag ? <span className="raid-chip-label">{raid.label}<br /><small>{raid.tag}</small></span> : raid.label}
                   </button>
                 ))}
                 {upcomingRaids.map((raid) => (
@@ -4100,13 +4281,54 @@ function App() {
                   </button>
                 ))}
               </div>
+
+              {/* 횟수 제한 레이드(에라쿠스 주 5회): 이 캐릭터의 남은 횟수와 직접 조정 */}
+              {currentEntryUsage && currentNickname && (
+                <div className={`entries-left-panel${currentEntryUsage.left === 0 ? ' is-empty' : ''}`}>
+                  <div className="entries-left-text">
+                    <span>
+                      이번 주 남은 횟수 <strong>{currentEntryUsage.left}/{currentEntryUsage.limit}</strong>
+                    </span>
+                    <small>
+                      클리어 {currentEntryUsage.cleared}회
+                      {currentEntryUsage.adjustment !== 0 && ` · 직접 조정 ${currentEntryUsage.adjustment > 0 ? '+' : ''}${currentEntryUsage.adjustment}회`}
+                      {' · 1~3단계 합산'}
+                    </small>
+                    {currentEntryUsage.left === 0 && <small className="entries-left-warn">횟수를 다 써서 새 시간은 신청할 수 없어요.</small>}
+                  </div>
+                  <div className="entries-adjust" role="group" aria-label="쓴 횟수 직접 조정">
+                    <button
+                      type="button"
+                      className="secondary-button small-toggle"
+                      aria-label="쓴 횟수 1회 빼기"
+                      title="클리어로 셌지만 실제로 안 들어갔으면 빼요"
+                      disabled={isAdjustingEntries || currentEntryUsage.used <= 0}
+                      onClick={() => adjustEntryCount(-1)}
+                    >
+                      −1
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button small-toggle"
+                      aria-label="쓴 횟수 1회 더하기"
+                      title="레기온 밖에서 쓴 횟수를 더해요"
+                      disabled={isAdjustingEntries || currentEntryUsage.left <= 0}
+                      onClick={() => adjustEntryCount(1)}
+                    >
+                      +1
+                    </button>
+                  </div>
+                  <small className="entries-adjust-hint">레기온 밖에서 썼으면 +1, 클리어로 셌지만 안 들어갔으면 −1</small>
+                </div>
+              )}
             </div>
 
-            <div className="two-column">
+            {/* 난이도가 3개 이상(초월 1~3단계)이면 난이도를 한 줄 전체로 쓰고 공략 방식은 아래로 내린다. */}
+            <div className={`two-column${getRaidDifficulties(selectedRaidLabel).length > 2 ? ' is-stacked' : ''}`}>
               <div className={`field-group ${showTargetWarning && !profile.difficulty ? 'is-missing' : ''}`}>
                 <label>난이도</label>
                 <div className="chip-grid segmented" role="group" aria-label="난이도">
-                  {difficultyOptions.map((difficulty) => (
+                  {getRaidDifficulties(selectedRaidLabel).map((difficulty) => (
                     <button
                       key={difficulty}
                       type="button"
@@ -4323,7 +4545,7 @@ function App() {
                     return (
                       <li
                         key={entryKey}
-                        className={`saved-schedule-item ${entry.raidName === '비탄의 설원' ? 'raid-snow' : 'raid-muspel'}${entry.attendance !== '참' ? ' is-absent' : ''}${isEditing ? ' is-editing' : ''}`}
+                        className={`saved-schedule-item raid-${raidOptions.find((raid) => raid.label === entry.raidName)?.id ?? 'muspel'}${entry.attendance !== '참' ? ' is-absent' : ''}${isEditing ? ' is-editing' : ''}`}
                       >
                         <div className="saved-schedule-top">
                           <div className="saved-schedule-title">
@@ -4332,6 +4554,7 @@ function App() {
                             <span className="saved-schedule-tag">{entry.mode}</span>
                             {entry.attendance !== '참' && <span className="saved-schedule-tag tag-absent">불참</span>}
                             {isUnsaved && <span className="saved-schedule-tag tag-unsaved">저장 안 됨</span>}
+                            {getEntriesLeft(entry.raidName, entry.nickname) === 0 && <span className="saved-schedule-tag tag-exhausted">횟수 소진</span>}
                           </div>
                           <div className="saved-schedule-actions">
                             <button
@@ -4583,6 +4806,7 @@ function App() {
                               <span>{member.nickname}</span>
                               <span className="member-power-inline">{member.power}</span>
                             </span>
+                            {renderEntriesLeft(raidName, member.nickname)}
                             <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} showLead />
                           </span>
                         )
@@ -5050,6 +5274,8 @@ function App() {
                                             </span>
                                             {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
                                           </span>
+                                          {/* 남은 횟수(에라쿠스)는 칸 오른쪽 위에 띄운다. 모바일은 칸이 좁아 이름 · 전투력을 밀어내지 않게 한다. */}
+                                          {renderEntriesLeft(activeTabMeta.raid, member.nickname)}
                                           <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                                         </span>
                                       ))}
@@ -5092,6 +5318,7 @@ function App() {
                               <span className="member-power-inline">{member.power}</span>
                             </span>
                             {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
+                            {renderEntriesLeft(raidName, member.nickname)}
                           </span>
                           <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
                         </span>

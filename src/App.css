@@ -748,6 +748,10 @@ input::placeholder {
   --raid-accent: #7cd4ff;
 }
 
+.saved-schedule-item.raid-erakus {
+  --raid-accent: #c39bff;
+}
+
 .saved-schedule-item::before {
   content: '';
   position: absolute;
@@ -3087,10 +3091,22 @@ input::placeholder {
   white-space: nowrap;
 }
 
-/* 레이드는 오픈 예정까지 4개라 두 칸씩 두 줄로 */
+/* 레이드는 오픈 예정까지 여러 개라 두 칸씩 여러 줄로 */
 .chip-grid.segmented.raid-chip-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-flow: row;
+}
+
+/* 이름 아래 작은 구분 (예: 초월) */
+.raid-chip-label {
+  line-height: 1.2;
+  text-align: center;
+}
+
+.raid-chip-label small {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 /* 아직 열리지 않은 레이드: 누르면 오픈 날짜만 알린다 */
@@ -4764,5 +4780,153 @@ input::placeholder {
   /* 수정을 누르면 고정된 상단 바에 가리지 않는 곳까지 스크롤한다 */
   #schedule-day-field {
     scroll-margin-top: 76px;
+  }
+}
+
+/* 초월(1~3단계)처럼 난이도가 많으면 난이도 · 공략 방식을 한 줄씩 쌓는다 */
+.two-column.is-stacked,
+.form-section .two-column.is-stacked {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 횟수 제한 레이드(에라쿠스 주 5회): 이름 옆 남은 횟수 (예: 3/5) */
+.entries-left-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(195, 155, 255, 0.16);
+  border: 1px solid rgba(195, 155, 255, 0.38);
+  color: #dcc8ff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.entries-left-badge.is-empty {
+  background: rgba(255, 110, 110, 0.14);
+  border-color: rgba(255, 128, 128, 0.36);
+  color: #ffc2c2;
+}
+
+.target-summary .entries-left-badge {
+  margin-right: auto;
+}
+
+/* 신청 폼: 남은 횟수 + 직접 조정 */
+.entries-left-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 8px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(195, 155, 255, 0.08);
+  border: 1px solid rgba(195, 155, 255, 0.28);
+}
+
+.entries-left-panel.is-empty {
+  background: rgba(255, 110, 110, 0.08);
+  border-color: rgba(255, 128, 128, 0.32);
+}
+
+.entries-left-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: #dfe8ff;
+}
+
+.entries-left-text strong {
+  color: #e6d6ff;
+  font-size: 0.95rem;
+}
+
+.entries-left-panel.is-empty .entries-left-text strong,
+.entries-left-warn {
+  color: #ffc2c2;
+}
+
+.entries-left-text small,
+.entries-adjust-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.entries-left-text .entries-left-warn {
+  color: #ffc2c2;
+  font-weight: 700;
+}
+
+.entries-adjust {
+  display: flex;
+  gap: 4px;
+}
+
+.entries-adjust .small-toggle {
+  width: auto;
+  min-width: 40px;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.entries-adjust-hint {
+  grid-column: 1 / -1;
+}
+
+.saved-schedule-tag.tag-exhausted {
+  background: rgba(255, 110, 110, 0.14);
+  border-color: rgba(255, 128, 128, 0.36);
+  color: #ffc2c2;
+}
+
+/* 파티 보기: 남은 횟수는 이름 칸 오른쪽 위에 스티커처럼 띄운다 (이름 · 전투력 칸 폭은 그대로) */
+.time-member-pill > .entries-left-badge {
+  position: absolute;
+  top: -7px;
+  right: -3px;
+  z-index: 1;
+  margin-left: 0;
+  padding: 0 4px;
+  font-size: 0.6rem;
+  line-height: 1.35;
+  background: #3a3157;
+  pointer-events: none;
+}
+
+.time-member-pill > .entries-left-badge.is-empty {
+  background: #4a2c33;
+}
+
+@media (max-width: 640px) {
+  /* 남은 횟수 칸: 손가락으로 누르기 쉽게 버튼을 키우고, 안내 문구는 짧게 줄 바꿈 */
+  .entries-left-panel {
+    padding: 10px;
+  }
+
+  .entries-adjust {
+    gap: 6px;
+  }
+
+  .entries-adjust .small-toggle {
+    min-width: 48px;
+    min-height: 44px;
+    font-size: 0.95rem;
+  }
+
+  .entries-adjust-hint {
+    line-height: 1.4;
+  }
+
+  /* 요약 한 줄: 레이드 이름이 길어도 남은 횟수와 변경 버튼이 밀려나지 않게 */
+  .target-summary strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
