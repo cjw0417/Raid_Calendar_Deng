@@ -4930,3 +4930,19 @@ input::placeholder {
     white-space: nowrap;
   }
 }
+
+/* 남은 횟수 설명: "클리어 차감 1회 · 직접 차감 1회 · 1~3단계 합산" (항목 사이에서만 줄바꿈) */
+.entries-left-detail {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.entries-left-detail span {
+  white-space: nowrap;
+}
+
+.entries-left-detail span + span::before {
+  content: '·';
+  margin: 0 4px;
+}

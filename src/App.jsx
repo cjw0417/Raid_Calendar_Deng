@@ -1170,7 +1170,7 @@ function App() {
     }
 
     setEntryAdjustments((prev) => upsertEntryAdjustment(prev, next))
-    showToast(`${nickname} 쓴 횟수를 1회 ${delta > 0 ? '더했어요' : '뺐어요'}.`, 'success', 'entry-adjust')
+    showToast(`${nickname} 남은 횟수를 1회 ${delta > 0 ? '줄였어요' : '늘렸어요'}.`, 'success', 'entry-adjust')
   }
 
   // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
@@ -4289,36 +4289,39 @@ function App() {
                     <span>
                       이번 주 남은 횟수 <strong>{currentEntryUsage.left}/{currentEntryUsage.limit}</strong>
                     </span>
-                    <small>
-                      클리어 {currentEntryUsage.cleared}회
-                      {currentEntryUsage.adjustment !== 0 && ` · 직접 조정 ${currentEntryUsage.adjustment > 0 ? '+' : ''}${currentEntryUsage.adjustment}회`}
-                      {' · 1~3단계 합산'}
+                    {/* 좁은 화면에서 항목 중간이 아니라 항목 사이에서 줄이 바뀌게 묶는다. */}
+                    <small className="entries-left-detail">
+                      <span>클리어 차감 {currentEntryUsage.cleared}회</span>
+                      {currentEntryUsage.adjustment > 0 && <span>직접 차감 {currentEntryUsage.adjustment}회</span>}
+                      {currentEntryUsage.adjustment < 0 && <span>직접 복구 {-currentEntryUsage.adjustment}회</span>}
+                      <span>1~3단계 합산</span>
                     </small>
                     {currentEntryUsage.left === 0 && <small className="entries-left-warn">횟수를 다 써서 새 시간은 신청할 수 없어요.</small>}
                   </div>
-                  <div className="entries-adjust" role="group" aria-label="쓴 횟수 직접 조정">
+                  {/* 버튼은 화면에 보이는 '남은 횟수' 기준이다. −1은 쓴 횟수 +1, +1은 쓴 횟수 −1로 저장한다. */}
+                  <div className="entries-adjust" role="group" aria-label="남은 횟수 직접 조정">
                     <button
                       type="button"
                       className="secondary-button small-toggle"
-                      aria-label="쓴 횟수 1회 빼기"
-                      title="클리어로 셌지만 실제로 안 들어갔으면 빼요"
-                      disabled={isAdjustingEntries || currentEntryUsage.used <= 0}
-                      onClick={() => adjustEntryCount(-1)}
+                      aria-label="남은 횟수 1회 줄이기"
+                      title="레기온 밖에서 돌았으면 남은 횟수를 줄여요"
+                      disabled={isAdjustingEntries || currentEntryUsage.left <= 0}
+                      onClick={() => adjustEntryCount(1)}
                     >
                       −1
                     </button>
                     <button
                       type="button"
                       className="secondary-button small-toggle"
-                      aria-label="쓴 횟수 1회 더하기"
-                      title="레기온 밖에서 쓴 횟수를 더해요"
-                      disabled={isAdjustingEntries || currentEntryUsage.left <= 0}
-                      onClick={() => adjustEntryCount(1)}
+                      aria-label="남은 횟수 1회 늘리기"
+                      title="클리어로 차감됐지만 실제로 안 들어갔으면 되돌려요"
+                      disabled={isAdjustingEntries || currentEntryUsage.used <= 0}
+                      onClick={() => adjustEntryCount(-1)}
                     >
                       +1
                     </button>
                   </div>
-                  <small className="entries-adjust-hint">레기온 밖에서 썼으면 +1, 클리어로 셌지만 안 들어갔으면 −1</small>
+                  <small className="entries-adjust-hint">레기온 밖에서 돌았으면 −1, 잘못 차감됐으면 +1</small>
                 </div>
               )}
             </div>
