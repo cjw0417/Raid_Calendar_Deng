@@ -669,6 +669,15 @@ select {
   font-size: 0.95rem;
 }
 
+input[aria-invalid='true'] {
+  border-color: rgba(255, 128, 128, 0.6);
+}
+
+.field-hint.field-error {
+  margin: 6px 0 0;
+  color: #ffb0b0;
+}
+
 input::placeholder {
   color: rgba(191, 208, 245, 0.55);
 }

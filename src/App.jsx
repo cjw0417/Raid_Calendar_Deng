@@ -60,7 +60,9 @@ import {
   buildFallbackHolidaySet,
   getHolidaySetForYear,
   classOptions,
-  powerOptions,
+  parsePowerInput,
+  POWER_MIN_K,
+  POWER_MAX_K,
   getRaidLabel,
   normalizeLeadReady,
   getClassIconPath,
@@ -173,6 +175,9 @@ function App() {
   const lastRemoteLoadRef = useRef(0)
   // 다 채운 '내 캐릭터'는 한 줄로 접어 둔다. 고치는 동안에는 펼친다.
   const [characterEditOpen, setCharacterEditOpen] = useState(false)
+  // 전투력 칸에 입력 중인 글자. 입력 중이 아니면 null이고 저장 형식(profile.power)을 보여준다.
+  const [powerDraft, setPowerDraft] = useState(null)
+  const [powerError, setPowerError] = useState(false)
   // 로그인한 사람의 비밀번호. 저장·삭제할 때 DB가 다시 확인하므로 메모리에만 들고 있는다.
   const [sessionPassword, setSessionPassword] = useState('')
   // 본캐에 연결된 부캐 목록: [{ altNickname, ownerNickname }] (누구나 읽을 수 있어 캘린더에 "OO의 부캐"로도 쓴다)
@@ -641,6 +646,12 @@ function App() {
   // 폼에서 고른 레이드 · 난이도 · 공략 방식. 요일/시간 선택은 이 조합마다 따로 관리한다.
   // 지금 신청 · 삭제하는 캐릭터 (본캐 또는 고른 부캐)
   const currentNickname = (activeCharacter || loggedInNickname || profile.nickname).trim()
+
+  // 캐릭터가 바뀌면 전투력 칸에 쓰다 만 글자를 버린다. (새 캐릭터의 저장값을 보여준다)
+  useEffect(() => {
+    setPowerDraft(null)
+    setPowerError(false)
+  }, [currentNickname])
   const altOwnerByNickname = useMemo(
     () => new Map(memberAlts.map(({ altNickname, ownerNickname }) => [altNickname, ownerNickname])),
     [memberAlts],
@@ -4153,18 +4164,32 @@ function App() {
 
               <div className="field-group">
                 <label htmlFor="power">전투력</label>
-                <select
+                {/* 직접 입력한다. 알아볼 수 있는 값이면 "950k" · "1250M" 형식으로 바꿔 두고, 칸을 벗어나면 그 형식으로 보여준다. */}
+                <input
                   id="power"
-                  value={profile.power}
-                  onChange={(event) => updateCharacterField('power', event.target.value)}
-                >
-                  <option value="" disabled>선택</option>
-                  {powerOptions.map((power) => (
-                    <option key={power} value={power}>
-                      {power}
-                    </option>
-                  ))}
-                </select>
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  placeholder="예: 950, 1250"
+                  value={powerDraft ?? profile.power}
+                  aria-invalid={powerError}
+                  onChange={(event) => {
+                    setPowerDraft(event.target.value)
+                    setPowerError(false)
+                    updateCharacterField('power', parsePowerInput(event.target.value) ?? '')
+                  }}
+                  onBlur={() => {
+                    // 잘못 쓴 값은 지우지 않고 남겨 두어 고칠 수 있게 한다.
+                    if (powerDraft !== null && powerDraft.trim() !== '' && !parsePowerInput(powerDraft)) {
+                      setPowerError(true)
+                    } else {
+                      setPowerDraft(null)
+                    }
+                  }}
+                />
+                {powerError && (
+                  <p className="field-hint field-error">{POWER_MIN_K} ~ {POWER_MAX_K} 사이 숫자로 입력해 주세요. (예: 950, 1250)</p>
+                )}
               </div>
             </div>
 

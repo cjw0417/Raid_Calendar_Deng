@@ -270,19 +270,39 @@ export const classOptions = [
   '치유성',
 ]
 
-export const powerOptions = [
-  '100~200k',
-  '200~300k',
-  '300~400k',
-  '400~500k',
-  '500~600k',
-  '600~700k',
-  '700~800k',
-  '800~900k',
-  '900~1000k',
-  '1000~1100k',
-  '1100~1200k',
-]
+// 직접 입력하는 전투력의 허용 범위 (k 단위)
+export const POWER_MIN_K = 100
+export const POWER_MAX_K = 5000
+
+// k 단위 전투력을 저장 · 표시 형식으로 바꾼다. 숫자는 그대로 두고 1000 미만은 "950k", 이상은 "1250M".
+export function formatPower(powerK) {
+  return `${powerK}${powerK >= 1000 ? 'M' : 'k'}`
+}
+
+// 직접 입력한 전투력을 저장 형식으로 바꾼다. 알아볼 수 없거나 범위를 벗어나면 null.
+// "950", "950k", "1250", "1250M", "1.25M", "1.25", "1,250,000"을 모두 받는다.
+export function parsePowerInput(text) {
+  const matched = String(text ?? '').replace(/[\s,]/g, '').toLowerCase().match(/^(\d+(?:\.\d+)?)(k|m)?$/)
+
+  if (!matched) {
+    return null
+  }
+
+  const value = Number(matched[1])
+  let powerK = value
+
+  if (matched[2] !== 'k' && value < 10) {
+    // "1.25" · "1.25M"처럼 10보다 작은 수는 백만 단위로 보고 1250으로 바꾼다.
+    powerK = value * 1000
+  } else if (!matched[2] && value >= 10000) {
+    // 단위 없이 "1250000"처럼 원래 숫자로 쓰면 k로 바꾼다.
+    powerK = value / 1000
+  }
+
+  powerK = Math.round(powerK)
+
+  return powerK >= POWER_MIN_K && powerK <= POWER_MAX_K ? formatPower(powerK) : null
+}
 
 export function normalizeRaidName(raidValue) {
   const normalized = String(raidValue ?? '')
@@ -508,7 +528,8 @@ export function formatTimeUntil(diffMs) {
   return hours > 0 ? `${hours}시간 ${minutes}분 후` : `${minutes}분 후`
 }
 
-// 전투력 구간 "600~700k"를 비교할 수 있는 숫자(아래쪽 값)로 바꾼다. 알 수 없으면 0.
+// 전투력을 비교할 수 있는 숫자로 바꾼다. 알 수 없으면 0.
+// "1250M"은 1250, "950k"는 950, 예전 구간 값 "600~700k"는 아래쪽 값 600.
 export function getPowerValue(power) {
   const matched = String(power ?? '').match(/\d+/)
   return matched ? Number(matched[0]) : 0
