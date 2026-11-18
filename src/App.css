@@ -4955,3 +4955,9 @@ input::placeholder {
   content: '·';
   margin: 0 4px;
 }
+
+/* 1파티 레이드(초월 5인)는 A/B로 나누지 않으니 어느 화면에서든 한 열로 둔다. (위의 화면별 2열 규칙보다 뒤에 둔다) */
+.calendar-grid .party-split.is-single,
+.party-split.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}

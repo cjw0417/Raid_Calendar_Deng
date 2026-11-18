@@ -25,6 +25,8 @@ export const raidOptions = [
     difficulties: ['1단계', '2단계', '3단계'],
     // 캐릭터마다 일주일에 들어갈 수 있는 횟수 (1~3단계 · 공략 방식 합쳐서)
     weeklyLimit: 5,
+    // 한 타임 정원. 초월은 5인 1파티다. (없으면 RAID_FULL_SIZE = 5명 × 2파티)
+    fullSize: 5,
     modes: ['1단계(트라이)', '2단계(트라이)', '3단계(트라이)', '1단계(반숙이상)', '2단계(반숙이상)', '3단계(반숙이상)'],
   },
 ]
@@ -39,8 +41,18 @@ export function getRaidWeeklyLimit(raidLabel) {
   return raidOptions.find((raid) => raid.label === raidLabel)?.weeklyLimit ?? 0
 }
 
+// 한 타임 정원. 레이드마다 다를 수 있다. (DB의 _raid_full_size와 같은 값이어야 한다)
+export function getRaidFullSize(raidLabel) {
+  return raidOptions.find((raid) => raid.label === raidLabel)?.fullSize ?? RAID_FULL_SIZE
+}
+
+// 정원이 한 파티(5명) 이하인 레이드는 A/B로 나누지 않는다.
+export function isSinglePartyRaid(raidLabel) {
+  return getRaidFullSize(raidLabel) <= PARTY_SIZE
+}
+
 // 이번 주 입장 횟수 ("레이드|닉네임" → 횟수).
-// 클리어 O로 표시된 시간대에서 정원(먼저 신청한 RAID_FULL_SIZE명) 안에 있던 캐릭터마다 1회로 센다.
+// 클리어 O로 표시된 시간대에서 정원(먼저 신청한 getRaidFullSize명) 안에 있던 캐릭터마다 1회로 센다.
 // 클리어 X(실패)와 표시 안 한 시간대는 세지 않는다. 횟수 제한이 있는 레이드만 센다.
 // getSlotPeople(run): 그 시간대 · 레이드 조합의 신청 인원 (신청 순서대로)
 export function countWeeklyEntries(raidRuns, weekStartKey, getSlotPeople) {
@@ -51,7 +63,7 @@ export function countWeeklyEntries(raidRuns, weekStartKey, getSlotPeople) {
       return
     }
 
-    const roster = new Set(getSlotPeople(run).slice(0, RAID_FULL_SIZE).map((person) => person.nickname))
+    const roster = new Set(getSlotPeople(run).slice(0, getRaidFullSize(run.raidName)).map((person) => person.nickname))
     roster.forEach((nickname) => {
       const key = `${run.raidName}|${nickname}`
       counts.set(key, (counts.get(key) ?? 0) + 1)
@@ -96,8 +108,11 @@ export function getUpcomingRaidMessage(raid) {
 // 요일별 신청 현황에서 접힌 시간 줄에 미리 보여줄 직업 아이콘 수
 export const SUMMARY_ICON_PREVIEW_LIMIT = 4
 
-// 한 타임 정원 (한 파티 5명 × 2파티)
-export const RAID_FULL_SIZE = 10
+// 한 파티 인원
+export const PARTY_SIZE = 5
+
+// 한 타임 기본 정원 (한 파티 5명 × 2파티). 레이드별 정원은 getRaidFullSize로 본다.
+export const RAID_FULL_SIZE = PARTY_SIZE * 2
 
 // 시작한 뒤에도 이 시간 동안은 '내 다음 레이드'에 진행 중으로 남겨 둔다.
 export const RAID_ONGOING_MS = 60 * 60 * 1000
@@ -399,10 +414,10 @@ export function formatTimeLabel(time) {
   return time === '00:00' ? '24:00' : time
 }
 
-// 인원 표시: 정원까지는 "7/10", 넘으면 "10/10 +3"
-export function formatHeadcount(count) {
-  const overflow = count - RAID_FULL_SIZE
-  return `${Math.min(count, RAID_FULL_SIZE)}/${RAID_FULL_SIZE}${overflow > 0 ? ` +${overflow}` : ''}`
+// 인원 표시: 정원까지는 "7/10", 넘으면 "10/10 +3" (fullSize: 그 레이드 정원)
+export function formatHeadcount(count, fullSize = RAID_FULL_SIZE) {
+  const overflow = count - fullSize
+  return `${Math.min(count, fullSize)}/${fullSize}${overflow > 0 ? ` +${overflow}` : ''}`
 }
 
 export function buildEmptyDayTimeSelection() {
@@ -535,10 +550,17 @@ export function getPowerValue(power) {
   return matched ? Number(matched[0]) : 0
 }
 
-// 한 타임 인원을 A/B 파티로 나눈다. people은 신청 순서로 정렬되어 있어야 한다. 앞의 10명이 정원이고 나머지는 대기다.
+// 한 타임 인원을 A/B 파티로 나눈다. people은 신청 순서로 정렬되어 있어야 한다. 앞의 fullSize명이 정원이고 나머지는 대기다.
 // 가능한 나눔을 모두 비교해 리딩 가능자 수 → 치유성 수 → 전투력 합 순으로 가장 고른 것을 고른다. (최대 252가지)
-export function buildBalancedParties(people) {
-  const roster = people.slice(0, RAID_FULL_SIZE)
+// 정원이 한 파티 이하(초월 5인)면 나누지 않고 모두 A에 두며 B는 비워 둔다.
+export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE) {
+  const roster = people.slice(0, fullSize)
+  const byRole = (a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power)
+
+  if (fullSize <= PARTY_SIZE) {
+    return { partyA: [...roster].sort(byRole), partyB: [], waiting: people.slice(fullSize) }
+  }
+
   const count = roster.length
   const sizeA = Math.ceil(count / 2)
   const sum = (getValue) => roster.reduce((total, member) => total + getValue(member), 0)
@@ -572,12 +594,10 @@ export function buildBalancedParties(people) {
     }
   }
 
-  const byRole = (a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power)
-
   return {
     partyA: roster.filter((_, index) => bestMask & (1 << index)).sort(byRole),
     partyB: roster.filter((_, index) => !(bestMask & (1 << index))).sort(byRole),
-    waiting: people.slice(RAID_FULL_SIZE),
+    waiting: people.slice(fullSize),
   }
 }
 

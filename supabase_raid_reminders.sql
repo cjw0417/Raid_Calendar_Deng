@@ -5,6 +5,7 @@
 -- 동작
 --   - 5분마다 시작 30분 안쪽으로 남은 시간대를 찾아 디스코드로 한 번 알린다.
 --   - 신청 인원이 기준(app_settings.reminder_min_members, 기본 10명) 이상인 시간대만 알린다.
+--     기준이 그 레이드 정원보다 크면 정원으로 본다. (초월 5인 레이드는 5명이 차면 알린다)
 --   - 이미 누군가 준비 확인을 시작한 시간대는 알리지 않는다.
 --
 -- 기준 인원 바꾸기:
@@ -69,7 +70,7 @@ begin
     into member_count, members_text, leaders_text
     from public._raid_slot_roster(week_start_value, slot.slot_day, slot.slot_time, slot.raid_name, slot.difficulty, slot.mode) r;
 
-    if member_count < min_members then
+    if member_count < least(min_members, public._raid_full_size(slot.raid_name)) then
       continue;
     end if;
 

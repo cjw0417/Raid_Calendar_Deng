@@ -648,6 +648,29 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await context.close()
 }
 
+// ---------- 초월(에라쿠스 유적)은 5인 1파티 ----------
+{
+  // 토 21:00에 7명: 앞의 5명이 정원, 2명은 대기
+  const party = Array.from({ length: 7 }, (_, i) => sched(`초월원${i + 1}`, i, { 토: ['21:00'] }, {
+    id: `p${i}`,
+    raidName: '에라쿠스 유적',
+    difficulty: '1단계',
+    slotSignedAt: { '토|21:00': `2026-12-23T10:0${i}:00+09:00` },
+  }))
+  const { page, context } = await open(LOCAL, { schedules: party })
+  await login(page)
+  await pickTarget(page, '에라쿠스 유적', '1단계', '트라이')
+  const slot = page.locator('[id="calendar-slot-토-21:00"]')
+  check('초월: 캘린더 칸 인원은 5명 정원 기준', await slot.locator('.slot-count').innerText(), '5/5 +2')
+  check('초월: A/B 없이 한 파티', [await slot.locator('.party-column').count(), await slot.locator('.party-label').innerText()], [1, '파티'])
+  check('초월: 6번째부터 대기', await slot.locator('.party-waiting').innerText(), '대기 2명: 초월원6, 초월원7')
+  check('초월: 요일별 현황도 5명 정원', (await page.locator('.day-raid-time-count').allInnerTexts()).includes('5/5 +2'))
+  check('초월: 추천 시간도 5명이면 출발 가능', (await page.locator('.recommend-status').allInnerTexts()).includes('출발 가능'))
+  await slot.scrollIntoViewIfNeeded()
+  await slot.screenshot({ path: join(out, 'pc-erakus-party.png') })
+  await context.close()
+}
+
 // ---------- PC는 기존 방식 유지 ----------
 {
   const { page, context } = await open(LOCAL, { schedules: [...crowd, sched(NICK, 0, { 토: ['22:00'] }, { id: 'mine' })], showGuide: true })

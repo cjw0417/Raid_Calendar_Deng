@@ -37,7 +37,8 @@ import {
   getRaidWeeklyLimit,
   countWeeklyEntries,
   SUMMARY_ICON_PREVIEW_LIMIT,
-  RAID_FULL_SIZE,
+  getRaidFullSize,
+  isSinglePartyRaid,
   RAID_ONGOING_MS,
   RALLY_OPEN_BEFORE_MS,
   REFRESH_MIN_INTERVAL_MS,
@@ -1283,7 +1284,7 @@ function App() {
     const nextState = new Map(myUpcomingSlots.map((slot) => {
       const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
       const key = [slot.nickname, slot.day, slot.time, slot.raidName, slot.difficulty, slot.mode].join('|')
-      return [key, { slot, isWaitlisted: people.slice(RAID_FULL_SIZE).some((person) => person.nickname === slot.nickname) }]
+      return [key, { slot, isWaitlisted: people.slice(getRaidFullSize(slot.raidName)).some((person) => person.nickname === slot.nickname) }]
     }))
     const previousState = myWaitlistStateRef.current
 
@@ -3154,11 +3155,12 @@ function App() {
     const runKey = getRaidRunKey(run)
     const runRecord = raidRunByKey.get(runKey)
     const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
-    const { partyA, partyB, waiting } = buildBalancedParties(people)
+    const fullSize = getRaidFullSize(slot.raidName)
+    const { partyA, partyB, waiting } = buildBalancedParties(people, fullSize)
     const isInParty = (party) => party.some((person) => person.nickname === slot.nickname)
     const waitingIndex = waiting.findIndex((person) => person.nickname === slot.nickname)
     // 준비 확인은 정원에 든 사람만 센다. (DB의 _raid_slot_roster와 같은 기준)
-    const voterNicknames = [...new Set(people.slice(0, RAID_FULL_SIZE).map((person) => person.nickname))]
+    const voterNicknames = [...new Set(people.slice(0, fullSize).map((person) => person.nickname))]
     const rallyCheckins = runRecord?.rallyCheckins ?? []
 
     return {
@@ -3173,7 +3175,9 @@ function App() {
       checkedCount: voterNicknames.filter((name) => rallyCheckins.includes(name)).length,
       isMeChecked: rallyCheckins.includes(slot.nickname),
       isWaitlisted: waitingIndex >= 0,
-      partyLabel: waitingIndex >= 0 ? `대기 ${waitingIndex + 1}번` : isInParty(partyA) ? 'A파티' : isInParty(partyB) ? 'B파티' : '',
+      fullSize,
+      // 1파티 레이드(초월)는 A/B 구분이 없어 파티 이름을 붙이지 않는다.
+      partyLabel: waitingIndex >= 0 ? `대기 ${waitingIndex + 1}번` : isSinglePartyRaid(slot.raidName) ? '' : isInParty(partyA) ? 'A파티' : isInParty(partyB) ? 'B파티' : '',
       canCallRally: slot.startTime - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS,
     }
   })
@@ -3207,7 +3211,7 @@ function App() {
   // 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. (targets: 볼 레이드 조합 목록)
   // 정원이 차고 리더가 있어 갈 수 있는 시간을 먼저, 그다음 인원이 많은 순(정원 초과는 같은 인원으로 본다),
   // 같으면 리더가 있는 시간, 그래도 같으면 이른 시간 순이다.
-  const isConfirmedSlot = (slot) => slot.people.length >= RAID_FULL_SIZE && slot.leaderCount > 0
+  const isConfirmedSlot = (slot) => slot.people.length >= getRaidFullSize(slot.raidName) && slot.leaderCount > 0
 
   const buildRecommendedSlots = (targets) => targets
     .flatMap(({ raidName, difficulty, mode }) => weekdayNames.flatMap((day) => timeSlots.map((time) => {
@@ -3217,7 +3221,7 @@ function App() {
     .filter((slot) => slot.people.length > 0 && !isPastSlot(slot.day, slot.time))
     .sort((a, b) => (
       isConfirmedSlot(b) - isConfirmedSlot(a)
-      || Math.min(b.people.length, RAID_FULL_SIZE) - Math.min(a.people.length, RAID_FULL_SIZE)
+      || Math.min(b.people.length, getRaidFullSize(b.raidName)) - Math.min(a.people.length, getRaidFullSize(a.raidName))
       || (b.leaderCount > 0) - (a.leaderCount > 0)
       || getSlotStartDate(weekDates, a.day, a.time) - getSlotStartDate(weekDates, b.day, b.time)
     ))
@@ -3280,7 +3284,7 @@ function App() {
 
   // 추천 시간의 상태 문구
   const getRecommendStatus = (slot) => {
-    const remaining = RAID_FULL_SIZE - slot.people.length
+    const remaining = getRaidFullSize(slot.raidName) - slot.people.length
 
     if (isConfirmedSlot(slot)) {
       return '출발 가능'
@@ -3470,7 +3474,7 @@ function App() {
         title={`${currentNickname}(으)로 ${slot.day}요일 ${formatTimeLabel(slot.time)}에 신청해요.`}
         onClick={() => joinSlot(slot)}
       >
-        {extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= RAID_FULL_SIZE ? '+ 대기 신청' : '+ 나도 참여'}
+        {extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= getRaidFullSize(slot.raidName) ? '+ 대기 신청' : '+ 나도 참여'}
       </button>
     ) : null
   )
@@ -3983,7 +3987,7 @@ function App() {
               </strong>
               <small>
                 {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())}
-                {` · ${formatHeadcount(nextRaidSlot.people.length)} · 리딩 ${nextRaidSlot.leaderCount}명`}
+                {` · ${formatHeadcount(nextRaidSlot.people.length, nextRaidSlot.fullSize)} · 리딩 ${nextRaidSlot.leaderCount}명`}
                 {nextRaidSlot.partyLabel && ` · ${nextRaidSlot.partyLabel}`}
                 {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
               </small>
@@ -4071,7 +4075,7 @@ function App() {
               <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요. 24:00은 그 요일 밤 12시예요.</p>
               <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
               <p>5. 못 가는 시간은 시간표에서 빼고 저장해요. 시간을 모두 빼면 저장 버튼이 '신청 삭제'로 바뀌어요.</p>
-              <p>6. 현황을 보다가 '나도 참여'를 누르면 그 시간대에 바로 신청돼요. 시간대마다 먼저 신청한 10명이 정원이고, 시간을 다시 저장해도 순서는 그대로예요.</p>
+              <p>6. 현황을 보다가 '나도 참여'를 누르면 그 시간대에 바로 신청돼요. 시간대마다 먼저 신청한 10명(초월 레이드는 5명)이 정원이고, 시간을 다시 저장해도 순서는 그대로예요.</p>
               <p>7. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
             </div>
           )}
@@ -4726,7 +4730,7 @@ function App() {
                           {getRecommendStatus(slot)}
                         </span>
                         <span className="recommend-meta">
-                          {formatHeadcount(slot.people.length)} · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
+                          {formatHeadcount(slot.people.length, getRaidFullSize(slot.raidName))} · {slot.leaderCount > 0 ? `리딩 ${slot.leaderCount}` : '리더 없음'}
                         </span>
                       </button>
                       {renderJoinButton(slot, slot.people.length, 'is-block')}
@@ -4742,9 +4746,9 @@ function App() {
           {calendarHelpOpen && (
             <div className="help-panel compact" data-section="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
-              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명이 정원이고, 넘는 인원은 신청 순서대로 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
+              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명(초월 레이드는 5명)이 정원이고, 넘는 인원은 신청 순서대로 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
               <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '출발 가능' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
-              <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며, O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
+              <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며(초월 레이드는 5명 1파티), O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
               <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
             </div>
           )}
@@ -4855,10 +4859,11 @@ function App() {
                                 const isExpanded = Boolean(expandedSummaryRows[rowKey])
                                 const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
                                 const hiddenCount = timeVoters.length - previewVoters.length
-                                // 신청 순서로 정렬된 이 시간대 인원. 앞의 10명이 정원이고 나머지는 대기다.
+                                // 신청 순서로 정렬된 이 시간대 인원. 앞의 정원(10명, 초월 5명)이 참여이고 나머지는 대기다.
+                                const slotFullSize = getRaidFullSize(raidName)
                                 const slotPeople = memberByRaidDateTime.get(`${day}-${time}`)?.[`${raidName} ${difficulty} ${mode}`] ?? []
-                                const rosterNicknames = [...new Set(slotPeople.slice(0, RAID_FULL_SIZE).map((member) => member.nickname))]
-                                const overflowCount = Math.max(0, slotPeople.length - RAID_FULL_SIZE)
+                                const rosterNicknames = [...new Set(slotPeople.slice(0, slotFullSize).map((member) => member.nickname))]
+                                const overflowCount = Math.max(0, slotPeople.length - slotFullSize)
                                 const run = { weekStart: weekStartKey, day, time, raidName, difficulty, mode }
                                 const runKey = getRaidRunKey(run)
                                 const runRecord = raidRunByKey.get(runKey)
@@ -4880,7 +4885,7 @@ function App() {
                                 const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
                                 const isMeChecked = rallyCheckins.includes(mySlotNickname)
-                                const isFullSlot = timeVoters.length >= RAID_FULL_SIZE
+                                const isFullSlot = timeVoters.length >= slotFullSize
                                 // 시작 1시간 전부터 준비 확인을 시작할 수 있다. (지난 시간은 기록용으로 그대로 둔다)
                                 const canCallRally = getSlotStartDate(weekDates, day, time).getTime() - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS
                                 const hasLeader = timeVoters.some((member) => member.leadReady === 'O')
@@ -5008,7 +5013,7 @@ function App() {
                                     >
                                       <span className={`day-raid-time-tag ${isFullSlot ? 'is-full' : ''}`}>
                                         {formatTimeLabel(time)}
-                                        <span className="day-raid-time-count">{formatHeadcount(slotPeople.length)}</span>
+                                        <span className="day-raid-time-count">{formatHeadcount(slotPeople.length, slotFullSize)}</span>
                                       </span>
                                       {isSlotVoter && <span className="my-slot-badge">내 시간</span>}
                                       {!hasLeader && <span className="slot-warn">리더 없음</span>}
@@ -5062,7 +5067,7 @@ function App() {
                                         {overflowCount > 0 && (
                                           <span className="day-raid-overflow-label">대기 (신청 순)</span>
                                         )}
-                                        {slotPeople.slice(RAID_FULL_SIZE).map((member) => renderMember(member, `${rowKey}-overflow`))}
+                                        {slotPeople.slice(slotFullSize).map((member) => renderMember(member, `${rowKey}-overflow`))}
                                       </div>
                                     )}
                                   </div>
@@ -5261,9 +5266,13 @@ function App() {
                     }
 
                     // 인원이 많을수록 진하게 칠하고, 정원이 찼는지 · 리딩 가능자가 있는지 칸 위쪽에 표시한다.
-                    const fillLevel = people.length >= RAID_FULL_SIZE ? 3 : people.length >= RAID_FULL_SIZE / 2 ? 2 : 1
+                    const fullSize = getRaidFullSize(activeTabMeta.raid)
+                    const isSingleParty = isSinglePartyRaid(activeTabMeta.raid)
+                    const fillLevel = people.length >= fullSize ? 3 : people.length >= fullSize / 2 ? 2 : 1
                     const hasLeader = people.some((member) => member.leadReady === 'O')
-                    const { partyA, partyB, waiting } = buildBalancedParties(people)
+                    const { partyA, partyB, waiting } = buildBalancedParties(people, fullSize)
+                    // 1파티 레이드(초월)는 A/B 없이 한 줄로 보여 준다.
+                    const partyColumns = isSingleParty ? [['파티', partyA]] : [['A', partyA], ['B', partyB]]
 
                     return (
                       <div
@@ -5275,7 +5284,7 @@ function App() {
                         <div className="slot-cell-head">
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
                           <span className={`slot-count ${fillLevel === 3 ? 'is-full' : ''}`}>
-                            {formatHeadcount(people.length)}
+                            {formatHeadcount(people.length, fullSize)}
                           </span>
                           {!hasLeader && <span className="slot-warn">리더 없음</span>}
                           {renderJoinButton(
@@ -5286,8 +5295,8 @@ function App() {
 
                         <div className="raid-group-list">
                           <div className="raid-group-item selected-raid-item">
-                            <div className="party-split">
-                              {[['A', partyA], ['B', partyB]].map(([partyName, partyMembers]) => (
+                            <div className={`party-split ${isSingleParty ? 'is-single' : ''}`}>
+                              {partyColumns.map(([partyName, partyMembers]) => (
                                 <div key={partyName} className="party-column">
                                   <span className="party-label">{partyName}</span>
                                   {partyMembers.length > 0 ? (

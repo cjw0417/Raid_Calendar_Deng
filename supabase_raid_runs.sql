@@ -6,7 +6,7 @@
 --   - 요일별 신청 현황의 시간 줄마다 준비 상태와 클리어 O/X를 기록한다. (한 주 단위, 수요일 시작)
 --   - 그 시간대에 투표한 사람만 로그인해서 바꿀 수 있고, 누가 바꿨는지 함께 남긴다.
 --   - 시간대별 신청 순서: raid_schedules.slot_signed_at에 시간대마다 처음 신청한 시각을 남긴다. (트리거가 채운다)
---     먼저 신청한 10명이 정원이고, 나머지는 대기다. 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
+--     먼저 신청한 10명(초월 레이드는 5명, _raid_full_size)이 정원이고, 나머지는 대기다. 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
 --     시간대를 뺐다가 1분 안에 다시 넣으면(삭제 되돌리기 포함) 원래 순서로 돌아가고, 그 뒤에는 맨 뒤로 간다.
 --   - 정원에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
 --   - 준비: 한 명이 "준비 확인"을 누르면 디스코드로 알림이 가고, 정원에 든 사람이 각자 "준비 완료"를 누른다.
@@ -233,7 +233,20 @@ $$;
 
 revoke execute on function public._raid_slot_voters(date, text, text, text, text, text) from public, anon, authenticated;
 
--- 그 시간대의 정원: 먼저 신청한 10명. 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
+-- 레이드별 한 타임 정원. 기본 10명(5명 × 2파티), 초월(에라쿠스 유적)은 5명 1파티.
+-- 앱의 getRaidFullSize(src/lib/schedule.js)와 같은 값이어야 한다.
+create or replace function public._raid_full_size(p_raid_name text)
+returns integer
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select case p_raid_name when '에라쿠스 유적' then 5 else 10 end;
+$$;
+
+revoke execute on function public._raid_full_size(text) from public, anon, authenticated;
+
+-- 그 시간대의 정원: 먼저 신청한 _raid_full_size명(기본 10명, 초월 5명). 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
 -- 앱은 밀리초까지만 다루므로 여기서도 밀리초로 맞추고, 같으면 닉네임 순(코드값)으로 정한다.
 create or replace function public._raid_slot_roster(
   p_week_start date,
@@ -254,7 +267,7 @@ as $$
   order by
     date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
     v.nickname collate "C"
-  limit 10;
+  limit public._raid_full_size(p_raid_name);
 $$;
 
 revoke execute on function public._raid_slot_roster(date, text, text, text, text, text) from public, anon, authenticated;
@@ -314,10 +327,10 @@ begin
       continue;
     end if;
 
-    -- 뺀 뒤의 10번째가 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
+    -- 뺀 뒤의 정원 마지막 사람(10번째, 초월은 5번째)이 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
     select * into tenth
     from public._raid_slot_roster(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode)
-    offset 9
+    offset public._raid_full_size(old.raid_name) - 1
     limit 1;
 
     if tenth.nickname is null then

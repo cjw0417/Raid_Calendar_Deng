@@ -64,11 +64,11 @@ const selection = (...slots) => {
   for (const [day, time] of slots) (out[day] ??= []).push(time)
   return out
 }
-const save = async (nick, sel, { lead = 'X', power = '600~700k', cls = '검성' } = {}) => {
+const save = async (nick, sel, { lead = 'X', power = '600~700k', cls = '검성', raid = '무스펠', difficulty = '보통' } = {}) => {
   const res = await rows(`select public.member_save_schedule($1,'pw',$2::jsonb,$3::jsonb) r`, [
     nick,
     JSON.stringify({ attendance: '참', class_name: cls, power, lead_ready: lead }),
-    JSON.stringify({ nickname: nick, raid_name: '무스펠', difficulty: '보통', mode: '트라이', days: Object.keys(sel), times: [...new Set(Object.values(sel).flat())], day_time_selection: sel, attendance: '참', class_name: cls, power, lead_ready: lead }),
+    JSON.stringify({ nickname: nick, raid_name: raid, difficulty, mode: '트라이', days: Object.keys(sel), times: [...new Set(Object.values(sel).flat())], day_time_selection: sel, attendance: '참', class_name: cls, power, lead_ready: lead }),
   ])
   if (res[0].r.error) throw new Error(`${nick} 저장 실패: ${JSON.stringify(res[0].r)}`)
   return res[0].r
@@ -227,6 +227,7 @@ for (const nick of reminderNames) await save(nick, selection(['일', '21:00']))
 for (const nick of reminderNames.slice(0, 9)) await save(`${nick}적음`, selection(['일', '20:00']))
 const atKst = (clock, addDays = 4) => `(select ($1::date + ${addDays} + time '${clock}') at time zone 'Asia/Seoul')`
 const remind = async (clock) => (await rows(`select public._send_raid_reminders(${atKst(clock)}) c`, [weekStart]))[0].c
+const remind2 = async (clock, addDays) => (await rows(`select public._send_raid_reminders(${atKst(clock, addDays)}) c`, [weekStart]))[0].c
 const reminderSentCount = async () => (await rows(`select count(*)::int c from net.sent`))[0].c
 
 check('시작 30분 넘게 남으면 알림 없음', await remind('20:20'), 0)
@@ -246,6 +247,37 @@ await db.exec(`update public.app_settings set value='1' where key='reminder_min_
 const beforeCalled = await reminderSentCount()
 check('이미 준비 확인을 시작했으면 알림 없음', await remind('22:40'), 0)
 check('자동 알림 추가 전송 없음', await reminderSentCount(), beforeCalled)
+
+// 8. 초월(에라쿠스 유적)은 5인 1파티라 정원이 5명
+check('레이드별 정원', (await rows(`select public._raid_full_size('에라쿠스 유적') a, public._raid_full_size('무스펠') b`))[0], { a: 5, b: 10 })
+const erakusNames = Array.from({ length: 7 }, (_, i) => `초월${i + 1}`)
+for (const nick of erakusNames) {
+  await db.exec(`select pg_sleep(0.002)`)
+  await save(nick, selection(['화', '22:00']), { raid: '에라쿠스 유적', difficulty: '1단계' })
+}
+const erakusRoster = async () => (await rows(
+  `select nickname from public._raid_slot_roster($1::date,'화','22:00','에라쿠스 유적','1단계','트라이')`, [weekStart],
+)).map((r) => r.nickname)
+check('초월은 먼저 신청한 5명이 정원', await erakusRoster(), erakusNames.slice(0, 5))
+
+// 대기 → 정원 알림은 지난 시간대에는 가지 않으므로, 화요일 22시가 지났으면 건너뛴다.
+const isPastErakusSlot = (await rows(`select (select public._current_week_start()) + interval '6 days 22 hours' <= now() as v`))[0].v
+if (isPastErakusSlot) {
+  console.log('SKIP 초월 대기 → 정원 알림: 화요일 22시 이후라 건너뜀')
+} else {
+  const sentBefore = await reminderSentCount()
+  await rows(`select public.member_delete_schedule('초월2','pw','에라쿠스 유적','1단계','트라이')`)
+  check('초월 정원이 빠지면 대기 1번(6번째)이 정원으로', await erakusRoster(), ['초월1', '초월3', '초월4', '초월5', '초월6'])
+  check('초월 승격 알림 1건', await reminderSentCount(), sentBefore + 1)
+  check('초월 승격 알림에 6번째', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].description.endsWith('초월6'), true)
+}
+
+// 자동 알림 기준(10명)이 정원보다 크면 정원(5명)이 차도 알린다.
+await db.exec(`update public.app_settings set value='10' where key='reminder_min_members'`)
+const erakusAlarm = Array.from({ length: 5 }, (_, i) => `알림초월${i + 1}`)
+for (const nick of erakusAlarm) await save(nick, selection(['월', '21:00']), { raid: '에라쿠스 유적', difficulty: '2단계' })
+check('초월은 5명이면 자동 알림', await remind2('20:40', 5), 1)
+check('초월 자동 알림 인원', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value, '5명')
 
 // ---------- 횟수 제한 레이드 쓴 횟수 조정 (supabase_raid_entries.sql) ----------
 await db.exec(read('supabase_raid_entries.sql'))
