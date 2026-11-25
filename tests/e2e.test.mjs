@@ -114,6 +114,9 @@ const pickTarget = async (page, raid = '무스펠', difficulty = '보통', mode 
   await page.locator('[aria-label="공략 방식"] button', { hasText: mode }).click()
 }
 
+// PC 오른쪽 영역의 탭을 바꾼다.
+const pcTab = (page, name) => page.locator('.pc-tab', { hasText: name }).click()
+
 const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) => texts.join(' | '))
 
 // ---------- 6. 자동 로그인 ----------
@@ -229,6 +232,15 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   const { page, context } = await open(LOCAL, { schedules })
   await login(page)
 
+  check('PC 탭: 처음에는 이번 주만 보임', [
+    await page.locator('.pc-tab.active').innerText(),
+    await page.locator('.day-raid-summary-panel').isVisible(),
+    await page.locator('.calendar-grid').isVisible(),
+    await page.locator('.member-day-summary:visible').count(),
+  ], ['이번 주', true, false, 0])
+  await pcTab(page, '파티')
+  check('PC 탭: 파티를 누르면 주간 표만 보임', [await page.locator('.day-raid-summary-panel').isVisible(), await page.locator('.calendar-grid').isVisible()], [false, true])
+
   // 1. 정원/대기
   const waitingText = await page.locator('[id="calendar-slot-금-21:00"] .party-waiting').innerText()
   check('#1 늦게 신청한 사람이 대기', waitingText, '대기 2명: 레기온원11, 레기온원12')
@@ -245,10 +257,16 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await page.locator('[id="calendar-slot-금-21:00"]').screenshot({ path: join(out, 'pc-slot.png') })
 
   // 16. 추천 정렬
+  await pcTab(page, '이번 주')
+  check('#16 추천은 한 줄로 접힘', [await page.locator('.recommend-list').count(), (await page.locator('.recommend-toggle-preview').innerText()).startsWith('금 21:00')], [0, true])
+  await page.locator('.recommend-toggle').click()
   const recommend = await page.locator('.recommend-card').evaluateAll((cards) => cards.map((c) => c.querySelector('.recommend-time').innerText + ' / ' + c.querySelector('.recommend-status').innerText))
   check('#16 정원 찬 시간이 1위, 출발 가능 표시', recommend[0], '금요일 21:00 / 출발 가능')
   check('#16 9명 시간이 리더 있는 소수 시간보다 위', recommend[1].startsWith('일요일 22:00'))
   check('#16 정원 초과는 10/10 +대기 수로', (await page.locator('.recommend-meta').first().innerText()).startsWith('10/10 +2 · 리딩'))
+  // 추천을 누르면 파티 탭의 그 칸으로 간다.
+  await page.locator('.recommend-card').first().click()
+  check('#16 추천을 누르면 파티 탭으로', [await page.locator('.pc-tab.active').innerText(), await page.locator('[id="calendar-slot-금-21:00"]').isVisible()], ['파티', true])
   check('표기 통일: 캘린더 칸', await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText(), '10/10 +2')
 
   // 15. 내 다음 레이드
@@ -256,8 +274,24 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('#15 내 파티 표시', /[AB]파티/.test(small))
   check('#15 시작 1시간 안이면 준비 확인 버튼', await page.locator('.next-raid-card .day-raid-rally-button').count(), 1)
 
-  // 15. 요일별 현황의 시간 제한: 목요일(하루 뒤) 줄에는 버튼 대신 안내
-  check('#15 먼 시간은 준비 확인 대신 안내', (await page.locator('.day-raid-rally-hint').count()) >= 1)
+  // 15. 요일별 현황의 시간 제한: 목요일(하루 뒤) 줄은 접혀 있으면 버튼이 없고, 펼치면 안내
+  await pcTab(page, '이번 주')
+  const thursdayRow = page.locator('[id="day-raid-row-목-무스펠 / 보통 / 트라이-21:00"]')
+  check('#15 먼 시간은 접힌 줄에 버튼 없음', await thursdayRow.locator('.day-raid-run-row').count(), 0)
+  await thursdayRow.locator('.day-raid-time-toggle').click()
+  check('#15 먼 시간은 펼치면 준비 확인 대신 안내', await thursdayRow.locator('.day-raid-rally-hint').count(), 1)
+  await thursdayRow.locator('.day-raid-time-toggle').click()
+  // 한 줄 시간 줄: 내 시간 표시, 직업 아이콘, 참여(+) · 대기 버튼
+  check('시간 줄: 내 시간은 색 띠와 나 표시', [await thursdayRow.evaluate((el) => el.classList.contains('is-mine')), await thursdayRow.locator('.my-slot-badge').innerText()], [true, '나'])
+  check('시간 줄: 직업 아이콘 유지', await thursdayRow.locator('.day-raid-stack-icon').count(), 1)
+  const sundayRow = page.locator('[id="day-raid-row-일-무스펠 / 보통 / 트라이-22:00"]')
+  check('시간 줄: 리더 없음은 짧은 표시와 설명', [await sundayRow.locator('.slot-warn').innerText(), await sundayRow.locator('.slot-warn').getAttribute('title')], ['!', '리딩 가능한 사람이 없어요'])
+  check('시간 줄: 참여는 +, 정원이 차면 대기', [
+    await sundayRow.locator('.join-slot-button').innerText(),
+    await page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-21:00"] .join-slot-button').innerText(),
+    await thursdayRow.locator('.join-slot-button').count(),
+  ], ['+', '대기', 0])
+  await pcTab(page, '파티')
 
   // 7. 나도 참여 (금 21:00 정원 초과 → 대기 신청, 토 21:00 → 참여)
   const satJoin = page.locator('[id="calendar-slot-토-21:00"] .join-slot-button')
@@ -274,6 +308,7 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('#7 취소하면 원래대로', await page.locator('[id="calendar-slot-토-21:00"] .my-slot-badge').count(), 0)
 
   // 8. 이 인원으로 시작 (수 21:00: 나 + 파트너 2명)
+  await pcTab(page, '이번 주')
   await page.locator('.next-raid-card .day-raid-rally-button').click()
   await page.locator('.save-confirm-modal .primary-button').click()
   await page.locator('.next-raid-status').waitFor()
@@ -673,7 +708,9 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('초월: A/B 없이 한 파티', [await slot.locator('.party-column').count(), await slot.locator('.party-label').innerText()], [1, '파티'])
   check('초월: 6번째부터 대기', await slot.locator('.party-waiting').innerText(), '대기 2명: 초월원6, 초월원7')
   check('초월: 요일별 현황도 5명 정원', (await page.locator('.day-raid-time-count').allInnerTexts()).includes('5/5 +2'))
+  await page.locator('.recommend-toggle').click()
   check('초월: 추천 시간도 5명이면 출발 가능', (await page.locator('.recommend-status').allInnerTexts()).includes('출발 가능'))
+  await pcTab(page, '파티')
   await slot.scrollIntoViewIfNeeded()
   await slot.screenshot({ path: join(out, 'pc-erakus-party.png') })
   await context.close()
@@ -779,6 +816,11 @@ for (const device of ['pc', 'mobile']) {
     await page.locator('.members-view-tab', { hasText: '이번 주 클리어' }).tap()
     check('모바일 인원 탭: 클리어만 보기', await page.locator('.member-day-summary:visible h3').allInnerTexts().then((list) => list.map((text) => text.split(/\s*\d/)[0].trim())), ['이번 주 클리어'])
   }
+  if (!isPhone) {
+    check('PC 탭: 클리어 건수', await page.locator('.pc-tab', { hasText: '클리어' }).locator('.members-view-count').innerText(), '2')
+    await pcTab(page, '클리어')
+    check('PC 탭: 클리어만 보임', await page.locator('.member-day-summary:visible').count(), 1)
+  }
   const summary = page.locator('.clear-summary')
   check(`${device} 목록: 이번 주 기간 표시`, (await summary.locator('h3 small').innerText()), '12/23 ~ 12/29')
   check(`${device} 목록: 진행 현황 (적게 남은 사람부터)`, [
@@ -807,6 +849,8 @@ for (const device of ['pc', 'mobile']) {
   if (isPhone) {
     await page.locator('.mobile-tab', { hasText: '인원' }).tap()
     await page.locator('.members-view-tab', { hasText: '이번 주 클리어' }).tap()
+  } else {
+    await pcTab(page, '클리어')
   }
   check(`${device} 목록: 신청을 지운 사람도 기록 유지`, (await page.locator('.clear-progress-card .clear-person', { hasText: '원정3' }).innerText()).includes('2/5'))
   await context.close()
@@ -868,18 +912,17 @@ for (const device of ['pc', 'mobile']) {
   const { page, context } = await open(LOCAL, { schedules: [...crowd, sched('무스A', 1, { 수: ['19:00'] }, { id: 'ma' })], extraStorage: { 'raid-calendar-raid-runs-v1': JSON.stringify([erakusRun, lastWeekRun]) } })
   await login(page)
   await pickTarget(page)
-  const top = (selector) => page.locator(selector).first().evaluate((el) => el.getBoundingClientRect().top)
-  check('PC 배치: 클리어 목록이 요일별 현황과 주간 표 사이', [(await top('.clear-summary')) > (await top('.day-raid-summary-panel')), (await top('.clear-summary')) < (await top('.calendar-grid'))], [true, true])
+  await pcTab(page, '클리어')
   check('PC 배치: 클리어 목록은 이번 주만', await page.locator('.clear-summary .clear-person-name').allInnerTexts(), ['무스A'])
-  await page.locator('.clear-summary .day-raid-past-toggle').click()
-  check('PC 배치: 클리어 목록 접기', [await page.locator('.clear-summary .weekday-list').count(), await page.locator('.clear-summary .day-raid-past-toggle').innerText()], [0, '펼치기 (1)'])
-  await page.reload()
-  await login(page)
-  check('PC 배치: 접은 상태 기억', await page.locator('.clear-summary .weekday-list').count(), 0)
-  await page.locator('.clear-summary .day-raid-past-toggle').click()
+  await pcTab(page, '인원')
+  check('PC 탭: 인원은 신청 인원만', await page.locator('.member-day-summary:visible h3').allInnerTexts(), ['레이드별 신청 인원'])
+  await pcTab(page, '파티')
   const heights = await page.locator('[id="calendar-slot-토-22:00"], [id="calendar-slot-토-21:00"]').evaluateAll((cells) => Object.fromEntries(cells.map((cell) => [cell.id, Math.round(cell.getBoundingClientRect().height)])))
   check('PC 배치: 신청 없는 시간 줄은 얇게', heights['calendar-slot-토-22:00'] <= 40)
   check('PC 배치: 신청 있는 시간 줄은 그대로', heights['calendar-slot-토-21:00'] > 100)
+  check('PC 배치: 낮시간 설정 버튼 크기', await page.locator('.slot-legend .small-toggle').evaluate((el) => el.getBoundingClientRect().width < 130 && el.getBoundingClientRect().height < 40))
+  await pcTab(page, '이번 주')
+  check('PC 배치: 급하지 않으면 위쪽은 한 줄', [await page.locator('.summary-strip').count(), await page.locator('.next-raid-card').count(), await page.locator('.summary-strip').evaluate((el) => el.getBoundingClientRect().height <= 52)], [1, 0, true])
   const widths = await page.locator('.day-raid-card').evaluateAll((cards) => cards.map((card) => [card.querySelector('.day-raid-header').innerText.slice(0, 1), Math.round(card.getBoundingClientRect().width), Math.round(card.getBoundingClientRect().top)]))
   const widthOf = (day) => widths.find(([name]) => name === day)[1]
   check('PC 배치: 신청 있는 요일이 더 넓음', widthOf('금') > widthOf('토') + 40)
@@ -889,7 +932,6 @@ for (const device of ['pc', 'mobile']) {
     const right = card.getBoundingClientRect().right
     return [...card.querySelectorAll('.day-raid-time-tag, .day-raid-member')].filter((el) => el.getBoundingClientRect().right > right).map((el) => el.innerText)
   })), [])
-  check('PC 배치: 낮시간 설정 버튼 크기', await page.locator('.slot-legend .small-toggle').evaluate((el) => el.getBoundingClientRect().width < 130 && el.getBoundingClientRect().height < 40))
   check('PC 배치: 상단 닉네임이 잘리지 않음', await page.locator('.user-badge-name').evaluate((el) => el.scrollWidth <= el.clientWidth))
   await page.screenshot({ path: join(out, 'pc-layout.png'), fullPage: true })
   await context.close()
@@ -899,7 +941,7 @@ for (const device of ['pc', 'mobile']) {
   await login(full.page)
   const cards = await full.page.locator('.day-raid-card').evaluateAll((list) => list.map((card) => ({
     top: Math.round(card.getBoundingClientRect().top),
-    over: [...card.querySelectorAll('.day-raid-time-tag')].some((el) => el.getBoundingClientRect().right > card.getBoundingClientRect().right),
+    over: [...card.querySelectorAll('.day-raid-time-tag, .join-slot-button, .day-raid-icon-stack')].some((el) => el.getBoundingClientRect().right > card.getBoundingClientRect().right),
   })))
   check('PC 배치: 모든 요일에 신청이 있어도 한 줄 · 넘침 없음', [new Set(cards.map((card) => card.top)).size, cards.some((card) => card.over)], [1, false])
   await full.page.locator('.day-raid-summary-panel').screenshot({ path: join(out, 'pc-layout-full-week.png') })
@@ -1020,6 +1062,7 @@ for (const device of ['pc', 'mobile']) {
   const names = () => slot.locator('.party-column .member-name-wrap > span:first-child').allInnerTexts().then((list) => list.sort())
 
   // 무스펠: 10인 A/B 두 파티, 11번째는 대기
+  await pcTab(page, '파티')
   await pickTarget(page, '무스펠', '어려움', '반숙이상')
   check('겹침: 무스펠은 10명 정원', await slot.locator('.slot-count').innerText(), '10/10 +1')
   check('겹침: 무스펠은 A/B 5명씩', await slot.locator('.party-column').evaluateAll((cols) => cols.map((c) => c.querySelectorAll('.time-member-pill').length)), [5, 5])
@@ -1051,7 +1094,8 @@ for (const device of ['pc', 'mobile']) {
   // 요일별 현황 · 내 다음 레이드
   const dayCount = (key) => page.locator(`[id="day-raid-row-금-${key}-20:00"] .day-raid-time-count`).innerText()
   check('겹침: 요일별 현황도 레이드별 정원', [await dayCount('무스펠 / 어려움 / 반숙이상'), await dayCount('에라쿠스 유적 / 1단계 / 트라이')], ['10/10 +2', '5/5 +2'])
-  const card = await page.locator('.next-raid-card').innerText()
+  await pcTab(page, '이번 주')
+  const card = await page.locator('.summary-strip').innerText()
   check('겹침: 내 다음 레이드에 둘 다', [card.includes('무스펠 어려움'), card.includes('에라쿠스 유적 1단계')], [true, true])
   await page.locator('.day-raid-summary-panel').screenshot({ path: join(out, 'pc-same-time-day.png') })
   await context.close()
@@ -1074,6 +1118,7 @@ for (const device of ['pc', 'mobile']) {
   })
   const { page, context } = await open(REMOTE, { routes, members: [], extraStorage: { 'raid-calendar-login-v1': NICK, 'raid-calendar-saved-password-v1': PW } })
   await page.waitForSelector('.app-shell')
+  await pcTab(page, '파티')
   await page.waitForSelector('[id="calendar-slot-토-21:00"] .time-member-pill')
   await pickTarget(page)
   const cell = page.locator('[aria-label="토요일 21:00"]')
@@ -1120,6 +1165,7 @@ for (const device of ['pc', 'mobile']) {
   ], ['12/2일 오픈 예정입니다.', 0])
   await page.locator('.upcoming-raid-modal button', { hasText: '확인' }).click()
   check('PC: 확인을 누르면 팝업 닫힘', await page.locator('.upcoming-raid-modal').count(), 0)
+  await pcTab(page, '파티')
   await page.locator('.raid-tab.upcoming', { hasText: '승천의 요새' }).click()
   check('PC: 레이드 탭에서도 오픈 날짜 팝업', await page.locator('.upcoming-raid-modal p').innerText(), '1/20일 오픈 예정입니다.')
   await page.keyboard.press('Escape')
@@ -1127,11 +1173,13 @@ for (const device of ['pc', 'mobile']) {
   check('PC: 목록의 시간 칩은 눌러 지우기 유지', [(await page.locator('.saved-slot-chip').count()) > 0, await page.locator('.saved-slot-tag').count()], [true, 0])
   const pcHistory = await page.evaluate(() => history.length)
   await page.locator('.saved-schedule-clear').count()
-  check('PC: 추천 목록은 항상 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [1, 0])
+  check('PC: 추천은 한 줄, 누르면 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [0, 1])
+  check('PC: 하단 탭 대신 위쪽 탭', [await page.locator('.pc-tab').allInnerTexts(), await page.locator('.mobile-tabbar').isVisible()], [['이번 주', '파티', '클리어', '인원'], false])
   check('PC: 뒤로 가기 기록을 건드리지 않음', await page.evaluate(() => history.length), pcHistory)
   check('PC: 칸 시간표 유지', [await page.locator('.time-pick-grid').count(), await page.locator('.mobile-time-list').count()], [1, 0])
   check('PC: 레이드 탭 유지', [await page.locator('.raid-tab-group').count(), await page.locator('.mobile-raid-select').count()], [1, 0])
   check('PC: 빈 칸에는 신청 버튼 없음', await page.locator('[id="calendar-slot-토-19:00"] .join-slot-button').count(), 0)
+  await pcTab(page, '이번 주')
   check('PC: 요일 7개 카드 표시', await page.locator('.day-raid-card:visible').count(), 7)
   await context.close()
 }
@@ -1180,6 +1228,7 @@ for (const device of ['pc', 'mobile']) {
 
   state.failing = false
   await page.locator('.data-load-banner button').click()
+  await pcTab(page, '파티')
   await page.waitForSelector('[id="calendar-slot-금-21:00"] .party-waiting')
   check('#10 다시 불러오면 배너 사라짐', await page.locator('.data-load-banner').count(), 0)
   // slot_signed_at 컬럼이 없는 응답: 먼저 저장한(updated_at이 이른) 사람이 앞. crowd는 번호가 클수록 먼저 저장.
@@ -1212,8 +1261,8 @@ for (const device of ['pc', 'mobile']) {
   state.rows = promoteRows
   await page.clock.setFixedTime(new Date(new Date(NOW).getTime() + 120000))
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-  await page.waitForFunction(() => document.querySelector('.next-raid-card small')?.innerText.includes('대기 1번'), null, { timeout: 3000 }).catch(() => {})
-  check('내가 대기 1번', (await page.locator('.next-raid-card small').first().innerText()).includes('대기 1번'))
+  await page.waitForFunction(() => document.querySelector('.summary-strip-next')?.innerText.includes('대기 1번'), null, { timeout: 3000 }).catch(() => {})
+  check('내가 대기 1번', (await page.locator('.summary-strip-next').innerText()).includes('대기 1번'))
   const promoteData = { ...data, old_record: { id: 'p-0' }, commit_timestamp: new Date().toISOString() }
   const promotePayload = { ids: info.bindings.map((binding) => binding.id), data: promoteData }
   socketRoute.send(info.array ? JSON.stringify([info.joinRef, null, topic, 'postgres_changes', promotePayload]) : JSON.stringify({ topic, event: 'postgres_changes', ref: null, payload: promotePayload }))

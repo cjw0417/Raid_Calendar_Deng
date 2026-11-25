@@ -4861,6 +4861,336 @@ input::placeholder {
   color: #ffc2c2;
 }
 
+/* PC 탭: 오른쪽 영역에서 고른 것만 보여 준다 */
+@media (min-width: 641px) {
+  .app-shell[data-pc-tab='day'] [data-pc]:not([data-pc='day']),
+  .app-shell[data-pc-tab='calendar'] [data-pc]:not([data-pc='calendar']),
+  .app-shell[data-pc-tab='clear'] [data-pc]:not([data-pc='clear']),
+  .app-shell[data-pc-tab='members'] [data-pc]:not([data-pc='members']) {
+    display: none;
+  }
+
+  .pc-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .pc-tab {
+    padding: 8px 18px 10px;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    background: none;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0.98rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .pc-tab:hover {
+    color: #edf5ff;
+  }
+
+  .pc-tab.active {
+    border-bottom-color: var(--accent);
+    color: #ffffff;
+  }
+
+  /* 탭 이름과 같은 제목은 뺀다 */
+  .calendar-panel > .panel-header h2 {
+    display: none;
+  }
+
+  .calendar-panel > .panel-header {
+    margin-bottom: 10px;
+  }
+
+  .calendar-panel > .member-day-summary {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  /* 위쪽: 제목과 시계를 줄인다 */
+  .topbar {
+    margin-bottom: 10px;
+  }
+
+  .topbar-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .topbar .eyebrow {
+    margin: 0;
+  }
+
+  .topbar h1 {
+    font-size: 1.5rem;
+  }
+
+  .live-clock {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 14px;
+  }
+
+  .shared-mode-warning {
+    padding: 8px 12px;
+  }
+
+  .summary-grid {
+    grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
+  }
+
+  .summary-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 14px;
+    padding: 0 16px;
+    border: 1px solid var(--line-soft);
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--bg-section), var(--bg-card));
+    font-size: 0.88rem;
+  }
+
+  .summary-strip em {
+    color: var(--text-muted);
+    font-style: normal;
+  }
+
+  .summary-strip-item {
+    flex-shrink: 0;
+    padding: 11px 0;
+  }
+
+  .summary-strip-next {
+    flex: 1;
+    min-width: 0;
+    padding: 11px 0 11px 14px;
+    overflow: hidden;
+    border: 0;
+    border-left: 1px solid var(--line-faint);
+    background: none;
+    color: #9cc9ff;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .summary-strip-next:hover {
+    color: #ffffff;
+  }
+
+  .summary-strip-detail {
+    margin-left: 6px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  /* 내 신청 목록: 요일마다 한 줄씩 쓰지 않고 이어서 보여 준다 */
+  .saved-slot-days {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding-top: 8px;
+  }
+
+  .saved-slot-day {
+    gap: 4px;
+  }
+
+  .saved-slot-day-label,
+  .saved-slot-chip {
+    height: 24px;
+    font-size: 0.74rem;
+  }
+
+  .saved-slot-day-label {
+    width: 24px;
+  }
+
+  .saved-schedule-item {
+    gap: 8px;
+    padding: 10px 10px 10px 14px;
+  }
+
+  .saved-schedule-list ul {
+    gap: 8px;
+  }
+
+  /* 요일 카드: 안쪽 여백을 줄여 시간 줄이 한 줄에 들어가게 한다 */
+  .day-raid-card:not(.is-collapsed) {
+    padding: 10px 7px 8px;
+  }
+
+  .day-raid-bundle {
+    padding: 6px 7px;
+  }
+}
+
+.members-view-count {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(129, 136, 234, 0.24);
+  font-size: 0.74rem;
+}
+
+/* 추천 시간 한 줄 (누르면 펼침) */
+.recommend-toggle {
+  cursor: pointer;
+}
+
+/* 요일별 현황의 시간 줄: 시간 · 인원 · 아이콘 · 참여(+)를 한 줄에 */
+.day-raid-bundle-sub {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.day-raid-bundle > strong {
+  word-break: keep-all;
+}
+
+.day-raid-time-rows {
+  gap: 2px;
+}
+
+@media (min-width: 641px) {
+  /* 좁은 칸에서 화살표가 줄을 따로 차지하지 않게, 접힌 줄에서는 뺀다. (줄을 누르면 펼쳐진다) */
+  .day-raid-time-row:not(.expanded) .day-raid-toggle-arrow {
+    display: none;
+  }
+
+  .day-raid-time-head .day-raid-time-tag {
+    gap: 3px;
+  }
+
+  .day-raid-time-head .slot-warn,
+  .day-raid-time-head .my-slot-badge {
+    padding: 0 4px;
+  }
+
+  .day-raid-time-head .day-raid-time-toggle {
+    column-gap: 3px;
+  }
+}
+
+.day-raid-time-row {
+  gap: 5px;
+  padding: 3px 0 3px 5px;
+  border-top: 0;
+  border-left: 3px solid transparent;
+}
+
+.day-raid-time-row:first-child {
+  padding-top: 3px;
+}
+
+.day-raid-time-row.is-mine {
+  border-left-color: #5ee0aa;
+}
+
+.day-raid-time-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.day-raid-time-head .day-raid-time-toggle {
+  flex: 1;
+  gap: 3px 5px;
+}
+
+.day-raid-time-head .day-raid-time-tag {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.8rem;
+}
+
+.day-raid-time-toggle:hover .day-raid-time-tag,
+.day-raid-time-row.expanded .day-raid-time-head .day-raid-time-tag {
+  background: none;
+  color: #ffffff;
+}
+
+.day-raid-time-head .day-raid-time-tag.is-full .day-raid-time-count {
+  color: #5ee0aa;
+  opacity: 1;
+}
+
+.day-raid-time-head .my-slot-badge {
+  align-self: center;
+  margin: 0;
+  padding: 0 5px;
+  line-height: 1.6;
+}
+
+.day-raid-time-head .slot-warn {
+  padding: 0 6px;
+  line-height: 1.6;
+}
+
+.day-raid-time-head .day-raid-stack-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.day-raid-progress {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(94, 224, 170, 0.14);
+  color: #5ee0aa;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.7;
+}
+
+.day-raid-progress.is-failed {
+  background: rgba(255, 110, 110, 0.14);
+  color: #ffb0b0;
+}
+
+.join-slot-button.is-compact {
+  flex-shrink: 0;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+@media (max-width: 640px) {
+  .day-raid-time-head .day-raid-time-toggle {
+    min-height: 40px;
+  }
+
+  .day-raid-time-head .day-raid-time-tag {
+    font-size: 0.92rem;
+  }
+
+  .day-raid-time-head .day-raid-stack-icon {
+    width: 24px;
+    height: 24px;
+  }
+
+  .join-slot-button.is-compact {
+    min-width: 48px;
+    height: 40px;
+    font-size: 1rem;
+  }
+}
+
 /* 출발 인원 고르기 팝업 */
 .depart-picker {
   display: grid;
@@ -5024,7 +5354,6 @@ input::placeholder {
 }
 
 /* 모바일: 신청 화면의 리셋 · 다음 레이드 한 줄, 인원 탭 전환, 빈 시간 더 보기 */
-.summary-strip,
 .members-view-tabs,
 .vacant-times-toggle {
   display: none;
@@ -5100,14 +5429,6 @@ input::placeholder {
     color: #ffffff;
   }
 
-  .members-view-count {
-    margin-left: 6px;
-    padding: 0 7px;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.25);
-    font-size: 0.74rem;
-  }
-
   .vacant-times-toggle {
     display: block;
     width: 100%;
@@ -5166,10 +5487,6 @@ input::placeholder {
 }
 
 @media (min-width: 641px) {
-  .member-day-summary.clear-summary {
-    margin: 0 0 18px;
-  }
-
   #schedule-day-field .form-section-title {
     white-space: nowrap;
   }

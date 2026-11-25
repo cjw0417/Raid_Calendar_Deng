@@ -270,14 +270,8 @@ function App() {
   const [membersView, setMembersView] = useState('signup')
   // 모바일 파티 탭에서 신청이 없는 시간도 보는지
   const [showVacantTimes, setShowVacantTimes] = useState(false)
-  // PC에서 이번 주 클리어 목록을 펼쳐 두는지 (브라우저에 기억)
-  const [clearSummaryOpen, setClearSummaryOpen] = useState(() => {
-    try {
-      return localStorage.getItem('raid-calendar-clear-summary-v1') !== 'closed'
-    } catch {
-      return true
-    }
-  })
+  // PC 오른쪽 영역에서 보는 탭: 'day'(이번 주) | 'calendar'(파티) | 'clear'(클리어) | 'members'(인원)
+  const [pcTab, setPcTab] = useState('day')
   // 같은 시간 겹친 신청 안내에서 '그대로 두기'를 누른 것
   const [dismissedOverlaps, setDismissedOverlaps] = useState(() => {
     try {
@@ -1939,6 +1933,7 @@ function App() {
     const rowKey = `${day}-${raidName} / ${difficulty} / ${mode}-${time}`
 
     setMobileSection('day')
+    setPcTab('day')
     setMobileCalendarDayIndex(weekdayNames.indexOf(day))
     setExpandedPastDays((prev) => ({ ...prev, [day]: true }))
     setExpandedSummaryRows((prev) => ({ ...prev, [rowKey]: true }))
@@ -3211,18 +3206,6 @@ function App() {
       : prev))
   }
 
-  const toggleClearSummary = () => {
-    setClearSummaryOpen((prev) => {
-      try {
-        localStorage.setItem('raid-calendar-clear-summary-v1', prev ? 'closed' : 'open')
-      } catch {
-        // Ignore storage errors.
-      }
-
-      return !prev
-    })
-  }
-
   // 같은 시간 겹친 신청을 그대로 둔다. (다시 묻지 않는다)
   const dismissOverlap = (key) => {
     setDismissedOverlaps((prev) => {
@@ -3599,6 +3582,7 @@ function App() {
 
     showScheduleInCalendar({ raidName, difficulty, mode })
     setMobileSection('calendar')
+    setPcTab('calendar')
     setMobileCalendarDayIndex(weekdayNames.indexOf(day))
 
     if (hiddenWeekdayTimeSlots.includes(time)) {
@@ -3646,8 +3630,9 @@ function App() {
     !dismissedOverlaps.includes(key) && list.findIndex((item) => item.slot.runKey === slot.runKey) === index
   ))
 
-  // 모바일 신청 화면에서는 급한 일이 없으면 리셋 · 다음 레이드를 한 줄로 줄여 시간표가 첫 화면에 들어오게 한다.
-  const isSummaryCompact = isMobile && mobileSection === 'form'
+  // PC와 모바일 신청 화면에서는 급한 일이 없으면 리셋 · 다음 레이드를 한 줄로 줄인다.
+  // 시작 1시간 전이거나 준비 확인이 시작되면 버튼이 있는 카드로 바뀐다.
+  const isSummaryCompact = (!isMobile || mobileSection === 'form')
     && !nextRaidSlot?.isRallyCalled
     && !nextRaidSlot?.canCallRally
 
@@ -3888,15 +3873,19 @@ function App() {
         className={`join-slot-button ${extraClass}`}
         disabled={isSaving}
         title={`${currentNickname}(으)로 ${slot.day}요일 ${formatTimeLabel(slot.time)}에 신청해요.`}
+        aria-label={extraClass === 'is-compact'
+          ? `${slot.day}요일 ${formatTimeLabel(slot.time)} ${slot.raidName} ${slot.difficulty} ${slot.mode} ${peopleCount >= getRaidFullSize(slot.raidName) ? '대기 신청' : '나도 참여'}`
+          : undefined}
         onClick={() => joinSlot(slot)}
       >
-        {extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= getRaidFullSize(slot.raidName) ? '+ 대기 신청' : '+ 나도 참여'}
+        {extraClass === 'is-compact' ? (peopleCount >= getRaidFullSize(slot.raidName) ? '대기' : '+')
+          : extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= getRaidFullSize(slot.raidName) ? '+ 대기 신청' : '+ 나도 참여'}
       </button>
     ) : null
   )
 
   return (
-    <div className="app-shell" data-mobile-section={mobileSection}>
+    <div className="app-shell" data-mobile-section={mobileSection} data-pc-tab={pcTab}>
       <header className="topbar">
         <div className="topbar-title">
           <p className="eyebrow">그루 레기온의 설원</p>
@@ -4444,10 +4433,20 @@ function App() {
       {isSummaryCompact && (
         <section className="summary-strip" data-section="form">
           <span className="summary-strip-item"><em>리셋</em> <ResetCountdown isShort /></span>
-          {nextRaidSlot && (
+          {nextRaidSlot ? (
             <button type="button" className="summary-strip-next" onClick={() => openSlotInDaySummary(nextRaidSlot)}>
               <em>다음</em> {nextRaidSlot.day} {formatTimeLabel(nextRaidSlot.time)} {nextRaidSlot.raidName} {nextRaidSlot.difficulty}
+              {!isMobile && (
+                <span className="summary-strip-detail">
+                  {nextRaidSlot.mode} · {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())} · {formatHeadcount(nextRaidSlot.people.length, nextRaidSlot.fullSize)}
+                  {nextRaidSlot.partyLabel && ` · ${nextRaidSlot.partyLabel}`}
+                  {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
+                  {laterRaidSlots.length > 0 && ` · 이후 ${laterRaidSlots[0].day} ${formatTimeLabel(laterRaidSlots[0].time)} ${laterRaidSlots[0].raidName} ${laterRaidSlots[0].difficulty}${laterRaidSlots.length > 1 ? ` 외 ${laterRaidSlots.length - 1}건` : ''}`}
+                </span>
+              )}
             </button>
+          ) : !isMobile && (
+            <span className="summary-strip-item">{getEmptyText('이번 주 남은 신청이 없어요. 왼쪽에서 가능한 시간을 골라 주세요.')}</span>
           )}
         </section>
       )}
@@ -4922,7 +4921,7 @@ function App() {
                 ? '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'
                 : isMobile
                   ? '갈 수 있는 시간을 모두 눌러요. (24:00 = 밤 12시)'
-                  : '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요. 24:00은 그 요일 밤 12시예요.'}
+                  : '칸을 누르거나 끌어서 골라요. (24:00 = 밤 12시)'}
             </p>
             {isMobile ? renderMobileTimePicker() : (
             <>
@@ -5169,7 +5168,26 @@ function App() {
         </section>
 
         <section className="panel calendar-panel">
-          <div className="panel-header" data-section="calendar">
+          {/* PC: 오른쪽 영역을 탭으로 나눠 한 번에 하나만 보여 준다. (모바일은 하단 탭) */}
+          {!isMobile && (
+            <div className="pc-tabs" role="tablist" aria-label="보기 선택">
+              {[['day', '이번 주'], ['calendar', '파티'], ['clear', '클리어'], ['members', '인원']].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={pcTab === id}
+                  className={`pc-tab ${pcTab === id ? 'active' : ''}`}
+                  onClick={() => setPcTab(id)}
+                >
+                  {label}
+                  {id === 'clear' && weeklyClears.length > 0 && <span className="members-view-count">{weeklyClears.length}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="panel-header" data-section="calendar" data-pc="calendar">
             <div className="panel-header-title-wrap">
               <h2>주간 레이드 파티</h2>
               <button
@@ -5199,8 +5217,8 @@ function App() {
           </div>
 
           {/* 모든 레이드 조합에서 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. 누르면 그 탭 · 그 칸으로 간다. */}
-          <div className="recommend-row" data-section="calendar">
-            {isMobile && recommendedSlots.length > 0 ? (
+          <div className="recommend-row" data-section="calendar" data-pc="day">
+            {recommendedSlots.length > 0 ? (
               <button
                 type="button"
                 className="recommend-toggle"
@@ -5216,7 +5234,7 @@ function App() {
             ) : (
               <span className="recommend-label">추천 레이드 시간 TOP 3</span>
             )}
-            {isMobile && !recommendOpen && recommendedSlots.length > 0 ? null : recommendedSlots.length > 0 ? (
+            {!recommendOpen && recommendedSlots.length > 0 ? null : recommendedSlots.length > 0 ? (
               <div className="recommend-list">
                 {recommendedSlots.map((slot, index) => {
                   const isConfirmed = isConfirmedSlot(slot)
@@ -5250,7 +5268,7 @@ function App() {
           </div>
 
           {calendarHelpOpen && (
-            <div className="help-panel compact" data-section="calendar">
+            <div className="help-panel compact" data-section="calendar" data-pc="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
               <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명(초월 레이드는 5명)이 정원이고, 넘는 인원은 신청 순서대로 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
               <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '출발 가능' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
@@ -5259,7 +5277,7 @@ function App() {
             </div>
           )}
 
-          <div className="day-raid-summary-panel" data-section="day">
+          <div className="day-raid-summary-panel" data-section="day" data-pc="day">
             <div className="day-raid-summary-head">
               <h3>요일별 레이드 신청 현황</h3>
               <button
@@ -5351,9 +5369,9 @@ function App() {
 
                         return (
                         <div key={groupKey} className="day-raid-bundle">
-                          <strong>{label}</strong>
+                          <strong>{raidName} <span className="day-raid-bundle-sub">{difficulty} · {mode}</span></strong>
                           {times.length > 0 ? (
-                            // 시간대마다 한 줄: [시간 · 인원 수 · 직업 아이콘]. 누르면 인원 목록이 펼쳐진다.
+                            // 시간대마다 한 줄: [시간 · 인원 수 · 직업 아이콘 · 참여(+)]. 누르면 인원 목록과 나머지 버튼이 펼쳐진다.
                             <div className="day-raid-time-rows">
                               {times.map((time) => {
                                 const rowKey = `${groupKey}-${time}`
@@ -5526,8 +5544,18 @@ function App() {
                                   )
                                 }
 
+                                // 접힌 줄에는 지금 할 일이 있을 때만 버튼을 보여 준다. (내 시간의 준비 확인 · 출발 · 클리어)
+                                const isActionOpen = isExpanded
+                                  || (isSlotVoter && (isRallyCalled || Boolean(runRecord?.cleared) || (canCallRally && !isPastSlot(day, time))))
+                                // 내 시간이 아닌 줄의 진행 상태는 짧은 글자로만 보여 준다.
+                                const progressText = isActionOpen ? ''
+                                  : runRecord?.cleared === 'O' ? '클리어'
+                                  : runRecord?.cleared === 'X' ? '실패'
+                                  : isGathered ? '출발' : isRallyCalled ? '준비 중' : ''
+
                                 return (
-                                  <div key={rowKey} id={`day-raid-row-${rowKey}`} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''}`}>
+                                  <div key={rowKey} id={`day-raid-row-${rowKey}`} className={`day-raid-time-row ${isExpanded ? 'expanded' : ''} ${isSlotVoter ? 'is-mine' : ''}`}>
+                                    <div className="day-raid-time-head">
                                     <button
                                       type="button"
                                       className="day-raid-time-toggle"
@@ -5539,8 +5567,9 @@ function App() {
                                         {formatTimeLabel(time)}
                                         <span className="day-raid-time-count">{formatHeadcount(slotPeople.length, slotFullSize)}</span>
                                       </span>
-                                      {isSlotVoter && <span className="my-slot-badge">내 시간</span>}
-                                      {!hasLeader && <span className="slot-warn">리더 없음</span>}
+                                      {isSlotVoter && <span className="my-slot-badge" title="내가 신청한 시간" aria-label="내 시간">나</span>}
+                                      {!hasLeader && <span className="slot-warn" title="리딩 가능한 사람이 없어요" aria-label="리더 없음">{isExpanded ? '리더 없음' : '!'}</span>}
+                                      {progressText && <span className={`day-raid-progress ${runRecord?.cleared === 'X' ? 'is-failed' : ''}`}>{progressText}</span>}
                                       {!isExpanded && (
                                         <span className="day-raid-icon-stack" aria-hidden="true">
                                           {previewVoters.map((member) => (
@@ -5555,23 +5584,24 @@ function App() {
                                         </span>
                                       )}
                                       <span className="day-raid-toggle-arrow" aria-hidden="true">
-                                        {isMobile ? (isExpanded ? '접기 ▴' : '인원 보기 ▾') : (isExpanded ? '▴' : '▾')}
+                                        {isExpanded ? '▴' : '▾'}
                                       </span>
                                     </button>
+                                    {renderJoinButton(run, slotPeople.length, 'is-compact')}
+                                    </div>
                                     {/* 버튼은 내가 신청한 시간대에만 보인다. 남의 시간대는 이미 진행된 준비 · 클리어 기록만 보여 준다.
                                         클리어는 전원 준비가 끝나야 고를 수 있어서 그 전에는 숨긴다. */}
-                                    {(isSlotVoter || isRallyCalled || runRecord?.cleared || canJoinSlot(run)) && (
+                                    {isActionOpen && (isSlotVoter || isRallyCalled || runRecord?.cleared) && (
                                       <div className="day-raid-run-row">
                                         {(isSlotVoter || isRallyCalled) && renderRally()}
                                         {(isGathered || runRecord?.cleared) && (hasWeeklyLimit
                                           ? renderClearCounter({ run, record: runRecord, canEdit: canEditRun && isGathered, disabledReason: editDisabledReason || (isGathered ? '' : describeAuthResult('not_gathered')) })
                                           : renderRunStatus('cleared', '클리어'))}
-                                        {renderJoinButton(run, slotPeople.length)}
                                       </div>
                                     )}
-                                    {hasWeeklyLimit && (isGathered || runRecord?.cleared === 'O') && renderClearEntries(run, runRecord, rosterNicknames, departedNicknames)}
+                                    {isActionOpen && hasWeeklyLimit && (isGathered || runRecord?.cleared === 'O') && renderClearEntries(run, runRecord, rosterNicknames, departedNicknames)}
                                     {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
-                                    {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
+                                    {isActionOpen && isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
                                       <div className="day-raid-rally-waiting">
                                         <span className="day-raid-rally-waiting-label">아직 {waitingNicknames.length}명</span>
                                         {waitingNicknames.map((name) => (
@@ -5648,19 +5678,13 @@ function App() {
           )}
 
           {(!isMobile || membersView === 'clear') && (
-          <div className="member-day-summary clear-summary" data-section="members">
+          <div className="member-day-summary clear-summary" data-section="members" data-pc="clear">
             <div className="clear-summary-head">
               <h3>
                 이번 주 클리어
                 <small>{weekDates[0].getMonth() + 1}/{weekDates[0].getDate()} ~ {weekDates[6].getMonth() + 1}/{weekDates[6].getDate()}</small>
               </h3>
-              {!isMobile && weeklyClears.length > 0 && (
-                <button type="button" className="day-raid-past-toggle" aria-expanded={clearSummaryOpen} onClick={toggleClearSummary}>
-                  {clearSummaryOpen ? '접기' : `펼치기 (${weeklyClears.length})`}
-                </button>
-              )}
             </div>
-            {(isMobile || clearSummaryOpen || weeklyClears.length === 0) && (
             <div className="weekday-list">
               {raidOptions.filter((raid) => raid.weeklyLimit).map((raid) => {
                 const people = [...weeklyEntryCounts.keys()]
@@ -5712,7 +5736,6 @@ function App() {
               ))}
               {weeklyClears.length === 0 && <span className="empty-role">{getEmptyText('아직 클리어한 레이드가 없어요')}</span>}
             </div>
-            )}
           </div>
           )}
 
@@ -5752,7 +5775,7 @@ function App() {
               </select>
             </div>
           ) : (
-          <div className="raid-tab-group" data-section="calendar">
+          <div className="raid-tab-group" data-section="calendar" data-pc="calendar">
             <div className="raid-tab-bar" role="tablist" aria-label="레이드 난이도 선택">
               {visibleRaidTabs.map((tab) => (
                 <button
@@ -5810,7 +5833,7 @@ function App() {
             return timeSlots.some((time) => (memberByRaidDateTime.get(`${day}-${time}`)?.[tabKey] ?? []).length > 0)
           })}
 
-          <div className="calendar-grid" data-section="calendar" data-mobile-day={mobileCalendarDayIndex}>
+          <div className="calendar-grid" data-section="calendar" data-pc="calendar" data-mobile-day={mobileCalendarDayIndex}>
             <div className="calendar-corner">시간</div>
             {weekDates.map((date, dayIndex) => {
               const label = date.toLocaleDateString('ko-KR', { weekday: 'short' })
@@ -5976,7 +5999,7 @@ function App() {
           )}
 
           {(!isMobile || membersView === 'signup') && (
-          <div className="member-day-summary" data-section="members">
+          <div className="member-day-summary" data-section="members" data-pc="members">
             <h3>레이드별 신청 인원</h3>
             <div className="weekday-list">
               {memberByRaidDifficulty.length ? (
