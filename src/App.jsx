@@ -17,6 +17,7 @@ import {
   adjustRaidEntries,
   setRaidRally,
   setRaidRunStatus,
+  setRaidClearCount,
   unlinkMemberAlt,
 } from './lib/memberApi'
 import {
@@ -36,6 +37,7 @@ import {
   compareRaidTarget,
   getRaidWeeklyLimit,
   countWeeklyEntries,
+  getRunClears,
   SUMMARY_ICON_PREVIEW_LIMIT,
   getRaidFullSize,
   isSinglePartyRaid,
@@ -261,8 +263,30 @@ function App() {
   // 횟수 제한 레이드(에라쿠스 주 5회)의 쓴 횟수 직접 조정 기록 (레기온 밖에서 쓴 횟수 등)
   const [entryAdjustments, setEntryAdjustments] = useState(() => (supabase ? [] : loadLocalEntryAdjustments()))
   const [isAdjustingEntries, setIsAdjustingEntries] = useState(false)
-  // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'cleared', alreadyNotified }
+  // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'start' | 'members' | 'cleared' | 'clear-count', alreadyNotified }
+  // 'start' · 'members'는 candidates(고를 수 있는 사람)와 picked(고른 닉네임)를 함께 둔다.
   const [pendingRunStatus, setPendingRunStatus] = useState(null)
+  // 모바일 인원 탭에서 보는 목록: 'signup'(신청 인원) | 'clear'(이번 주 클리어)
+  const [membersView, setMembersView] = useState('signup')
+  // 모바일 파티 탭에서 신청이 없는 시간도 보는지
+  const [showVacantTimes, setShowVacantTimes] = useState(false)
+  // PC에서 이번 주 클리어 목록을 펼쳐 두는지 (브라우저에 기억)
+  const [clearSummaryOpen, setClearSummaryOpen] = useState(() => {
+    try {
+      return localStorage.getItem('raid-calendar-clear-summary-v1') !== 'closed'
+    } catch {
+      return true
+    }
+  })
+  // 같은 시간 겹친 신청 안내에서 '그대로 두기'를 누른 것
+  const [dismissedOverlaps, setDismissedOverlaps] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('raid-calendar-overlap-dismissed-v1') ?? '[]')
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  })
   // 저장 중인 기록 키 (중복 클릭 방지)
   const [savingRunKey, setSavingRunKey] = useState('')
 
@@ -687,30 +711,38 @@ function App() {
     ?? buildEmptyDayTimeSelection()
   const currentSelectedDays = getSelectedDayList(currentDayTimeSelection)
 
-  // 같은 계정(본캐 + 부캐)이 이번 주에 이미 참여로 신청한 시간 ("요일|시간" → 그 신청).
-  // 지금 고치고 있는 스케줄(같은 캐릭터 · 같은 레이드 조합)은 덮어쓸 것이라 뺀다. DB의 _schedule_time_conflict와 같은 기준이다.
-  const takenSlots = useMemo(() => {
-    const map = new Map()
+  // 같은 계정(본캐 + 부캐)이 이번 주에 이미 참여로 신청한 시간 ("요일|시간" 기준).
+  //   takenSlots: 다른 캐릭터가 지금 고른 것과 같은 레이드 조합으로 신청한 시간. 한 사람이 두 자리를 차지하므로 막는다.
+  //               DB의 _schedule_time_conflict와 같은 기준이다.
+  //   otherRaidSlots: 다른 레이드 조합으로 신청한 시간. 함께 신청할 수 있고, 겹친다는 표시만 한다. (값은 신청 목록)
+  const { takenSlots, otherRaidSlots } = useMemo(() => {
+    const taken = new Map()
+    const others = new Map()
 
     raidSchedules.forEach((entry) => {
-      if (
-        entry.attendance !== '참'
-        || !myCharacters.includes(entry.nickname)
-        || (entry.nickname === currentNickname && getScheduleKey(entry) === currentScheduleKey)
-      ) {
+      if (entry.attendance !== '참' || !myCharacters.includes(entry.nickname)) {
+        return
+      }
+
+      const isSameTarget = getScheduleKey(entry) === currentScheduleKey
+
+      // 지금 고치고 있는 스케줄은 덮어쓸 것이라 뺀다.
+      if (isSameTarget && entry.nickname === currentNickname) {
         return
       }
 
       getDayTimePairs(entry.dayTimeSelection).forEach(([day, time]) => {
         const slotKey = `${day}|${time}`
 
-        if (!map.has(slotKey)) {
-          map.set(slotKey, entry)
+        if (!isSameTarget) {
+          others.set(slotKey, [...(others.get(slotKey) ?? []), entry])
+        } else if (!taken.has(slotKey)) {
+          taken.set(slotKey, entry)
         }
       })
     })
 
-    return map
+    return { takenSlots: taken, otherRaidSlots: others }
   }, [raidSchedules, myCharacters, currentNickname, currentScheduleKey])
 
   // "부캐명 · 무스펠 보통 트라이" 처럼 겹친 신청을 알려 주는 문구
@@ -718,8 +750,11 @@ function App() {
     `${entry.nickname === currentNickname ? '이 캐릭터' : entry.nickname} · ${entry.raidName} ${entry.difficulty} ${entry.mode}`
   )
 
+  // 같은 시간에 신청해 둔 다른 레이드를 알려 주는 문구
+  const describeOtherRaids = (entries) => `같은 시간 다른 신청: ${entries.map(describeTakenSlot).join(' / ')}`
+
   // 시간표 칸 여러 개를 한꺼번에 고르거나(shouldSelect) 지운다.
-  // 그 요일에 없는 시간대, 이미 지난 시간, 같은 계정이 이미 신청한 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
+  // 그 요일에 없는 시간대, 이미 지난 시간, 내 다른 캐릭터가 같은 레이드로 신청한 시간은 새로 고를 수 없다. (골라 둔 것을 빼는 것은 된다)
   // 끌어서 빠르게 여러 칸을 바꿀 수 있어 이전 수정 상태(prev)를 기준으로 바꾼다.
   const setSlotSelection = (pairs, shouldSelect) => {
     if (!currentScheduleKey) {
@@ -788,7 +823,7 @@ function App() {
     const takenBy = takenSlots.get(`${day}|${time}`)
 
     if (takenBy) {
-      return `이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}`
+      return `다른 캐릭터로 이미 신청한 시간이에요: ${describeTakenSlot(takenBy)}`
     }
 
     if (isPastSlot(day, time)) {
@@ -1087,13 +1122,40 @@ function App() {
     return map
   }, [raidSchedules])
 
-  // 횟수 제한 레이드(에라쿠스 유적 주 5회)의 이번 주 사용 횟수. 클리어 O인 시간대의 정원만 센다.
+  // 그 시간대(이번 주)의 신청 인원. 신청 순서대로.
+  const getRunPeople = useMemo(() => (run) => (
+    memberByRaidDateTime.get(`${run.day}-${run.time}`)?.[`${run.raidName} ${run.difficulty} ${run.mode}`] ?? []
+  ), [memberByRaidDateTime])
+
+  // 횟수 제한 레이드(에라쿠스 유적 주 5회)의 이번 주 사용 횟수. 클리어할 때마다 남긴 명단으로 센다.
   const weeklyEntryCounts = useMemo(
-    () => countWeeklyEntries(raidRuns, weekStartKey, (run) => (
-      memberByRaidDateTime.get(`${run.day}-${run.time}`)?.[`${run.raidName} ${run.difficulty} ${run.mode}`] ?? []
-    )),
-    [raidRuns, weekStartKey, memberByRaidDateTime],
+    () => countWeeklyEntries(raidRuns, weekStartKey, getRunPeople),
+    [raidRuns, weekStartKey, getRunPeople],
   )
+
+  // 이번 주 클리어 기록 (요일 · 시간 순). people: 클리어한 사람과 그 시간대에서 클리어한 횟수
+  const weeklyClears = useMemo(() => (
+    raidRuns
+      .filter((run) => run.weekStart === weekStartKey)
+      .map((run) => {
+        const clears = getRunClears(run, getRunPeople)
+        const counts = new Map()
+        clears.forEach(({ members: names }) => names.forEach((name) => counts.set(name, (counts.get(name) ?? 0) + 1)))
+        return { run, count: clears.length, people: [...counts].map(([nickname, count]) => ({ nickname, count })) }
+      })
+      .filter(({ count }) => count > 0)
+      .sort((a, b) => (
+        weekdayNames.indexOf(a.run.day) - weekdayNames.indexOf(b.run.day)
+        || timeSlots.indexOf(a.run.time) - timeSlots.indexOf(b.run.time)
+        || compareSchedules(a.run, b.run)
+      ))
+  ), [raidRuns, weekStartKey, getRunPeople])
+
+  // 클리어 목록의 직업 아이콘. 신청을 지운 사람도 보이게 캐릭터 정보까지 함께 찾는다.
+  const classByNickname = useMemo(() => new Map([
+    ...storedMembers.map((member) => [member.nickname, member.className]),
+    ...raidSchedules.map((entry) => [entry.nickname, entry.className]),
+  ]), [storedMembers, raidSchedules])
 
   // 이번 주 직접 조정 ("레이드|닉네임" → +n / -n)
   const entryAdjustmentByKey = useMemo(
@@ -1104,7 +1166,7 @@ function App() {
   )
 
   // 횟수 제한 레이드의 이번 주 사용 현황. 제한이 없는 레이드면 null.
-  // cleared: 클리어 O로 자동으로 센 횟수, adjustment: 직접 조정, used: 합계, left: 남은 횟수
+  // cleared: 클리어 기록으로 자동으로 센 횟수, adjustment: 직접 조정, used: 합계, left: 남은 횟수
   const getEntryUsage = (raidName, nickname) => {
     const limit = getRaidWeeklyLimit(raidName)
 
@@ -1303,6 +1365,33 @@ function App() {
       }
     })
   }, [myUpcomingSlots, memberByRaidDateTime])
+
+  // 다른 사람이 클리어를 눌러 내 캐릭터 횟수가 차감되면 앱을 켜 둔 사람에게 바로 알려 준다. (내가 누른 것은 그때 안내한다)
+  // 처음 불러온 기록은 알리지 않고, 보고 있던 기록에 클리어가 늘었을 때만 알린다.
+  const myClearStateRef = useRef(new Map())
+
+  useEffect(() => {
+    const previousState = myClearStateRef.current
+    const nextState = new Map(raidRuns
+      .filter((run) => run.weekStart === weekStartKey && getRaidWeeklyLimit(run.raidName))
+      .map((run) => [getRaidRunKey(run), run.clearLog ?? []]))
+
+    myClearStateRef.current = nextState
+
+    nextState.forEach((log, key) => {
+      const newClears = previousState.has(key) ? log.slice(previousState.get(key).length) : []
+      const mine = myCharacters.filter((name) => newClears.some((clear) => clear.members.includes(name) && !myCharacters.includes(clear.by)))
+
+      if (mine.length > 0) {
+        const raidName = key.split('|')[3]
+        showToast(
+          `${raidName} 클리어 ${log.length}회! ${mine.map((name) => `${name} 남은 횟수 ${getEntriesLeft(raidName, name)}/${getRaidWeeklyLimit(raidName)}`).join(', ')}`,
+          'success',
+          `charged-${key}`,
+        )
+      }
+    })
+  }, [raidRuns, weekStartKey, myCharacters])
 
   // 탭별 신청 인원 ("무스펠 어려움 트라이" → 닉네임 Set). 레이드 · 공략 방식 탭에 인원 수로 보여 준다.
   const tabNicknames = useMemo(() => {
@@ -2162,7 +2251,7 @@ function App() {
       .map(([day, time]) => `${day}요일 ${formatTimeLabel(time)}: ${describeTakenSlot(takenSlots.get(`${day}|${time}`))}`)
 
     if (conflictLines.length > 0) {
-      showToast(`같은 시간에 이미 신청한 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n${conflictLines.join('\n')}`, 'error')
+      showToast(`같은 레이드를 같은 시간에 신청한 다른 캐릭터가 있어요. 아래 시간을 빼고 저장해 주세요.\n${conflictLines.join('\n')}`, 'error')
       return
     }
 
@@ -2342,7 +2431,7 @@ function App() {
   const selectedRestoreSchedules = restorableSchedules.filter((entry) => restoreSelectedKeys.includes(getScheduleKey(entry)))
 
   // 고른 지난 신청을 이번 주 신청으로 다시 등록한다. 직업 · 전투력 · 리딩은 지금 '내 캐릭터' 칸 값을 쓴다.
-  // 이번 주 다른 신청과 겹치는 시간과 이미 지난 시간은 빼고 등록한다. (앞에서 등록한 것과도 겹치지 않게 차례로 쌓는다)
+  // 내 다른 캐릭터가 같은 레이드 조합으로 신청한 시간과 이미 지난 시간은 빼고 등록한다.
   const restoreSchedules = async () => {
     setRestoreConfirmOpen(false)
 
@@ -2355,7 +2444,7 @@ function App() {
     const takenKeys = new Set(
       raidSchedules
         .filter((entry) => entry.attendance === '참' && myCharacters.includes(entry.nickname))
-        .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${day}|${time}`)),
+        .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${getScheduleKey(entry)}|${day}|${time}`)),
     )
     const skipped = []
     const skippedPast = []
@@ -2376,7 +2465,7 @@ function App() {
 
         weekdayNames.forEach((day) => {
           selection[day] = selection[day].filter((time) => {
-            const slotKey = `${day}|${time}`
+            const slotKey = `${getScheduleKey(entry)}|${day}|${time}`
 
             if (isPastSlot(day, time)) {
               skippedPast.push(`${day} ${formatTimeLabel(time)}`)
@@ -2420,7 +2509,7 @@ function App() {
     }
 
     if (skipped.length > 0) {
-      showToast(`이번 주 다른 신청과 겹쳐서 뺀 시간: ${skipped.join(', ')}`, 'info')
+      showToast(`다른 캐릭터가 같은 레이드로 신청해서 뺀 시간: ${skipped.join(', ')}`, 'info')
     }
 
     if (skippedPast.length > 0) {
@@ -2454,9 +2543,7 @@ function App() {
   }
 
   // 레이드 · 난이도 · 공략 방식이 같은 스케줄 한 건만 삭제한다. 성공하면 true.
-  const deleteSchedule = async (target) => {
-    const trimmedNickname = currentNickname
-
+  const deleteSchedule = async (target, trimmedNickname = currentNickname) => {
     if (!trimmedNickname) {
       return
     }
@@ -2472,19 +2559,21 @@ function App() {
 
     setRaidSchedules((prevSchedules) => prevSchedules.filter((entry) => !isTargetSchedule(entry)))
     setMembers((prevMembers) => prevMembers.map((member) => (isScheduleMember(member, trimmedNickname, target) ? { ...member, ...clearedSelection } : member)))
-    setDayTimeDrafts((prev) => {
-      const nextDrafts = { ...prev }
-      delete nextDrafts[targetKey]
-      return nextDrafts
-    })
+    // 폼에서 고치는 선택은 지금 고른 캐릭터의 것이다.
+    if (trimmedNickname === currentNickname) {
+      setDayTimeDrafts((prev) => {
+        const nextDrafts = { ...prev }
+        delete nextDrafts[targetKey]
+        return nextDrafts
+      })
+    }
+
     return true
   }
 
   // 저장된 스케줄 한 건에서 요일 하나(time이 null) 또는 요일 · 시간 하나만 뺀다.
   // 남은 시간이 없으면 스케줄을 통째로 삭제하고, 남아 있으면 줄인 선택으로 다시 저장한다. 성공하면 true.
-  const deleteScheduleSlot = async ({ entry, day, time }) => {
-    const trimmedNickname = currentNickname
-
+  const deleteScheduleSlot = async ({ entry, day, time }, trimmedNickname = currentNickname) => {
     if (!trimmedNickname) {
       return
     }
@@ -2498,7 +2587,7 @@ function App() {
     const nextSelection = removeSlot(entry.dayTimeSelection)
 
     if (getSelectedDayList(nextSelection).length === 0) {
-      return deleteSchedule(entry)
+      return deleteSchedule(entry, trimmedNickname)
     }
 
     const targetKey = getScheduleKey(entry)
@@ -2565,17 +2654,19 @@ function App() {
         : member
     )))
     // 수정 중인 선택이 있으면 거기서도 같은 시간을 뺀다.
-    setDayTimeDrafts((prev) => (prev[targetKey] ? { ...prev, [targetKey]: removeSlot(prev[targetKey]) } : prev))
+    if (trimmedNickname === currentNickname) {
+      setDayTimeDrafts((prev) => (prev[targetKey] ? { ...prev, [targetKey]: removeSlot(prev[targetKey]) } : prev))
+    }
+
     return true
   }
 
   // 스케줄 한 건(target) 또는 그 안의 요일 · 시간({ entry, day, time })을 확인 창 없이 지우고,
   // 알림의 [되돌리기]로 지우기 전 스케줄을 그대로 다시 저장할 수 있게 한다.
-  const deleteWithUndo = async (target) => {
-    const nickname = currentNickname
+  const deleteWithUndo = async (target, nickname = currentNickname) => {
     const entry = target.entry ?? target
     const scheduleLabel = formatScheduleKey(getScheduleKey(entry))
-    const isDeleted = target.entry ? await deleteScheduleSlot(target) : await deleteSchedule(target)
+    const isDeleted = target.entry ? await deleteScheduleSlot(target, nickname) : await deleteSchedule(target, nickname)
 
     if (!isDeleted) {
       return
@@ -2599,18 +2690,19 @@ function App() {
     )
   }
 
-  // 같은 계정(본캐 + 부캐)이 이번 주에 신청한 모든 시간. 폼에서 고치는 조합도 뺀 takenSlots와 달리 전부 포함한다.
+  // 같은 계정(본캐 + 부캐)이 이번 주에 신청한 모든 시간대("레이드 조합|요일|시간"). 폼에서 고치는 조합도 뺀 takenSlots와 달리 전부 포함한다.
   const myAllTakenSlots = useMemo(() => new Set(
     raidSchedules
       .filter((entry) => entry.attendance === '참' && myCharacters.includes(entry.nickname))
-      .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${day}|${time}`)),
+      .flatMap((entry) => getDayTimePairs(entry.dayTimeSelection).map(([day, time]) => `${getScheduleKey(entry)}|${day}|${time}`)),
   ), [raidSchedules, myCharacters])
 
-  // '나도 참여'를 보여 줄 시간대인지. 지났거나 내 캐릭터가 그 시간에 이미 다른 신청을 했으면 보여 주지 않는다.
+  // '나도 참여'를 보여 줄 시간대인지. 지났거나 내 캐릭터가 이미 그 레이드를 그 시간에 신청했으면 보여 주지 않는다.
+  // 같은 시간에 다른 레이드를 신청한 것은 괜찮다.
   // 횟수를 다 쓴 레이드(에라쿠스 주 5회)는 바로 신청 버튼을 숨긴다.
-  const canJoinSlot = ({ day, time, raidName }) => (
+  const canJoinSlot = ({ day, time, raidName, difficulty, mode }) => (
     !isPastSlot(day, time)
-    && !myAllTakenSlots.has(`${day}|${time}`)
+    && !myAllTakenSlots.has(`${getScheduleKey({ raidName, difficulty, mode })}|${day}|${time}`)
     && getEntriesLeft(raidName, currentNickname) !== 0
   )
 
@@ -2704,7 +2796,7 @@ function App() {
     }
   }
 
-  // 그 시간대(요일 · 시간 · 레이드 조합)에 참여로 투표한 내 캐릭터. 같은 시간 중복 신청을 막아서 많아야 하나다.
+  // 그 시간대(요일 · 시간 · 레이드 조합)에 참여로 투표한 내 캐릭터. 같은 레이드 · 같은 시간은 한 캐릭터만 신청할 수 있어 많아야 하나다.
   // 준비 · 클리어 표시는 이 캐릭터 이름으로 남긴다. 없으면 로그인한 본캐.
   const getMySlotNickname = (run) => (
     (run.weekStart === weekStartKey ? raidSchedules : storedRaidSchedules).find((entry) => (
@@ -2744,6 +2836,10 @@ function App() {
       }
 
       if (result?.error) {
+        if (result.run) {
+          setRaidRuns((prev) => upsertRaidRun(prev, normalizeRaidRun(result.run)))
+        }
+
         showToast(`표시를 저장하지 못했어요. ${describeAuthResult(result.error)}`, 'error')
         return
       }
@@ -2761,12 +2857,208 @@ function App() {
       return
     }
 
-    setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null }))
+    const fullSize = getRaidFullSize(run.raidName)
+    const voters = getRunPeople(run).map((person) => person.nickname)
+    const departed = voters.filter((name) => current.rallyCheckins.includes(name)).slice(0, fullSize)
+    const clearLog = value === 'O' ? [{ at: new Date().toISOString(), by: nickname, members: departed.length > 0 ? departed : voters.slice(0, fullSize) }] : []
+
+    setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null, clearLog }))
     showToast(value ? `클리어 ${value}로 표시했어요.` : '클리어 표시를 지웠어요.', 'success')
   }
 
+  // 횟수 제한 레이드(에라쿠스 유적)에서 지금 클리어를 누르면 차감될 사람: 출발한 사람(준비 완료로 된 신청자) 중 횟수가 남은 사람을 정원까지.
+  // DB의 _raid_clear_add와 같은 기준이어야 한다. 지난주 시간대는 신청자와 남은 횟수를 알 수 없어 준비 완료로 된 사람으로 본다.
+  const getClearTargets = (run) => {
+    const checkins = raidRunByKey.get(getRaidRunKey(run))?.rallyCheckins ?? []
+
+    if (run.weekStart !== weekStartKey) {
+      return checkins.map((nickname) => ({ nickname, left: null }))
+    }
+
+    return [...new Set(getRunPeople(run).map((person) => person.nickname))]
+      .filter((nickname) => checkins.includes(nickname))
+      .map((nickname) => ({ nickname, left: getEntriesLeft(run.raidName, nickname) }))
+      .filter(({ left }) => left > 0)
+      .slice(0, getRaidFullSize(run.raidName))
+  }
+
+  // 클리어 1회를 더하거나('add') 마지막 1회를 되돌린다('undo'). expectedCount는 누를 때 화면에 보인 클리어 횟수.
+  const applyClearCount = async (run, action, expectedCount) => {
+    const nickname = loggedInNickname ? getMySlotNickname(run) : ''
+
+    if (!nickname) {
+      showToast('로그인한 뒤에 클리어를 표시할 수 있어요.', 'error')
+      return
+    }
+
+    const runKey = getRaidRunKey(run)
+    const targets = getClearTargets(run)
+    let charged = targets.map((target) => target.nickname)
+    let notified = false
+
+    if (supabase) {
+      setSavingRunKey(runKey)
+
+      let result
+
+      try {
+        result = await setRaidClearCount(nickname, sessionPassword, run, action, expectedCount)
+      } catch (error) {
+        showToast(`클리어를 저장하지 못했어요. (${error.message})`, 'error', 'clear-count')
+        return
+      } finally {
+        setSavingRunKey('')
+      }
+
+      // 다른 사람이 먼저 누른 경우에도 최신 상태로 맞춘다.
+      const savedRun = normalizeRaidRun(result?.run)
+
+      if (savedRun) {
+        setRaidRuns((prev) => upsertRaidRun(prev, savedRun))
+      }
+
+      if (result?.error) {
+        showToast(describeAuthResult(result.error), 'error', 'clear-count')
+        return
+      }
+
+      charged = savedRun?.clearLog.at(-1)?.members ?? charged
+      notified = Boolean(result?.notified)
+    } else {
+      // 로컬 모드: DB 함수와 같은 규칙으로 이 브라우저에만 저장한다. (디스코드 알림 없음)
+      setRaidRuns((prev) => {
+        const current = prev.find((item) => getRaidRunKey(item) === runKey)
+        const clearLog = getRunClears(current, getRunPeople)
+
+        if (!current?.gatheredAt || clearLog.length !== expectedCount) {
+          return prev
+        }
+
+        const nextLog = action === 'add' ? [...clearLog, { at: new Date().toISOString(), by: nickname, members: charged }] : clearLog.slice(0, -1)
+        return upsertRaidRun(prev, { ...current, clearLog: nextLog, cleared: nextLog.length > 0 ? 'O' : null, clearedBy: nextLog.at(-1)?.by ?? null })
+      })
+    }
+
+    if (action === 'undo') {
+      showToast(`클리어 1회를 되돌렸어요. 차감한 횟수도 돌아왔어요. (클리어 ${expectedCount - 1}회)`, 'success', 'clear-count')
+      return
+    }
+
+    const limit = getRaidWeeklyLimit(run.raidName)
+    const chargedText = charged.map((name) => {
+      const left = targets.find((target) => target.nickname === name)?.left
+      return left ? `${name} ${left - 1}/${limit}` : name
+    }).join(', ')
+
+    showToast(
+      // 모바일은 남은 횟수가 바로 위에 보이므로, 알림이 그것을 가리지 않게 한 줄로 줄인다.
+      isMobile
+        ? `클리어 ${expectedCount + 1}회 · 1회씩 차감${notified ? ' · 디스코드 알림' : ''}`
+        : `클리어 ${expectedCount + 1}회! 1회씩 차감했어요.\n남은 횟수: ${chargedText}${notified ? '\n이번 주 횟수를 모두 쓴 사람이 있어 디스코드로 알렸어요.' : ''}`,
+      'success',
+      'clear-count',
+      { label: '되돌리기', onClick: () => applyClearCount(run, 'undo', expectedCount + 1) },
+    )
+  }
+
+  // 누군가 마지막 1회를 쓰는 클리어는 디스코드 알림이 가므로 한 번 확인하고, 그 밖에는 바로 차감한다. (알림의 되돌리기로 취소 가능)
+  const handleClearCountClick = (run, count) => {
+    const targets = getClearTargets(run)
+
+    if (targets.length === 0) {
+      showToast(describeAuthResult('no_entries_left'), 'error', 'clear-count')
+      return
+    }
+
+    const finishing = targets.filter(({ left }) => left === 1).map(({ nickname }) => nickname)
+
+    if (finishing.length > 0) {
+      const notifiedNames = raidRunByKey.get(getRaidRunKey(run))?.clearFinished ?? []
+      setPendingRunStatus({ run, action: 'clear-count', count, finishing, alreadyNotified: finishing.every((name) => notifiedNames.includes(name)) })
+      return
+    }
+
+    applyClearCount(run, 'add', count)
+  }
+
+  // 횟수 제한 레이드의 클리어 칸: 한 번 출발해 클리어할 때마다 '+1 클리어'를 누른다. 실패(X)는 아직 클리어가 없을 때만.
+  const renderClearCounter = ({ run, record, canEdit, disabledReason = '', labelPrefix = '', isLarge = false }) => {
+    const count = getRunClears(record, getRunPeople).length
+    const isFailed = count === 0 && record?.cleared === 'X'
+    const label = `${labelPrefix}${formatTimeLabel(run.time)} 클리어`
+
+    return (
+      <span
+        className={`day-raid-run-status day-raid-clear-count ${isLarge ? 'is-large' : ''} ${count > 0 ? 'is-yes' : isFailed ? 'is-no' : ''}`}
+        title={disabledReason || `클리어할 때마다 눌러요. 출발한 사람이 1회씩 차감돼요.${record?.clearedBy ? ` · 마지막 ${record.clearedBy}` : ''}`}
+      >
+        <span className="day-raid-run-label">클리어 {count}회</span>
+        <button
+          type="button"
+          className={`day-raid-rally-button ${isLarge ? 'is-primary' : ''}`}
+          aria-label={`${label} 1회 추가`}
+          disabled={!canEdit}
+          onClick={() => handleClearCountClick(run, count)}
+        >
+          +1 클리어
+        </button>
+        {count > 0 ? (
+          <button
+            type="button"
+            className="day-raid-rally-button active"
+            aria-label={`${label} 1회 되돌리기`}
+            disabled={!canEdit}
+            onClick={() => applyClearCount(run, 'undo', count)}
+          >
+            되돌리기
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`day-raid-run-button ${isFailed ? 'active' : ''}`}
+            aria-pressed={isFailed}
+            aria-label={`${label} X`}
+            disabled={!canEdit}
+            onClick={() => handleRunStatusClick(run, 'cleared', 'X')}
+          >
+            <LeadMark value="X" />
+          </button>
+        )}
+      </span>
+    )
+  }
+
+  // 출발한 뒤 시간 줄 아래에 사람별 남은 횟수를 펼치지 않아도 보이게 한다. 방금 차감된 사람은 강조하고, 출발하지 않은 사람은 흐리게.
+  const renderClearEntries = (run, record, rosterNicknames, departedNicknames) => {
+    const clears = getRunClears(record, getRunPeople)
+    const lastCharged = clears.at(-1)?.members ?? []
+    const names = [...new Set([...rosterNicknames, ...departedNicknames, ...clears.flatMap((clear) => clear.members)])]
+
+    return (
+      <div className="day-raid-clear-entries">
+        <span className="day-raid-clear-entries-label">남은 횟수</span>
+        {names.map((name) => {
+          const isCharged = lastCharged.includes(name)
+          const isAbsent = !departedNicknames.includes(name)
+
+          return (
+            <span
+              key={name}
+              className={`day-raid-clear-entry${isCharged && !isAbsent ? ' is-charged' : ''}${isAbsent ? ' is-absent' : ''}`}
+              title={isAbsent ? '지금 출발 인원이 아니라 차감되지 않아요.' : isCharged ? '마지막 클리어에서 1회 차감됐어요.' : undefined}
+            >
+              {name}
+              {renderEntriesLeft(run.raidName, name)}
+            </span>
+          )
+        })}
+      </div>
+    )
+  }
+
   // 준비 호출 / 체크 / 체크 취소 / 호출 취소. slotVoterNicknames는 로컬 모드에서 모두 모였는지 볼 때 쓴다.
-  const applyRaidRally = async (run, action, slotVoterNicknames) => {
+  // members: 'start' · 'members'에서 고른 출발 인원
+  const applyRaidRally = async (run, action, slotVoterNicknames, members = null) => {
     const nickname = loggedInNickname ? getMySlotNickname(run) : ''
 
     if (!nickname) {
@@ -2782,7 +3074,7 @@ function App() {
       let result
 
       try {
-        result = await setRaidRally(nickname, sessionPassword, run, action)
+        result = await setRaidRally(nickname, sessionPassword, run, action, members)
       } catch (error) {
         showToast(`준비 상태를 저장하지 못했어요. (${error.message})`, 'error')
         return
@@ -2819,14 +3111,21 @@ function App() {
 
       nextRun = { ...current, rallyCalledBy: nickname, rallyCalledAt: new Date().toISOString(), rallyCheckins: [nickname], gatheredAt: null }
     } else if (action === 'cancel') {
-      nextRun = { ...current, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null }
+      nextRun = { ...current, rallyCalledBy: null, rallyCalledAt: null, rallyCheckins: [], gatheredAt: null, cleared: null, clearedBy: null, clearLog: [] }
     } else if (action === 'start') {
       if (!current.rallyCalledAt) {
         showToast(describeAuthResult('not_called'), 'error')
         return
       }
 
-      nextRun = { ...current, gatheredAt: current.gatheredAt ?? new Date().toISOString() }
+      nextRun = { ...current, gatheredAt: current.gatheredAt ?? new Date().toISOString(), rallyCheckins: members ?? current.rallyCheckins }
+    } else if (action === 'members') {
+      if (!current.gatheredAt) {
+        showToast(describeAuthResult('not_gathered'), 'error')
+        return
+      }
+
+      nextRun = { ...current, rallyCheckins: members }
     } else {
       if (!current.rallyCalledAt) {
         showToast(describeAuthResult('not_called'), 'error')
@@ -2867,9 +3166,21 @@ function App() {
 
   // 호출 · 다시 알림은 디스코드 알림이 가고, 호출 취소는 체크 · 클리어 기록이 지워지므로 한 번 확인한다.
   const handleRallyClick = (run, action, slotVoterNicknames) => {
-    if (action === 'call' || action === 'cancel' || action === 'remind' || action === 'start') {
+    if (action === 'call' || action === 'cancel' || action === 'remind' || action === 'start' || action === 'members') {
       const runRecord = raidRunByKey.get(getRaidRunKey(run))
-      setPendingRunStatus({ run, action, slotVoterNicknames, alreadyNotified: (runRecord?.rallyNotifyCount ?? 0) >= 2 })
+      const pending = { run, action, slotVoterNicknames, alreadyNotified: (runRecord?.rallyNotifyCount ?? 0) >= 2 }
+
+      // 시작 · 출발 인원: 실제로 가는 사람을 고른다. 지금까지 준비 완료한 사람을 골라 둔다.
+      // 지난주 시간대는 신청자를 알 수 없어 고르지 않고 준비 완료한 사람 그대로 시작한다.
+      if ((action === 'start' || action === 'members') && run.weekStart === weekStartKey) {
+        const fullSize = getRaidFullSize(run.raidName)
+        const names = [...new Set(getRunPeople(run).map((person) => person.nickname))]
+        const checkins = runRecord?.rallyCheckins ?? []
+        pending.candidates = names.map((nickname, index) => ({ nickname, isWaiting: index >= fullSize }))
+        pending.picked = names.filter((nickname) => checkins.includes(nickname)).slice(0, fullSize)
+      }
+
+      setPendingRunStatus(pending)
       return
     }
 
@@ -2885,7 +3196,55 @@ function App() {
       return
     }
 
-    applyRaidRally(target.run, target.action, target.slotVoterNicknames)
+    if (target.action === 'clear-count') {
+      applyClearCount(target.run, 'add', target.count)
+      return
+    }
+
+    applyRaidRally(target.run, target.action, target.slotVoterNicknames, target.picked ?? null)
+  }
+
+  // 출발 인원 고르기 팝업에서 한 사람을 넣거나 뺀다.
+  const togglePickedMember = (nickname) => {
+    setPendingRunStatus((prev) => (prev?.picked
+      ? { ...prev, picked: prev.picked.includes(nickname) ? prev.picked.filter((name) => name !== nickname) : [...prev.picked, nickname] }
+      : prev))
+  }
+
+  const toggleClearSummary = () => {
+    setClearSummaryOpen((prev) => {
+      try {
+        localStorage.setItem('raid-calendar-clear-summary-v1', prev ? 'closed' : 'open')
+      } catch {
+        // Ignore storage errors.
+      }
+
+      return !prev
+    })
+  }
+
+  // 같은 시간 겹친 신청을 그대로 둔다. (다시 묻지 않는다)
+  const dismissOverlap = (key) => {
+    setDismissedOverlaps((prev) => {
+      const next = [...prev, key].slice(-40)
+
+      try {
+        localStorage.setItem('raid-calendar-overlap-dismissed-v1', JSON.stringify(next))
+      } catch {
+        // Ignore storage errors.
+      }
+
+      return next
+    })
+  }
+
+  // 같은 시간에 남은 다른 레이드 신청을 뺀다. 부캐 신청이면 그 부캐 것을 뺀다.
+  const removeOverlapSlot = async (slot) => {
+    const entry = raidSchedules.find((item) => item.nickname === slot.nickname && getScheduleKey(item) === getScheduleKey(slot))
+
+    if (entry) {
+      await deleteWithUndo({ entry, day: slot.day, time: slot.time }, slot.nickname)
+    }
   }
 
   const confirmClearAll = async () => {
@@ -3173,6 +3532,8 @@ function App() {
       isRallyCalled: Boolean(runRecord?.rallyCalledAt),
       isGathered: Boolean(runRecord?.gatheredAt),
       checkedCount: voterNicknames.filter((name) => rallyCheckins.includes(name)).length,
+      departedCount: new Set(people.map((person) => person.nickname).filter((name) => rallyCheckins.includes(name))).size,
+      runRecord,
       isMeChecked: rallyCheckins.includes(slot.nickname),
       isWaitlisted: waitingIndex >= 0,
       fullSize,
@@ -3267,9 +3628,39 @@ function App() {
 
   // 내가 준비 완료를 눌러야 하는 시간대가 있으면 그것을 먼저, 없으면 가장 가까운 시간대를 보여 준다.
   const isWaitingForMe = (slot) => slot.isRallyCalled && !slot.isGathered && !slot.isMeChecked && !slot.isWaitlisted
-  const nextRaidSlot = myUpcomingSlotDetails.find(isWaitingForMe) ?? myUpcomingSlotDetails[0] ?? null
+  // 같은 시간에 여러 레이드를 신청했으면 내가 출발한 레이드를 먼저 보여 준다.
+  const isDepartedWithMe = (slot) => slot.isGathered && slot.isMeChecked
+  const nextRaidSlot = myUpcomingSlotDetails.find(isWaitingForMe)
+    ?? myUpcomingSlotDetails.find((slot) => slot.startTime === myUpcomingSlotDetails[0].startTime && isDepartedWithMe(slot))
+    ?? myUpcomingSlotDetails[0]
+    ?? null
   const nextRaidNeedsMe = Boolean(nextRaidSlot && isWaitingForMe(nextRaidSlot))
   const laterRaidSlots = myUpcomingSlotDetails.filter((slot) => slot !== nextRaidSlot)
+
+  // 내가 이미 출발한 레이드와 같은 시간에 남아 있는 다른 신청. 자리를 비워 줄지 물어본다.
+  const overlapNotices = myUpcomingSlotDetails.filter(isDepartedWithMe).flatMap((departed) => (
+    myUpcomingSlotDetails
+      .filter((slot) => slot.startTime === departed.startTime && slot.runKey !== departed.runKey && !isDepartedWithMe(slot))
+      .map((slot) => ({ key: `${departed.runKey}>${slot.runKey}>${slot.nickname}`, departed, slot }))
+  )).filter(({ key, slot }, index, list) => (
+    !dismissedOverlaps.includes(key) && list.findIndex((item) => item.slot.runKey === slot.runKey) === index
+  ))
+
+  // 모바일 신청 화면에서는 급한 일이 없으면 리셋 · 다음 레이드를 한 줄로 줄여 시간표가 첫 화면에 들어오게 한다.
+  const isSummaryCompact = isMobile && mobileSection === 'form'
+    && !nextRaidSlot?.isRallyCalled
+    && !nextRaidSlot?.canCallRally
+
+  // 모바일 파티 화면: 고른 요일에 신청이 있는 시간. 하나라도 있으면 빈 시간은 '더 보기'로 접는다.
+  const mobilePartyDay = weekdayNames[mobileCalendarDayIndex]
+  const partyTabKey = `${activeTabMeta.raid} ${activeTabMeta.difficulty} ${activeModeTab}`
+  const isPartyTimeUsed = (day, time) => (
+    (memberByRaidDateTime.get(`${day}-${time}`)?.[partyTabKey] ?? []).length > 0 || myScheduleSet.has(`${day}-${time}`)
+  )
+  const mobilePartyTimes = isMobile ? getDayTimeSlots(weekDates[mobileCalendarDayIndex]) : []
+  const vacantPartyTimes = mobilePartyTimes.some((time) => isPartyTimeUsed(mobilePartyDay, time))
+    ? mobilePartyTimes.filter((time) => !isPartyTimeUsed(mobilePartyDay, time))
+    : []
 
   // 수요일 새벽: 리셋으로 사라진 지난주 화요일 레이드 중 준비 확인을 했던 것. 끝나고 클리어를 표시할 수 있게 남겨 둔다.
   const lastWeekMyRuns = isResetNight
@@ -3346,7 +3737,7 @@ function App() {
     </div>
   )
 
-  // 고른 요일의 시간을 다른 요일에도 넣는다. 그 요일에 없거나 지났거나 이미 신청한 시간은 뺀다. 저장 전이라 되돌릴 수 있다.
+  // 고른 요일의 시간을 다른 요일에도 넣는다. 그 요일에 없거나 지났거나 다른 캐릭터가 같은 레이드로 신청한 시간은 뺀다. 저장 전이라 되돌릴 수 있다.
   const copyTimesToOtherDays = (sourceDay) => {
     if (isCurrentEntriesExhausted) {
       showToast(entriesExhaustedMessage, 'info', 'copy-times')
@@ -3433,6 +3824,7 @@ function App() {
             const blockReason = getSlotBlockReason(day, time, isSelected)
             const peopleCount = isScheduleTargetSelected ? (memberByRaidDateTime.get(`${day}-${time}`)?.[targetKey] ?? []).length : 0
             const isPast = isPastSlot(day, time)
+            const otherRaids = otherRaidSlots.get(`${day}|${time}`)
             const subText = takenSlots.has(`${day}|${time}`)
               ? '신청함'
               : isPast ? '지남' : peopleCount > 0 ? `${peopleCount}명 신청` : ' '
@@ -3441,10 +3833,11 @@ function App() {
               <button
                 key={time}
                 type="button"
-                className={`mobile-time-button${isSelected ? ' is-selected' : ''}${blockReason ? ' is-blocked' : ''}`}
+                className={`mobile-time-button${isSelected ? ' is-selected' : ''}${otherRaids ? ' has-other-raid' : ''}${blockReason ? ' is-blocked' : ''}`}
                 aria-pressed={isSelected}
                 aria-disabled={Boolean(blockReason)}
                 aria-label={`${day}요일 ${formatTimeLabel(time)}`}
+                aria-description={otherRaids ? describeOtherRaids(otherRaids) : undefined}
                 onClick={() => tapMobileTime(day, time, isSelected)}
               >
                 <strong>{isSelected ? `✓ ${formatTimeLabel(time)}` : formatTimeLabel(time)}</strong>
@@ -3453,6 +3846,11 @@ function App() {
             )
           })}
         </div>
+        {times.some((time) => otherRaidSlots.has(`${day}|${time}`)) && (
+          <p className="field-hint mobile-other-raid-hint">
+            <i className="other-raid-dot" aria-hidden="true" />내가 다른 레이드도 신청한 시간 (함께 신청할 수 있어요)
+          </p>
+        )}
         {selectedTimes.length > 0 && (
           <button type="button" className="secondary-button mobile-copy-times" onClick={() => copyTimesToOtherDays(day)}>
             이 시간을 다른 요일에도 넣기
@@ -3464,6 +3862,24 @@ function App() {
       </div>
     )
   }
+
+  // 이번 주 클리어 목록의 사람 한 명
+  const renderClearPerson = (nickname, detail, isDone = false) => {
+    const className = classByNickname.get(nickname)
+
+    return (
+      <span key={nickname} className={`member-tag clear-person${isDone ? ' is-done' : ''}${myCharacters.includes(nickname) ? ' is-me' : ''}`}>
+        {className && <img src={getClassIconPath(className)} alt={className} className="nickname-icon" />}
+        <span className="clear-person-name">{nickname}</span>
+        {detail}
+      </span>
+    )
+  }
+
+  // 시작한 시간대의 표시: 정원이 모두 준비했으면 '전원 준비', 일부만 갔으면 '출발'
+  const getDepartLabel = (checkedCount, departedCount, rosterCount) => (
+    `${checkedCount === rosterCount && departedCount === rosterCount ? '전원 준비' : '출발'} ${departedCount}/${rosterCount}`
+  )
 
   const renderJoinButton = (slot, peopleCount, extraClass = '') => (
     canJoinSlot(slot) ? (
@@ -3705,7 +4121,7 @@ function App() {
             <h3>지난 신청을 다시 등록할까요?</h3>
             <p>
               <span className="save-confirm-nickname">{currentNickname}</span>
-              의 지난 신청 중 고른 것을 이번 주 신청으로 저장해요. 이번 주 다른 신청과 겹치는 시간은 빼고 등록해요.
+              의 지난 신청 중 고른 것을 이번 주 신청으로 저장해요. 다른 캐릭터가 같은 레이드로 신청한 시간은 빼고 등록해요.
             </p>
             <div className="restore-list-head">
               <span>{selectedRestoreSchedules.length} / {restorableSchedules.length}건 선택</span>
@@ -3824,6 +4240,8 @@ function App() {
                 : pendingRunStatus.action === 'cancel' ? '준비 확인을 취소할까요?'
                 : pendingRunStatus.action === 'remind' ? '준비 확인을 다시 알릴까요?'
                 : pendingRunStatus.action === 'start' ? '이 인원으로 시작할까요?'
+                : pendingRunStatus.action === 'members' ? '출발 인원을 고쳐 주세요'
+                : pendingRunStatus.action === 'clear-count' ? '클리어 1회를 추가할까요?'
                 : '클리어로 표시할까요?'}
             </h3>
             <p>
@@ -3832,24 +4250,59 @@ function App() {
               </span>
               {` ${pendingRunStatus.run.day}요일 ${formatTimeLabel(pendingRunStatus.run.time)} 레이드`}
               {pendingRunStatus.action === 'call' && '의 준비 확인을 시작합니다. 정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 돼요.'}
-              {pendingRunStatus.action === 'start' && '를 지금 준비한 인원으로 시작합니다. 아직 준비하지 않은 사람을 기다리지 않고 전원 준비로 넘어가요.'}
+              {pendingRunStatus.action === 'start' && (pendingRunStatus.candidates
+                ? '를 기다리지 않고 시작합니다. 실제로 가는 사람만 골라 주세요.'
+                : '를 지금 준비한 인원으로 시작합니다.')}
+              {pendingRunStatus.action === 'members' && '에서 실제로 가는 사람만 골라 주세요. 이미 기록한 클리어는 바뀌지 않아요.'}
+              {pendingRunStatus.candidates && (getRaidWeeklyLimit(pendingRunStatus.run.raidName) > 0
+                ? ' 고른 사람만 횟수가 차감돼요.'
+                : ' 고른 사람이 클리어 명단에 들어가요.')}
               {pendingRunStatus.action === 'cancel' && '의 준비 확인을 취소합니다. 지금까지의 준비 완료와 클리어 표시도 함께 지워져요.'}
+              {pendingRunStatus.action === 'cancel' && getRaidWeeklyLimit(pendingRunStatus.run.raidName) > 0 && ' 차감한 횟수도 되돌아가요.'}
+              {pendingRunStatus.action === 'clear-count' && `의 클리어를 1회 추가합니다. ${pendingRunStatus.finishing.join(', ')}님이 이번 주 횟수를 모두 쓰게 돼요.`}
               {pendingRunStatus.action === 'remind' && '의 준비 확인을 디스코드로 한 번 더 알립니다. 지금 신청한 인원과 아직 준비 안 한 인원이 함께 가요. (시간대마다 두 번까지)'}
               {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
               {supabase && pendingRunStatus.action === 'start' && ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.'}
-              {supabase && (pendingRunStatus.action === 'call' || pendingRunStatus.action === 'cleared') && (pendingRunStatus.alreadyNotified
-                ? ' 이 시간대는 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
+              {supabase && (pendingRunStatus.action === 'call' || pendingRunStatus.action === 'cleared' || pendingRunStatus.action === 'clear-count') && (pendingRunStatus.alreadyNotified
+                ? ' 이미 디스코드로 알렸기 때문에 다시 알리지 않아요.'
                 : ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.')}
             </p>
+            {pendingRunStatus.candidates && (
+              <div className="depart-picker" role="group" aria-label="출발 인원">
+                {pendingRunStatus.candidates.map(({ nickname, isWaiting }) => (
+                  <label key={nickname} className={`depart-option ${pendingRunStatus.picked.includes(nickname) ? 'is-picked' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={pendingRunStatus.picked.includes(nickname)}
+                      onChange={() => togglePickedMember(nickname)}
+                    />
+                    <span className="depart-option-name">{nickname}</span>
+                    {isWaiting && <small>대기</small>}
+                    {renderEntriesLeft(pendingRunStatus.run.raidName, nickname)}
+                  </label>
+                ))}
+                <small className={`depart-count ${pendingRunStatus.picked.length > getRaidFullSize(pendingRunStatus.run.raidName) ? 'is-over' : ''}`}>
+                  {pendingRunStatus.picked.length}/{getRaidFullSize(pendingRunStatus.run.raidName)}명 출발
+                  {pendingRunStatus.picked.length > getRaidFullSize(pendingRunStatus.run.raidName) && ' · 정원보다 많아요'}
+                </small>
+              </div>
+            )}
             <div className="save-confirm-actions">
               <button type="button" className="secondary-button" onClick={() => setPendingRunStatus(null)}>
                 {pendingRunStatus.action === 'cancel' ? '닫기' : '취소'}
               </button>
-              <button type="button" className="primary-button" onClick={confirmPendingRunStatus}>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={Boolean(pendingRunStatus.candidates) && (pendingRunStatus.picked.length === 0 || pendingRunStatus.picked.length > getRaidFullSize(pendingRunStatus.run.raidName))}
+                onClick={confirmPendingRunStatus}
+              >
                 {pendingRunStatus.action === 'call' ? '호출'
                   : pendingRunStatus.action === 'cancel' ? '호출 취소'
                   : pendingRunStatus.action === 'remind' ? '다시 알림'
-                  : pendingRunStatus.action === 'start' ? '시작' : '표시'}
+                  : pendingRunStatus.action === 'start' ? '시작'
+                  : pendingRunStatus.action === 'members' ? '바꾸기'
+                  : pendingRunStatus.action === 'clear-count' ? '추가' : '표시'}
               </button>
             </div>
           </div>
@@ -3917,7 +4370,9 @@ function App() {
             {lastWeekMyRuns.map(({ run, runKey, record }) => (
               <li key={runKey}>
                 <span>{formatTimeLabel(run.time)} · {run.raidName} {run.difficulty} {run.mode}</span>
-                {record.gatheredAt ? (
+                {record.gatheredAt && getRaidWeeklyLimit(run.raidName) > 0 ? (
+                  renderClearCounter({ run, record, canEdit: savingRunKey !== runKey, labelPrefix: '지난주 화요일 ' })
+                ) : record.gatheredAt ? (
                   <span className={`day-raid-run-status ${record.cleared ? `is-${record.cleared === 'O' ? 'yes' : 'no'}` : ''}`}>
                     <span className="day-raid-run-label">클리어</span>
                     {['O', 'X'].map((option) => (
@@ -3962,7 +4417,7 @@ function App() {
               <dt>파티</dt>
               <dd>시간마다 A · B 파티가 어떻게 나뉘는지 봐요.</dd>
               <dt>인원</dt>
-              <dd>레이드별로 누가 신청했는지 봐요.</dd>
+              <dd>이번 주 클리어한 사람과 레이드별로 누가 신청했는지 봐요.</dd>
             </dl>
             <p className="field-hint">메뉴(☰)의 '사용법'에서 다시 볼 수 있어요.</p>
             <button type="button" className="primary-button" onClick={closeGuide}>
@@ -3972,6 +4427,32 @@ function App() {
         </div>
       )}
 
+      {overlapNotices.map(({ key, departed, slot }) => (
+        <section key={key} className="overlap-notice" role="status" aria-label="같은 시간 다른 신청">
+          <p>
+            <strong>{departed.raidName} {departed.difficulty}</strong>에 출발했어요. 같은 시간({slot.day} {formatTimeLabel(slot.time)})의{' '}
+            <strong>{slot.raidName} {slot.difficulty} {slot.mode}</strong>
+            {slot.nickname !== loggedInNickname && ` (${slot.nickname})`} 신청을 뺄까요? 빼면 대기자가 들어올 수 있어요.
+          </p>
+          <div className="overlap-notice-actions">
+            <button type="button" className="secondary-button small-toggle" onClick={() => dismissOverlap(key)}>그대로 두기</button>
+            <button type="button" className="primary-button small-toggle" disabled={isSaving} onClick={() => removeOverlapSlot(slot)}>신청 빼기</button>
+          </div>
+        </section>
+      ))}
+
+      {isSummaryCompact && (
+        <section className="summary-strip" data-section="form">
+          <span className="summary-strip-item"><em>리셋</em> <ResetCountdown isShort /></span>
+          {nextRaidSlot && (
+            <button type="button" className="summary-strip-next" onClick={() => openSlotInDaySummary(nextRaidSlot)}>
+              <em>다음</em> {nextRaidSlot.day} {formatTimeLabel(nextRaidSlot.time)} {nextRaidSlot.raidName} {nextRaidSlot.difficulty}
+            </button>
+          )}
+        </section>
+      )}
+
+      {!isSummaryCompact && (
       <section className="summary-grid">
         <article className="summary-card accent" data-section="form">
           <span className="label">다음 리셋</span>
@@ -4006,9 +4487,26 @@ function App() {
                     <span className="next-raid-hint">시작 1시간 전부터 준비 확인을 할 수 있어요</span>
                   )
                 ) : nextRaidSlot.isGathered ? (
-                  <span className="next-raid-status is-yes">
-                    전원 준비 {nextRaidSlot.checkedCount}/{nextRaidSlot.voterNicknames.length}
-                  </span>
+                  <>
+                    <span className="next-raid-status is-yes">
+                      {getDepartLabel(nextRaidSlot.checkedCount, nextRaidSlot.departedCount, nextRaidSlot.voterNicknames.length)}
+                    </span>
+                    {/* 에라쿠스는 여러 번 눌러야 해서 맨 위 카드에서 바로 누를 수 있게 한다. */}
+                    {getRaidWeeklyLimit(nextRaidSlot.raidName) > 0 && (
+                      <>
+                        {renderClearCounter({
+                          run: nextRaidSlot.run,
+                          record: nextRaidSlot.runRecord,
+                          canEdit: savingRunKey !== nextRaidSlot.runKey,
+                          labelPrefix: '내 다음 레이드 ',
+                          isLarge: true,
+                        })}
+                        <span className="next-raid-left">
+                          내 남은 횟수 {renderEntriesLeft(nextRaidSlot.raidName, nextRaidSlot.nickname)}
+                        </span>
+                      </>
+                    )}
+                  </>
                 ) : (
                   <>
                     <span className="next-raid-status is-pending">
@@ -4052,6 +4550,7 @@ function App() {
           )}
         </article>
       </section>
+      )}
 
       <main className="content-grid">
         <section className="panel form-panel" data-section="form">
@@ -4071,12 +4570,13 @@ function App() {
           {helpOpen && (
             <div className="help-panel">
               <p>1. '내 캐릭터'에서 직업 · 전투력 · 리딩 여부를 정해요. 캐릭터마다 한 번 정해 두면 계속 쓰여요.</p>
-              <p>2. 신청할 레이드 · 난이도 · 공략 방식을 골라요. 요일 · 시간은 레이드 조합마다 따로 저장돼요.</p>
+              <p>2. 신청할 레이드 · 난이도 · 공략 방식을 골라요. 요일 · 시간은 레이드 조합마다 따로 저장되고, 같은 시간에 다른 레이드도 함께 신청할 수 있어요.</p>
               <p>3. 시간표에서 가능한 칸을 누르거나 끌어서 골라요. 요일 · 시간 머리를 누르면 그 줄 전체가 골라져요. 24:00은 그 요일 밤 12시예요.</p>
               <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
               <p>5. 못 가는 시간은 시간표에서 빼고 저장해요. 시간을 모두 빼면 저장 버튼이 '신청 삭제'로 바뀌어요.</p>
               <p>6. 현황을 보다가 '나도 참여'를 누르면 그 시간대에 바로 신청돼요. 시간대마다 먼저 신청한 10명(초월 레이드는 5명)이 정원이고, 시간을 다시 저장해도 순서는 그대로예요.</p>
-              <p>7. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
+              <p>7. 에라쿠스 유적은 출발한 뒤 클리어할 때마다 '+1 클리어'를 눌러요. 준비 완료를 누른 사람이 1회씩 차감되고, 누군가 5회를 다 쓰는 클리어만 디스코드로 알려요. 클리어한 사람은 '이번 주 클리어'에서 볼 수 있어요.</p>
+              <p>8. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
             </div>
           )}
 
@@ -4421,7 +4921,7 @@ function App() {
               {!isScheduleTargetSelected
                 ? '레이드, 난이도, 공략 방식을 먼저 선택해 주세요.'
                 : isMobile
-                  ? '요일을 고른 뒤 갈 수 있는 시간을 모두 눌러 주세요. 24:00은 그 요일 밤 12시예요.'
+                  ? '갈 수 있는 시간을 모두 눌러요. (24:00 = 밤 12시)'
                   : '칸을 눌러 골라요. (PC는 끌어서 여러 칸) 요일 · 시간 머리를 누르면 그 줄 전체를 고르거나 지워요. 24:00은 그 요일 밤 12시예요.'}
             </p>
             {isMobile ? renderMobileTimePicker() : (
@@ -4465,8 +4965,10 @@ function App() {
                       }
 
                       const isSelected = (currentDayTimeSelection[day] ?? []).includes(time)
-                      // 같은 계정의 다른 신청이 있는 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
+                      // 다른 캐릭터가 같은 레이드로 신청한 시간. 이미 골라 둔 시간이면 뺄 수 있게 눌리도록 둔다.
                       const takenBy = takenSlots.get(`${day}|${time}`)
+                      // 다른 레이드로 신청한 시간. 막지 않고 점으로 표시만 한다.
+                      const otherRaids = otherRaidSlots.get(`${day}|${time}`)
                       // 막힌 칸도 눌리게 두어(disabled 대신 aria-disabled), 누르면 이유를 알림으로 띄운다.
                       const blockReason = getSlotBlockReason(day, time, isSelected)
 
@@ -4474,11 +4976,12 @@ function App() {
                         <button
                           key={`${day}-${time}`}
                           type="button"
-                          className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${isPastSlot(day, time) ? ' is-past' : ''}${blockReason ? ' is-blocked' : ''}`}
+                          className={`time-pick-cell${isSelected ? ' is-selected' : ''}${takenBy ? ' is-taken' : ''}${otherRaids ? ' has-other-raid' : ''}${isPastSlot(day, time) ? ' is-past' : ''}${blockReason ? ' is-blocked' : ''}`}
                           aria-pressed={isSelected}
                           aria-label={`${day}요일 ${formatTimeLabel(time)}`}
                           aria-disabled={Boolean(blockReason)}
-                          title={blockReason || `${day}요일 ${formatTimeLabel(time)}`}
+                          aria-description={otherRaids ? describeOtherRaids(otherRaids) : undefined}
+                          title={blockReason || `${day}요일 ${formatTimeLabel(time)}${otherRaids ? `\n${describeOtherRaids(otherRaids)}` : ''}`}
                           onPointerDown={(event) => startTimeDrag(event, day, time, isSelected)}
                           onPointerEnter={(event) => continueTimeDrag(event, day, time)}
                           onClick={(event) => handleTimeCellClick(event, day, time, isSelected)}
@@ -4494,7 +4997,10 @@ function App() {
             <div className="field-hint time-pick-legend">
               <span><i className="time-pick-legend-swatch is-selected" aria-hidden="true" />고른 시간</span>
               {takenSlots.size > 0 && (
-                <span><i className="time-pick-legend-swatch is-taken" aria-hidden="true" />다른 캐릭터 · 레이드로 신청함</span>
+                <span><i className="time-pick-legend-swatch is-taken" aria-hidden="true" />다른 캐릭터로 신청함</span>
+              )}
+              {otherRaidSlots.size > 0 && (
+                <span><i className="other-raid-dot" aria-hidden="true" />다른 레이드도 신청함 (함께 신청 가능)</span>
               )}
               <span><i className="time-pick-legend-swatch is-past" aria-hidden="true" />지난 시간</span>
               <span><i className="time-pick-legend-swatch is-unavailable" aria-hidden="true" />없는 시간</span>
@@ -4797,7 +5303,7 @@ function App() {
                 )
 
                 return (
-                <div key={day} data-day-index={dayIndex} className={`day-raid-card ${isPastCard ? 'is-past' : ''} ${isCardCollapsed ? 'is-collapsed' : ''} ${isTodayCard ? 'is-today' : ''}`}>
+                <div key={day} data-day-index={dayIndex} className={`day-raid-card ${isPastCard ? 'is-past' : ''} ${isCardCollapsed ? 'is-collapsed' : ''} ${raidGroups.length === 0 ? 'is-empty-day' : ''} ${isTodayCard ? 'is-today' : ''}`}>
                   {isPastCard && !isMobile ? (
                     <button
                       type="button"
@@ -4869,7 +5375,7 @@ function App() {
                                 const runRecord = raidRunByKey.get(runKey)
                                 const isSavingRun = savingRunKey === runKey
                                 // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
-                                // 부캐로 투표했으면 그 부캐로 표시한다. (같은 시간 중복 신청이 막혀 있어 내 캐릭터는 많아야 하나)
+                                // 부캐로 투표했으면 그 부캐로 표시한다. (같은 레이드 · 같은 시간은 한 캐릭터만 신청할 수 있어 많아야 하나)
                                 const mySlotNickname = timeVoters.find((member) => myCharacters.includes(member.nickname))?.nickname ?? ''
                                 const isSlotVoter = Boolean(mySlotNickname)
                                 const isMeWaitlisted = isSlotVoter && !rosterNicknames.includes(mySlotNickname)
@@ -4881,10 +5387,14 @@ function App() {
                                 const slotVoterNicknames = rosterNicknames
                                 const isRallyCalled = Boolean(runRecord?.rallyCalledAt)
                                 const isGathered = Boolean(runRecord?.gatheredAt)
+                                // 에라쿠스처럼 주간 횟수가 있는 레이드는 클리어를 O/X 대신 횟수로 센다.
+                                const hasWeeklyLimit = getRaidWeeklyLimit(raidName) > 0
                                 const rallyCheckins = runRecord?.rallyCheckins ?? []
                                 const checkedCount = slotVoterNicknames.filter((name) => rallyCheckins.includes(name)).length
                                 const waitingNicknames = slotVoterNicknames.filter((name) => !rallyCheckins.includes(name))
                                 const isMeChecked = rallyCheckins.includes(mySlotNickname)
+                                // 실제로 출발한 사람 (대기자를 대신 골랐으면 그 사람도)
+                                const departedNicknames = [...new Set(slotPeople.map((member) => member.nickname))].filter((name) => rallyCheckins.includes(name))
                                 const isFullSlot = timeVoters.length >= slotFullSize
                                 // 시작 1시간 전부터 준비 확인을 시작할 수 있다. (지난 시간은 기록용으로 그대로 둔다)
                                 const canCallRally = getSlotStartDate(weekDates, day, time).getTime() - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS
@@ -4918,13 +5428,16 @@ function App() {
                                     <span
                                       className={`day-raid-run-status day-raid-rally ${isGathered ? 'is-yes' : 'is-pending'}`}
                                       title={isGathered
-                                        ? `전원 준비 · 확인 시작 ${runRecord.rallyCalledBy ?? '-'}`
+                                        ? `출발: ${departedNicknames.join(', ') || '없음'} · 확인 시작 ${runRecord.rallyCalledBy ?? '-'}`
                                         : `확인 시작 ${runRecord.rallyCalledBy ?? '-'} · 기다리는 중: ${waitingNicknames.join(', ') || '없음'}`}
                                     >
                                       <span className="day-raid-run-label">
-                                        {isGathered ? '전원 준비' : '준비'} {checkedCount}/{slotVoterNicknames.length}
+                                        {isGathered
+                                          ? getDepartLabel(checkedCount, departedNicknames.length, slotVoterNicknames.length)
+                                          : `준비 ${checkedCount}/${slotVoterNicknames.length}`}
                                       </span>
-                                      {!isGathered && isSlotVoter && !isMeWaitlisted && (
+                                      {/* 횟수 제한 레이드는 준비 완료를 누른 사람만 차감되므로, 시작한 뒤에 온 사람도 누를 수 있게 한다. */}
+                                      {(!isGathered || (hasWeeklyLimit && !isMeChecked)) && isSlotVoter && !isMeWaitlisted && (
                                         <button
                                           type="button"
                                           className={`day-raid-rally-button ${isMeChecked ? 'active' : ''}`}
@@ -4946,6 +5459,17 @@ function App() {
                                           onClick={() => handleRallyClick(run, 'start', slotVoterNicknames)}
                                         >
                                           ▶ 이 인원으로 시작
+                                        </button>
+                                      )}
+                                      {isGathered && isSlotVoter && (
+                                        <button
+                                          type="button"
+                                          className="day-raid-rally-button"
+                                          title="실제로 출발한 사람을 고쳐요."
+                                          disabled={!canEditRun}
+                                          onClick={() => handleRallyClick(run, 'members', slotVoterNicknames)}
+                                        >
+                                          출발 인원
                                         </button>
                                       )}
                                       {/* 인원이 늘었을 때 디스코드로 한 번 더 알린다. (시간대마다 준비 확인 알림 최대 2번) */}
@@ -5039,10 +5563,13 @@ function App() {
                                     {(isSlotVoter || isRallyCalled || runRecord?.cleared || canJoinSlot(run)) && (
                                       <div className="day-raid-run-row">
                                         {(isSlotVoter || isRallyCalled) && renderRally()}
-                                        {(isGathered || runRecord?.cleared) && renderRunStatus('cleared', '클리어')}
+                                        {(isGathered || runRecord?.cleared) && (hasWeeklyLimit
+                                          ? renderClearCounter({ run, record: runRecord, canEdit: canEditRun && isGathered, disabledReason: editDisabledReason || (isGathered ? '' : describeAuthResult('not_gathered')) })
+                                          : renderRunStatus('cleared', '클리어'))}
                                         {renderJoinButton(run, slotPeople.length)}
                                       </div>
                                     )}
+                                    {hasWeeklyLimit && (isGathered || runRecord?.cleared === 'O') && renderClearEntries(run, runRecord, rosterNicknames, departedNicknames)}
                                     {/* 호출 중에는 아직 체크하지 않은 인원을 펼치지 않아도 보이게 한다. (모바일은 마우스 올리기가 없음) */}
                                     {isRallyCalled && !isGathered && waitingNicknames.length > 0 && (
                                       <div className="day-raid-rally-waiting">
@@ -5099,6 +5626,95 @@ function App() {
               })}
             </div>
           </div>
+
+          {/* 이번 주 클리어한 사람: 횟수 제한 레이드는 사람별 진행, 그 아래에 시간대별 클리어 명단 */}
+          {/* 모바일 인원 탭: 신청 인원과 클리어 목록을 나눠 본다. */}
+          {isMobile && (
+            <div className="members-view-tabs" data-section="members" role="tablist" aria-label="인원 목록 선택">
+              {[['signup', '신청 인원'], ['clear', '이번 주 클리어']].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={membersView === id}
+                  className={`members-view-tab ${membersView === id ? 'active' : ''}`}
+                  onClick={() => setMembersView(id)}
+                >
+                  {label}
+                  {id === 'clear' && weeklyClears.length > 0 && <span className="members-view-count">{weeklyClears.length}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {(!isMobile || membersView === 'clear') && (
+          <div className="member-day-summary clear-summary" data-section="members">
+            <div className="clear-summary-head">
+              <h3>
+                이번 주 클리어
+                <small>{weekDates[0].getMonth() + 1}/{weekDates[0].getDate()} ~ {weekDates[6].getMonth() + 1}/{weekDates[6].getDate()}</small>
+              </h3>
+              {!isMobile && weeklyClears.length > 0 && (
+                <button type="button" className="day-raid-past-toggle" aria-expanded={clearSummaryOpen} onClick={toggleClearSummary}>
+                  {clearSummaryOpen ? '접기' : `펼치기 (${weeklyClears.length})`}
+                </button>
+              )}
+            </div>
+            {(isMobile || clearSummaryOpen || weeklyClears.length === 0) && (
+            <div className="weekday-list">
+              {raidOptions.filter((raid) => raid.weeklyLimit).map((raid) => {
+                const people = [...weeklyEntryCounts.keys()]
+                  .filter((key) => key.startsWith(`${raid.label}|`))
+                  .map((key) => key.slice(raid.label.length + 1))
+                  .map((nickname) => ({ nickname, ...getEntryUsage(raid.label, nickname) }))
+                  .sort((a, b) => a.left - b.left || a.nickname.localeCompare(b.nickname))
+
+                if (people.length === 0) {
+                  return null
+                }
+
+                const doneCount = people.filter((person) => person.left === 0).length
+
+                return (
+                  <div key={raid.id} className="weekday-card clear-progress-card">
+                    <span className="weekday-title">
+                      {raid.label} · 이번 주 진행
+                      <small>{raid.weeklyLimit}회 완료 {doneCount}명 · 진행 중 {people.length - doneCount}명</small>
+                    </span>
+                    <div className="member-tags">
+                      {people.map((person) => renderClearPerson(
+                        person.nickname,
+                        <>
+                          <span className="clear-person-count">클리어 {person.cleared}회</span>
+                          {person.left === 0 ? <span className="clear-done-badge">완료</span> : renderEntriesLeft(raid.label, person.nickname)}
+                        </>,
+                        person.left === 0,
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+              {weeklyClears.map(({ run, count, people }) => (
+                <div key={getRaidRunKey(run)} className="weekday-card clear-run-card">
+                  <span className="weekday-title">
+                    {run.raidName} · {run.difficulty} · {run.mode}
+                    <small>
+                      {run.day}요일 {formatTimeLabel(run.time)} · {getRaidWeeklyLimit(run.raidName) > 0 ? `클리어 ${count}회 · ` : ''}{people.length}명
+                    </small>
+                  </span>
+                  <div className="member-tags">
+                    {people.map((person) => renderClearPerson(
+                      person.nickname,
+                      getRaidWeeklyLimit(run.raidName) > 0 && <span className="clear-person-count">×{person.count}</span>,
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {weeklyClears.length === 0 && <span className="empty-role">{getEmptyText('아직 클리어한 레이드가 없어요')}</span>}
+            </div>
+            )}
+          </div>
+          )}
 
           {/* 모바일은 탭 묶음 대신 고르기 칸 두 개로 줄여 시간표가 바로 보이게 한다. */}
           {isMobile ? (
@@ -5220,6 +5836,15 @@ function App() {
                 return null
               }
 
+              // 모바일은 신청이 있는 시간을 먼저 보여 주고, 빈 시간은 '더 보기'를 눌러야 나온다.
+              if (isMobile && !showVacantTimes && vacantPartyTimes.includes(time)) {
+                return null
+              }
+
+              // 신청이 하나도 없는 시간 줄은 얇게 줄인다. (PC)
+              const isEmptyRow = !weekdayNames.some((day) => isPartyTimeUsed(day, time))
+              const emptyRowClass = isEmptyRow ? ' is-empty-row' : ''
+
               // 모바일은 하루씩 보므로, 그 요일에 없는 시간 줄은 시간 칸까지 통째로 숨긴다. (off-day-N 클래스로 표시)
               const offDayClasses = weekDates
                 .map((date, dayIndex) => (getDayTimeSlots(date).includes(time) ? '' : ` off-day-${dayIndex}`))
@@ -5227,7 +5852,7 @@ function App() {
 
               return (
                 <Fragment key={time}>
-                  <div className={`time-label${offDayClasses}`}>{formatTimeLabel(time)}</div>
+                  <div className={`time-label${offDayClasses}${emptyRowClass}`}>{formatTimeLabel(time)}</div>
                   {weekDates.map((date, dayIndex) => {
                     const currentDaySlots = getDayTimeSlots(date)
                     const isVisibleTime = currentDaySlots.includes(time)
@@ -5241,7 +5866,7 @@ function App() {
                     const slotStateClass = `${isVisibleTime && isPastSlot(dayLabel, time) ? ' is-past' : ''}${highlightedSlotKey === slotKey ? ' is-highlighted' : ''}`
 
                     if (!isVisibleTime) {
-                      return <div key={`${date.toISOString()}-${time}-empty`} className="slot-cell empty muted-slot" data-day-index={dayIndex} />
+                      return <div key={`${date.toISOString()}-${time}-empty`} className={`slot-cell empty muted-slot${emptyRowClass}`} data-day-index={dayIndex} />
                     }
 
                     // 신청이 없는 칸은 흐린 '-'만 남겨 신청이 있는 칸이 눈에 띄게 한다.
@@ -5251,7 +5876,7 @@ function App() {
                           key={`${date.toISOString()}-${time}`}
                           id={`calendar-slot-${slotKey}`}
                           data-day-index={dayIndex}
-                          className={`slot-cell empty is-vacant ${isMySlot ? 'my-schedule-slot' : ''}${slotStateClass}`}
+                          className={`slot-cell empty is-vacant ${isMySlot ? 'my-schedule-slot' : ''}${slotStateClass}${emptyRowClass}`}
                         >
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
                           <span className="empty-text">-</span>
@@ -5338,6 +5963,19 @@ function App() {
             })}
           </div>
 
+          {vacantPartyTimes.length > 0 && (
+            <button
+              type="button"
+              className="secondary-button vacant-times-toggle"
+              data-section="calendar"
+              aria-expanded={showVacantTimes}
+              onClick={() => setShowVacantTimes((prev) => !prev)}
+            >
+              {showVacantTimes ? '빈 시간 접기 ▴' : `빈 시간 ${vacantPartyTimes.length}개 더 보기 ▾`}
+            </button>
+          )}
+
+          {(!isMobile || membersView === 'signup') && (
           <div className="member-day-summary" data-section="members">
             <h3>레이드별 신청 인원</h3>
             <div className="weekday-list">
@@ -5368,6 +6006,7 @@ function App() {
               )}
             </div>
           </div>
+          )}
 
         </section>
       </main>

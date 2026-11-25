@@ -56,7 +56,7 @@ export function LiveClock() {
   return <strong>{now.toLocaleString('ko-KR')}</strong>
 }
 
-export function ResetCountdown() {
+export function ResetCountdown({ isShort = false }) {
   const now = useSecondTicker()
   const nextReset = getNextResetDate()
   const totalSeconds = Math.max(0, Math.floor((nextReset.getTime() - now.getTime()) / 1000))
@@ -64,6 +64,11 @@ export function ResetCountdown() {
   const hours = Math.floor((totalSeconds % 86400) / 3600)
   const minutes = Math.floor((totalSeconds % 3600) / 60)
   const seconds = totalSeconds % 60
+
+  // 모바일 신청 화면의 한 줄 요약용
+  if (isShort) {
+    return `${days > 0 ? `${days}일 ` : ''}${hours}시간${days > 0 ? '' : ` ${minutes}분`} 후`
+  }
 
   return (
     <>

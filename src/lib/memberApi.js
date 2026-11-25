@@ -32,17 +32,22 @@ const resultMessages = {
   already_called: '이미 다른 사람이 준비 확인을 시작했어요. 준비 완료만 눌러 주세요.',
   not_called: '아직 준비 확인이 없거나 취소됐어요.',
   already_gathered: '이미 전원 준비가 되어 준비를 취소할 수 없어요. 필요하면 준비 확인을 취소해 주세요.',
+  no_members: '출발할 사람을 한 명 이상 골라 주세요.',
+  too_many_members: '정원보다 많이 골랐어요. 실제로 가는 사람만 골라 주세요.',
+  clear_changed: '그 사이 다른 사람이 클리어 횟수를 바꿨어요. 지금 횟수를 확인하고 다시 눌러 주세요.',
+  no_entries_left: '출발한 사람 중 횟수가 남은 사람이 없어요. 출발 인원을 확인해 주세요.',
+  clear_count_only: '클리어를 여러 번 기록한 시간대예요. 되돌리기로 1회씩 빼 주세요.',
   not_participant: '이 시간대에 신청한 사람만 표시할 수 있어요.',
   notify_limit: '이 시간대는 준비 확인 알림을 이미 두 번 보냈어요.',
   bad_request: '요청 내용이 올바르지 않아요.',
   linked_alt: '본캐에 연결된 부캐 닉네임이에요. 본캐로 로그인한 뒤 캐릭터를 바꿔 주세요.',
-  time_conflict: '같은 시간에 이미 신청한 캐릭터가 있어요.',
+  time_conflict: '같은 레이드를 같은 시간에 신청한 다른 캐릭터가 있어요.',
   alt_invalid: '부캐 닉네임을 확인해 주세요. 본캐와 같은 닉네임은 연결할 수 없어요.',
   alt_taken: '이미 다른 본캐에 연결된 부캐예요.',
   alt_has_alts: '부캐를 가진 본캐 닉네임은 부캐로 연결할 수 없어요.',
   alt_limit: '부캐는 5개까지 연결할 수 있어요.',
   alt_invalid_password: '부캐 비밀번호가 맞지 않아요. 부캐가 따로 정해 둔 비밀번호를 입력해 주세요.',
-  alt_time_conflict: '부캐가 이번 주에 신청한 시간이 본캐 · 다른 부캐와 겹쳐요. 겹치는 신청을 먼저 지워 주세요.',
+  alt_time_conflict: '부캐가 이번 주에 본캐 · 다른 부캐와 같은 레이드를 같은 시간에 신청했어요. 겹치는 신청을 먼저 지워 주세요.',
 }
 
 export function describeAuthResult(result) {
@@ -277,6 +282,24 @@ export function setRaidRunStatus(nickname, password, run, field, value) {
   })
 }
 
+// 횟수 제한 레이드(에라쿠스 유적)의 클리어 1회 추가('add') / 마지막 1회 되돌리기('undo'). (supabase_raid_runs.sql)
+// expectedCount: 지금 화면의 클리어 횟수. 다른 사람이 먼저 바꿨으면 clear_changed 오류와 최신 기록을 돌려준다.
+// 누군가 마지막 횟수를 쓰면 DB가 디스코드로 알린다. 반환값: { run, notified } 또는 { error, run? }
+export function setRaidClearCount(nickname, password, run, action, expectedCount) {
+  return callRpc('member_raid_clear_count', {
+    p_nickname: nickname,
+    p_password: password,
+    p_week_start: run.weekStart,
+    p_day: run.day,
+    p_time: run.time,
+    p_raid_name: run.raidName,
+    p_difficulty: run.difficulty,
+    p_mode: run.mode,
+    p_action: action,
+    p_expected_count: expectedCount,
+  })
+}
+
 // 횟수 제한 레이드(에라쿠스 유적)의 이번 주 쓴 횟수를 1회 더하거나(delta 1) 뺀다(delta -1). (supabase_raid_entries.sql)
 // nickname은 조정할 캐릭터(부캐면 본캐 비밀번호). 반환값: { weekStart, nickname, raidName, adjustment } 또는 { error }
 export function adjustRaidEntries(nickname, password, raidName, delta) {
@@ -288,9 +311,10 @@ export function adjustRaidEntries(nickname, password, raidName, delta) {
   })
 }
 
-// 시간대별 준비 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel' | 'remind' | 'start'
+// 시간대별 준비 호출 / 체크 (supabase_raid_runs.sql). action: 'call' | 'check' | 'uncheck' | 'cancel' | 'remind' | 'start' | 'members'
+// members: 'start' · 'members'에서 실제로 출발하는 닉네임 목록
 // 호출하거나 모두 체크하면 DB가 디스코드 웹후크로 알림을 보낸다. 반환값: { run, notified } 또는 { error, run? }
-export function setRaidRally(nickname, password, run, action) {
+export function setRaidRally(nickname, password, run, action, members = null) {
   return callRpc('member_raid_rally', {
     p_nickname: nickname,
     p_password: password,
@@ -301,5 +325,6 @@ export function setRaidRally(nickname, password, run, action) {
     p_difficulty: run.difficulty,
     p_mode: run.mode,
     p_action: action,
+    ...(members ? { p_members: members } : {}),
   })
 }

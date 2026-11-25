@@ -51,23 +51,36 @@ export function isSinglePartyRaid(raidLabel) {
   return getRaidFullSize(raidLabel) <= PARTY_SIZE
 }
 
-// 이번 주 입장 횟수 ("레이드|닉네임" → 횟수).
-// 클리어 O로 표시된 시간대에서 정원(먼저 신청한 getRaidFullSize명) 안에 있던 캐릭터마다 1회로 센다.
-// 클리어 X(실패)와 표시 안 한 시간대는 세지 않는다. 횟수 제한이 있는 레이드만 센다.
+// 한 시간대의 클리어 기록 목록 [{ at, by, members }]. 클리어할 때 남긴 명단(clearLog)을 쓴다.
+// 명단을 남기기 전의 클리어 O는 정원(먼저 신청한 getRaidFullSize명) 전원이 1회 클리어한 것으로 본다.
 // getSlotPeople(run): 그 시간대 · 레이드 조합의 신청 인원 (신청 순서대로)
+export function getRunClears(run, getSlotPeople) {
+  if (run?.clearLog?.length) {
+    return run.clearLog
+  }
+
+  if (run?.cleared !== 'O') {
+    return []
+  }
+
+  const roster = getSlotPeople(run).slice(0, getRaidFullSize(run.raidName)).map((person) => person.nickname)
+  return [{ at: null, by: run.clearedBy ?? null, members: [...new Set(roster)] }]
+}
+
+// 이번 주 입장 횟수 ("레이드|닉네임" → 횟수). 클리어 1회마다 그 명단에 있는 캐릭터를 1회로 센다.
+// 클리어 X(실패)와 표시 안 한 시간대는 세지 않는다. 횟수 제한이 있는 레이드만 센다.
 export function countWeeklyEntries(raidRuns, weekStartKey, getSlotPeople) {
   const counts = new Map()
 
   raidRuns.forEach((run) => {
-    if (run.weekStart !== weekStartKey || run.cleared !== 'O' || !getRaidWeeklyLimit(run.raidName)) {
+    if (run.weekStart !== weekStartKey || !getRaidWeeklyLimit(run.raidName)) {
       return
     }
 
-    const roster = new Set(getSlotPeople(run).slice(0, getRaidFullSize(run.raidName)).map((person) => person.nickname))
-    roster.forEach((nickname) => {
+    getRunClears(run, getSlotPeople).forEach(({ members }) => members.forEach((nickname) => {
       const key = `${run.raidName}|${nickname}`
       counts.set(key, (counts.get(key) ?? 0) + 1)
-    })
+    }))
   })
 
   return counts
@@ -145,7 +158,8 @@ export const RALLY_SUCCESS_MESSAGES = {
   uncheck: '준비를 취소했어요.',
   cancel: '준비 확인을 취소했어요.',
   remind: '디스코드로 다시 알렸어요.',
-  start: '지금 준비한 인원으로 시작했어요.',
+  start: '고른 인원으로 시작했어요.',
+  members: '출발 인원을 바꿨어요.',
 }
 
 export const modeOptions = ['트라이', '반숙이상']
@@ -835,6 +849,9 @@ export function normalizeRaidRun(entry) {
     gatheredAt: entry.gathered_at ?? entry.gatheredAt ?? null,
     cleared: entry.cleared ?? null,
     clearedBy: entry.cleared_by ?? entry.clearedBy ?? null,
+    // 클리어할 때마다 남긴 명단 [{ at, by, members }]과, 마지막 횟수를 썼다고 디스코드로 알린 사람
+    clearLog: entry.clear_log ?? entry.clearLog ?? [],
+    clearFinished: entry.clear_finished ?? entry.clearFinished ?? [],
     // 준비 확인 알림을 보낸 횟수 (시간대마다 최대 2번). 클리어 알림은 한 번만 보낸다.
     rallyNotifyCount: entry.rally_notify_count ?? entry.rallyNotifyCount ?? (entry.rally_notified_at ? 1 : 0),
     clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),

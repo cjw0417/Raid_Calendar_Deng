@@ -11,11 +11,14 @@
 --   - 정원에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
 --   - 준비: 한 명이 "준비 확인"을 누르면 디스코드로 알림이 가고, 정원에 든 사람이 각자 "준비 완료"를 누른다.
 --     정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 되고 디스코드로 완료 알림이 간다.
---     안 오는 사람이 있으면 "이 인원으로 시작"으로 기다리지 않고 넘어갈 수 있다.
+--     안 오는 사람이 있으면 "이 인원으로 시작"에서 실제로 갈 사람을 골라 기다리지 않고 넘어갈 수 있다. (대기자를 대신 고를 수도 있다)
+--     시작한 뒤에도 "출발 인원"에서 고칠 수 있다. 출발한 사람(rally_checkins)이 클리어 명단에 들어가고 횟수가 차감된다.
 --     전원 준비 뒤에는 준비 완료를 풀 수 없다. 준비 확인을 취소하면 준비 완료 · 전원 준비 · 클리어 기록을 모두 비운다.
 --   - 클리어는 전원 준비 뒤에만 정할 수 있다.
+--   - 횟수 제한 레이드(에라쿠스 유적 주 5회)는 한 번 출발해 여러 번 클리어할 수 있다. 누를 때마다 출발한 사람이 1회씩 차감되고,
+--     누군가 마지막 1회를 써서 0회가 되는 클리어에서만 디스코드로 알린다. (clear_log에 그때 차감된 사람을 남긴다)
 --   - 준비 확인 알림은 시간대마다 두 번까지 보낸다. (인원이 늘었을 때 "다시 알림"으로 한 번 더,
---     또는 취소했다가 다시 호출할 때) 전원 준비 / 클리어 알림은 시간대마다 한 번씩만 보낸다.
+--     또는 취소했다가 다시 호출할 때) 전원 준비 / 클리어 알림은 시간대마다 한 번씩만 보낸다. (에라쿠스 클리어는 위 기준)
 --     웹후크 주소가 비어 있으면 보내지 않는다.
 --
 -- 디스코드 웹후크 연결 · 확인 · 관리용 SQL은 이 파일 맨 아래 "관리용 SQL"에 있다.
@@ -58,6 +61,13 @@ alter table public.raid_runs add column if not exists gathered_notified_at times
 -- 준비 확인 알림을 보낸 횟수 (최대 2번). 이 컬럼이 생기기 전에 이미 보낸 시간대는 1번으로 친다.
 alter table public.raid_runs add column if not exists rally_notify_count integer not null default 0;
 update public.raid_runs set rally_notify_count = 1 where rally_notified_at is not null and rally_notify_count = 0;
+
+-- 클리어 기록: [{ "at": 시각, "by": 누른 사람, "members": [클리어한 사람] }, ...]
+-- 그때의 명단을 남겨, 나중에 신청을 지워도 클리어한 사람과 차감한 횟수가 바뀌지 않는다.
+-- 횟수 제한 레이드(에라쿠스 유적)는 클리어할 때마다 한 건씩 쌓이고, 다른 레이드는 클리어 O일 때 한 건이다.
+-- clear_finished는 마지막 횟수를 썼다고 이미 디스코드로 알린 사람
+alter table public.raid_runs add column if not exists clear_log jsonb not null default '[]';
+alter table public.raid_runs add column if not exists clear_finished text[] not null default '{}';
 
 alter table public.raid_runs enable row level security;
 
@@ -246,6 +256,18 @@ $$;
 
 revoke execute on function public._raid_full_size(text) from public, anon, authenticated;
 
+-- 캐릭터마다 일주일에 클리어할 수 있는 횟수. 0이면 제한 없음. 앱의 raidOptions.weeklyLimit(src/lib/schedule.js)과 같은 값이어야 한다.
+create or replace function public._raid_weekly_limit(p_raid_name text)
+returns integer
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select case p_raid_name when '에라쿠스 유적' then 5 else 0 end;
+$$;
+
+revoke execute on function public._raid_weekly_limit(text) from public, anon, authenticated;
+
 -- 그 시간대의 정원: 먼저 신청한 _raid_full_size명(기본 10명, 초월 5명). 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
 -- 앱은 밀리초까지만 다루므로 여기서도 밀리초로 맞추고, 같으면 닉네임 순(코드값)으로 정한다.
 create or replace function public._raid_slot_roster(
@@ -416,10 +438,271 @@ $$;
 
 revoke execute on function public._raid_run_schedule_text(public.raid_runs) from public, anon, authenticated;
 
--- 3. 클리어 표시
+-- 출발한 사람: 그 시간대 신청자 중 준비 완료로 되어 있는 사람 (신청 순서대로). 대기자도 출발 인원으로 고르면 들어간다.
+-- 지난주 시간대는 새 주 신청으로 바뀌어 신청자를 알 수 없으므로, 준비 완료로 되어 있는 사람을 그대로 본다.
+create or replace function public._raid_departed(p_run public.raid_runs)
+returns table (nickname text, sort_order bigint)
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select v.nickname, row_number() over (
+    order by
+      date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_run.day || '|' || p_run.time))::timestamptz, v.updated_at)),
+      v.nickname collate "C"
+  )
+  from public._raid_slot_voters(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode) v
+  where p_run.week_start >= (public._current_week_start() at time zone 'Asia/Seoul')::date
+    and v.nickname = any(p_run.rally_checkins)
+  union all
+  select c.name, c.position
+  from unnest(p_run.rally_checkins) with ordinality as c(name, position)
+  where p_run.week_start < (public._current_week_start() at time zone 'Asia/Seoul')::date;
+$$;
+
+revoke execute on function public._raid_departed(public.raid_runs) from public, anon, authenticated;
+
+-- 3. 횟수 제한 레이드(에라쿠스 유적)의 클리어 횟수
+-- 그 주에 그 캐릭터에게 남은 횟수. 제한이 없는 레이드면 null.
+-- 남은 횟수 = 제한 − (클리어 기록에 들어간 횟수 + 직접 조정). 앱의 getEntryUsage와 같은 기준이어야 한다.
+-- 직접 조정 표(supabase_raid_entries.sql)가 아직 없으면 조정 없이 계산한다.
+create or replace function public._raid_entries_left(p_week_start date, p_raid_name text, p_nickname text)
+returns integer
+language plpgsql
+stable
+security definer
+set search_path = public, extensions
+as $$
+declare
+  limit_value integer := public._raid_weekly_limit(p_raid_name);
+  cleared_count integer;
+  adjustment_value integer := 0;
+begin
+  if limit_value = 0 then
+    return null;
+  end if;
+
+  select count(*) into cleared_count
+  from public.raid_runs r
+  cross join lateral jsonb_array_elements(r.clear_log) e
+  where r.week_start = p_week_start
+    and r.raid_name = p_raid_name
+    and (e -> 'members') ? p_nickname;
+
+  if to_regclass('public.raid_entry_adjustments') is not null then
+    execute 'select coalesce(sum(adjustment), 0)::integer from public.raid_entry_adjustments where week_start = $1 and raid_name = $2 and nickname = $3'
+    into adjustment_value
+    using p_week_start, p_raid_name, p_nickname;
+  end if;
+
+  return greatest(0, limit_value - greatest(0, cleared_count + adjustment_value));
+end;
+$$;
+
+revoke execute on function public._raid_entries_left(date, text, text) from public, anon, authenticated;
+
+-- 클리어 1회를 기록한다. 출발한 사람(_raid_departed) 중 횟수가 남은 사람이 정원까지 1회씩 차감된다.
+-- 디스코드는 남은 횟수가 1회였다가 0회가 된 사람이 있을 때만 알린다. 같은 시간대에서 같은 사람은 한 번만 알린다.
+create or replace function public._raid_clear_add(p_run_id uuid, p_nickname text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  run_row public.raid_runs;
+  limit_value integer;
+  charged text[];
+  finished text[];
+  members_text text;
+  notified boolean := false;
+begin
+  select * into run_row from public.raid_runs where id = p_run_id for update;
+  limit_value := public._raid_weekly_limit(run_row.raid_name);
+
+  select
+    array_agg(t.nickname order by t.nickname) filter (where t.entries_left > 0),
+    array_agg(t.nickname order by t.nickname) filter (where t.entries_left = 1 and not (t.nickname = any(run_row.clear_finished)))
+  into charged, finished
+  from (
+    select d.nickname, e.entries_left
+    from public._raid_departed(run_row) d
+    cross join lateral (
+      select public._raid_entries_left(run_row.week_start, run_row.raid_name, d.nickname) as entries_left
+    ) e
+    where e.entries_left > 0
+    order by d.sort_order
+    limit public._raid_full_size(run_row.raid_name)
+  ) t;
+
+  if charged is null then
+    return jsonb_build_object('error', 'no_entries_left', 'run', to_jsonb(run_row));
+  end if;
+
+  update public.raid_runs
+  set clear_log = clear_log || jsonb_build_array(jsonb_build_object('at', now(), 'by', p_nickname, 'members', to_jsonb(charged))),
+      cleared = 'O',
+      cleared_by = p_nickname,
+      cleared_at = now(),
+      updated_at = now()
+  where id = p_run_id
+  returning * into run_row;
+
+  if finished is not null then
+    select string_agg(
+      format('%s %s/%s', n.nickname, public._raid_entries_left(run_row.week_start, run_row.raid_name, n.nickname), limit_value),
+      ', ' order by n.nickname
+    )
+    into members_text
+    from unnest(charged) as n(nickname);
+
+    notified := public._send_discord(jsonb_build_object(
+      'username', '레이드 캘린더',
+      'embeds', jsonb_build_array(jsonb_build_object(
+        'title', format('🏆 이번 주 %s회 완료! | %s · %s · %s', limit_value, run_row.raid_name, run_row.difficulty, run_row.mode),
+        'color', 16766720,
+        'description', format(E'📅 %s\n이번 출발에서 클리어 %s회', public._raid_run_schedule_text(run_row), jsonb_array_length(run_row.clear_log)),
+        'fields', jsonb_build_array(
+          jsonb_build_object('name', format('✅ 이번 주 %s회를 모두 마친 사람', limit_value), 'value', left(array_to_string(finished, ', '), 1000)),
+          jsonb_build_object('name', '참여 인원 (남은 횟수)', 'value', left(members_text, 1000))
+        ),
+        'footer', jsonb_build_object('text', '클리어 표시: ' || p_nickname)
+      ))
+    ));
+
+    -- 실제로 보냈을 때만 기록한다. (되돌렸다가 다시 눌러도 같은 사람을 두 번 알리지 않는다)
+    if notified then
+      update public.raid_runs
+      set clear_finished = clear_finished || finished,
+          cleared_notified_at = now()
+      where id = p_run_id
+      returning * into run_row;
+    end if;
+  end if;
+
+  return jsonb_build_object('run', to_jsonb(run_row), 'notified', notified);
+end;
+$$;
+
+revoke execute on function public._raid_clear_add(uuid, text) from public, anon, authenticated;
+
+-- 클리어 1회 추가('add') / 마지막 1회 되돌리기('undo')
+--    p_expected_count: 누른 사람 화면의 클리어 횟수. 여러 명이 같은 클리어를 동시에 눌러 두 번 차감되는 것을 막는다.
+--    반환값: { "run": {...}, "notified": true|false }
+--            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_gathered'
+--                            | 'clear_changed'(다른 사람이 먼저 바꿈) | 'no_entries_left', "run": {...} }
+create or replace function public.member_raid_clear_count(
+  p_nickname text,
+  p_password text,
+  p_week_start date,
+  p_day text,
+  p_time text,
+  p_raid_name text,
+  p_difficulty text,
+  p_mode text,
+  p_action text,
+  p_expected_count integer
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  nickname_value text := btrim(p_nickname);
+  verify_result text;
+  run_row public.raid_runs;
+  last_clear jsonb;
+begin
+  verify_result := public._verify_member_password(nickname_value, p_password, false);
+
+  if verify_result <> 'ok' then
+    return jsonb_build_object('error', verify_result);
+  end if;
+
+  if p_action is null or p_action not in ('add', 'undo') or public._raid_weekly_limit(p_raid_name) = 0 then
+    return jsonb_build_object('error', 'bad_request');
+  end if;
+
+  -- 그 시간대에 투표한 사람만 바꿀 수 있다.
+  if not exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = nickname_value
+  ) then
+    return jsonb_build_object('error', 'not_participant');
+  end if;
+
+  select * into run_row
+  from public.raid_runs
+  where week_start = p_week_start and day = p_day and time = p_time
+    and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
+  for update;
+
+  if run_row.id is null or run_row.rally_called_at is null then
+    return jsonb_build_object('error', 'not_gathered');
+  end if;
+
+  -- 호출 뒤에 체크하지 않은 사람이 투표를 지워 모두 모인 상태가 됐을 수 있으니 한 번 더 본다.
+  if run_row.gathered_at is null and public._raid_run_all_gathered(run_row) then
+    update public.raid_runs set gathered_at = now() where id = run_row.id returning * into run_row;
+  end if;
+
+  if run_row.gathered_at is null then
+    return jsonb_build_object('error', 'not_gathered');
+  end if;
+
+  if jsonb_array_length(run_row.clear_log) is distinct from p_expected_count then
+    return jsonb_build_object('error', 'clear_changed', 'run', to_jsonb(run_row));
+  end if;
+
+  if p_action = 'add' then
+    return public._raid_clear_add(run_row.id, nickname_value);
+  end if;
+
+  if p_expected_count = 0 then
+    return jsonb_build_object('error', 'bad_request', 'run', to_jsonb(run_row));
+  end if;
+
+  last_clear := (run_row.clear_log - (-1)) -> -1;
+
+  update public.raid_runs
+  set clear_log = clear_log - (-1),
+      cleared = case when last_clear is null then null else 'O' end,
+      cleared_by = last_clear ->> 'by',
+      cleared_at = (last_clear ->> 'at')::timestamptz,
+      updated_at = now()
+  where id = run_row.id
+  returning * into run_row;
+
+  return jsonb_build_object('run', to_jsonb(run_row), 'notified', false);
+end;
+$$;
+
+revoke execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer) from public;
+grant execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer) to anon, authenticated;
+
+-- 이 기능 전에 클리어 O로 표시한 이번 주 기록을 클리어 1회로 옮긴다. (그때 기준대로 정원 전원. 한 번 옮긴 기록은 다시 바뀌지 않는다)
+update public.raid_runs run
+set clear_log = jsonb_build_array(jsonb_build_object(
+  'at', run.cleared_at,
+  'by', run.cleared_by,
+  'members', coalesce((
+    select jsonb_agg(r.nickname)
+    from public._raid_slot_roster(run.week_start, run.day, run.time, run.raid_name, run.difficulty, run.mode) r
+  ), '[]'::jsonb)
+))
+where run.week_start = (public._current_week_start() at time zone 'Asia/Seoul')::date
+  and run.cleared = 'O'
+  and run.clear_log = '[]'::jsonb;
+
+-- 4. 클리어 표시
+--    횟수 제한 레이드(에라쿠스 유적)는 위 member_raid_clear_count로 센다. 여기서는 실패(X)와 표시 지우기만 쓰고,
+--    예전 화면이 'O'를 보내면 클리어 1회로 기록한다.
 --    p_field: 'cleared' (예전 'departed'는 준비로 바뀌어 받지 않는다), p_value: 'O' | 'X' | null(표시 지우기)
 --    반환값: { "run": {...}, "notified": true|false }
---            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_gathered' }
+--            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_gathered' | 'clear_count_only' }
 create or replace function public.member_set_raid_run_status(
   p_nickname text,
   p_password text,
@@ -487,10 +770,46 @@ begin
     return jsonb_build_object('error', 'not_gathered');
   end if;
 
+  if public._raid_weekly_limit(p_raid_name) > 0 then
+    if p_value = 'O' then
+      if jsonb_array_length(run_row.clear_log) > 0 then
+        return jsonb_build_object('run', to_jsonb(run_row), 'notified', false);
+      end if;
+
+      return public._raid_clear_add(run_row.id, nickname_value);
+    end if;
+
+    -- 여러 번 센 클리어를 한꺼번에 지우지 않는다.
+    if jsonb_array_length(run_row.clear_log) > 1 then
+      return jsonb_build_object('error', 'clear_count_only', 'run', to_jsonb(run_row));
+    end if;
+  end if;
+
   previous_value := run_row.cleared;
 
   update public.raid_runs
   set cleared = p_value,
+      -- 클리어한 사람: 출발한 사람. (아무도 없으면 정원 전원)
+      clear_log = case when p_value = 'O' then jsonb_build_array(jsonb_build_object(
+        'at', now(),
+        'by', nickname_value,
+        'members', coalesce(
+          (
+            select jsonb_agg(t.nickname order by t.sort_order)
+            from (
+              select d.nickname, d.sort_order
+              from public._raid_departed(run_row) d
+              order by d.sort_order
+              limit public._raid_full_size(p_raid_name)
+            ) t
+          ),
+          (
+            select jsonb_agg(r.nickname)
+            from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) r
+          ),
+          '[]'::jsonb
+        )
+      )) else '[]'::jsonb end,
       cleared_by = case when p_value is null then null else nickname_value end,
       cleared_at = case when p_value is null then null else now() end,
       updated_at = now()
@@ -501,7 +820,8 @@ begin
   if p_value = 'O' and previous_value is distinct from 'O' and run_row.cleared_notified_at is null then
     select string_agg(s.nickname || case when s.lead_ready = 'O' then '★' else '' end, ', ' order by (s.lead_ready = 'O') desc, s.nickname)
     into members_text
-    from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s
+    where (run_row.clear_log -> -1 -> 'members') ? s.nickname;
 
     payload := jsonb_build_object(
       'username', '레이드 캘린더',
@@ -537,13 +857,19 @@ $$;
 revoke execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text) from public;
 grant execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text) to anon, authenticated;
 
--- 4. 준비 확인 / 준비 완료
+-- 5. 준비 확인 / 준비 완료
 --    p_action: 'call'(호출, 호출한 사람은 자동 체크) | 'check' | 'uncheck' | 'cancel'(호출 취소)
 --              | 'remind'(준비 확인 중에 디스코드로 한 번 더 알림)
 --              | 'start'(아직 준비 안 한 사람을 기다리지 않고 전원 준비로 넘어감)
+--              | 'members'(시작한 뒤 출발 인원 고치기)
+--    p_members: 'start' · 'members'에서 실제로 출발하는 사람. 그 시간대 신청자(대기 포함) 중에서 정원까지.
+--               'start'에서 비우면 지금까지 준비 완료한 사람 그대로 시작한다.
 --    반환값: { "run": {...}, "notified": true|false }
 --            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant'
---                            | 'already_called' | 'not_called' | 'already_gathered' | 'notify_limit' }
+--                            | 'already_called' | 'not_called' | 'already_gathered' | 'not_gathered' | 'notify_limit'
+--                            | 'no_members'(아무도 안 고름) | 'too_many_members'(정원 초과) }
+drop function if exists public.member_raid_rally(text, text, date, text, text, text, text, text, text);
+
 create or replace function public.member_raid_rally(
   p_nickname text,
   p_password text,
@@ -553,7 +879,8 @@ create or replace function public.member_raid_rally(
   p_raid_name text,
   p_difficulty text,
   p_mode text,
-  p_action text
+  p_action text,
+  p_members text[] default null
 )
 returns jsonb
 language plpgsql
@@ -571,6 +898,8 @@ declare
   leaders_text text;
   waiting_text text;
   overflow_text text;
+  departed_text text;
+  departing text[];
   just_gathered boolean := false;
   notified boolean := false;
 begin
@@ -580,7 +909,8 @@ begin
     return jsonb_build_object('error', verify_result);
   end if;
 
-  if p_action not in ('call', 'check', 'uncheck', 'cancel', 'remind', 'start')
+  if p_action not in ('call', 'check', 'uncheck', 'cancel', 'remind', 'start', 'members')
+     or (p_action = 'members' and p_members is null)
      or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null then
     return jsonb_build_object('error', 'bad_request');
   end if;
@@ -591,6 +921,21 @@ begin
     where v.nickname = nickname_value
   ) then
     return jsonb_build_object('error', 'not_participant');
+  end if;
+
+  -- 고른 출발 인원. 그 사이 신청을 지운 사람은 빠진다.
+  if p_action in ('start', 'members') and p_members is not null then
+    select array_agg(v.nickname order by v.nickname) into departing
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = any(p_members);
+
+    if departing is null then
+      return jsonb_build_object('error', 'no_members');
+    end if;
+
+    if array_length(departing, 1) > public._raid_full_size(p_raid_name) then
+      return jsonb_build_object('error', 'too_many_members');
+    end if;
   end if;
 
   insert into public.raid_runs (week_start, day, time, raid_name, difficulty, mode)
@@ -622,7 +967,8 @@ begin
         rally_called_at = null,
         rally_checkins = '{}',
         gathered_at = null,
-        -- 준비 확인이 없던 일이 되면 클리어 기록도 의미가 없으므로 비운다.
+        -- 준비 확인이 없던 일이 되면 클리어 기록도 의미가 없으므로 비운다. (차감한 횟수도 되돌아간다)
+        clear_log = '[]',
         cleared = null,
         cleared_by = null,
         cleared_at = null,
@@ -654,11 +1000,24 @@ begin
 
     update public.raid_runs
     set gathered_at = now(),
+        rally_checkins = coalesce(departing, rally_checkins),
         updated_at = now()
     where id = run_row.id
     returning * into run_row;
 
     just_gathered := true;
+  elsif p_action = 'members' then
+    if run_row.gathered_at is null then
+      return jsonb_build_object('error', 'not_gathered', 'run', to_jsonb(run_row));
+    end if;
+
+    update public.raid_runs
+    set rally_checkins = departing,
+        updated_at = now()
+    where id = run_row.id
+    returning * into run_row;
+
+    return jsonb_build_object('run', to_jsonb(run_row), 'notified', false);
   else
     if run_row.rally_called_at is null then
       return jsonb_build_object('error', 'not_called', 'run', to_jsonb(run_row));
@@ -694,6 +1053,17 @@ begin
     string_agg(s.nickname, ', ' order by s.nickname) filter (where not (s.nickname = any(run_row.rally_checkins)))
   into member_count, ready_count, members_text, leaders_text, waiting_text
   from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
+
+  -- '이 인원으로 시작' 알림에는 정원 전체가 아니라 실제로 출발하는 사람을 적는다.
+  if p_action = 'start' then
+    select
+      count(*),
+      string_agg(v.nickname || case when v.lead_ready = 'O' then '★' else '' end, ', ' order by (v.lead_ready = 'O') desc, v.nickname),
+      string_agg(v.nickname, ', ' order by v.nickname) filter (where v.lead_ready = 'O')
+    into ready_count, departed_text, leaders_text
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = any(run_row.rally_checkins);
+  end if;
 
   -- 정원을 넘어 대기 중인 인원
   select string_agg(v.nickname, ', ' order by v.nickname)
@@ -749,13 +1119,17 @@ begin
         'fields', jsonb_build_array(
           jsonb_build_object(
             'name', '👥 인원',
-            'value', case when ready_count >= member_count then member_count || '명 모두 준비됐어요' else ready_count || '/' || member_count || '명 준비' end,
+            'value', case
+              when p_action = 'start' then ready_count || '/' || member_count || '명 출발'
+              when ready_count >= member_count then member_count || '명 모두 준비됐어요'
+              else ready_count || '/' || member_count || '명 준비'
+            end,
             'inline', true
           ),
           jsonb_build_object('name', '★ 리딩', 'value', coalesce(leaders_text, '없음'), 'inline', true),
-          jsonb_build_object('name', '참여 인원', 'value', left(coalesce(members_text, '없음'), 1000))
+          jsonb_build_object('name', '참여 인원', 'value', left(coalesce(departed_text, members_text, '없음'), 1000))
         ) || case when p_action = 'start' and waiting_text is not null then jsonb_build_array(
-          jsonb_build_object('name', '⏳ 준비 안 함', 'value', left(waiting_text, 1000))
+          jsonb_build_object('name', '⏳ 함께 출발 안 함', 'value', left(waiting_text, 1000))
         ) else '[]'::jsonb end,
         'footer', jsonb_build_object('text', case when p_action = 'start' then '시작: ' || nickname_value else '준비 확인: ' || coalesce(run_row.rally_called_by, '-') end)
       ))
@@ -769,8 +1143,8 @@ begin
 end;
 $$;
 
-revoke execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text) from public;
-grant execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text) to anon, authenticated;
+revoke execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[]) from public;
+grant execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[]) to anon, authenticated;
 
 notify pgrst, 'reload schema';
 

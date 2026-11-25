@@ -9,7 +9,8 @@
 --   - 스케줄 읽기는 지금처럼 누구나 할 수 있고, 쓰기는 아래 함수를 통해서만 가능하다.
 --   - 본캐에 부캐를 연결하면, 본캐로 로그인해 본캐 비밀번호로 부캐 신청 · 준비 · 클리어까지 할 수 있다.
 --     부캐 닉네임으로는 따로 로그인하지 않는다.
---   - 같은 계정(본캐 + 부캐)은 이번 주에 같은 요일 · 시간을 두 번 신청할 수 없다. (같은 캐릭터의 다른 레이드 포함)
+--   - 같은 계정(본캐 + 부캐)의 두 캐릭터가 같은 레이드(레이드 · 난이도 · 공략 방식)를 같은 요일 · 시간에 신청할 수 없다.
+--     같은 시간에 서로 다른 레이드를 신청하는 것은 된다.
 --
 -- 부캐 연결을 관리자가 직접 끊으려면:
 --   delete from public.member_alts where alt_nickname = '부캐닉네임';
@@ -384,15 +385,19 @@ as $$
   select (date_trunc('week', (now() at time zone 'Asia/Seoul') - interval '2 days') + interval '2 days') at time zone 'Asia/Seoul';
 $$;
 
--- p_nickname이 p_selection({ "수": ["21:00"], ... })으로 신청하려 할 때, 같은 계정(본캐 + 부캐)의
--- 이번 주 참여 신청 중 같은 요일 · 시간이 겹치는 것이 있으면 하나를 돌려준다. 없으면 null.
--- 같은 캐릭터의 다른 레이드도 겹치는 것으로 본다. 지금 덮어쓸 스케줄(같은 캐릭터 · 같은 레이드 조합)만 뺀다.
+-- p_nickname이 p_selection({ "수": ["21:00"], ... })으로 신청하려 할 때, 같은 계정(본캐 + 부캐)의 다른 캐릭터가
+-- 이번 주에 같은 레이드 조합을 같은 요일 · 시간에 참여로 신청한 것이 있으면 하나를 돌려준다. 없으면 null.
+-- 다른 레이드 조합은 같은 시간이어도 겹치는 것으로 보지 않는다. (앱의 takenSlots와 같은 기준)
+-- p_account: 확인할 계정(본캐). 아직 연결하지 않은 부캐를 확인할 때 쓰고, 없으면 p_nickname의 계정을 본다.
+drop function if exists public._schedule_time_conflict(text, text, text, text, jsonb);
+
 create or replace function public._schedule_time_conflict(
   p_nickname text,
   p_raid_name text,
   p_difficulty text,
   p_mode text,
-  p_selection jsonb
+  p_selection jsonb,
+  p_account text default null
 )
 returns jsonb
 language sql
@@ -401,7 +406,7 @@ security definer
 set search_path = public, extensions
 as $$
   with account as (
-    select public._account_nickname(p_nickname) as nickname
+    select coalesce(p_account, public._account_nickname(p_nickname)) as nickname
   ),
   characters as (
     select nickname from account
@@ -424,14 +429,17 @@ as $$
   from public.raid_schedules s
   join new_slots n on coalesce(s.day_time_selection -> n.slot_day, '[]'::jsonb) ? n.slot_time
   where s.nickname in (select nickname from characters)
+    and s.nickname <> p_nickname
+    and s.raid_name = p_raid_name
+    and s.difficulty = p_difficulty
+    and s.mode = p_mode
     and s.attendance = '참'
     and s.updated_at >= public._current_week_start()
-    and not (s.nickname = p_nickname and s.raid_name = p_raid_name and s.difficulty = p_difficulty and s.mode = p_mode)
   limit 1;
 $$;
 
 revoke execute on function public._current_week_start() from public, anon, authenticated;
-revoke execute on function public._schedule_time_conflict(text, text, text, text, jsonb) from public, anon, authenticated;
+revoke execute on function public._schedule_time_conflict(text, text, text, text, jsonb, text) from public, anon, authenticated;
 
 -- 6. 스케줄 저장 (members 개인 정보 + raid_schedules 한 건)
 --    p_nickname은 로그인한 본캐 또는 본캐에 연결된 부캐. 비밀번호는 본캐 비밀번호.
@@ -587,7 +595,7 @@ $$;
 --    반환값: 'ok' / 'invalid' / 'locked' / 'bad_request'
 --            'alt_invalid'(빈 닉네임 · 자기 자신) / 'alt_taken'(이미 어떤 본캐의 부캐)
 --            'alt_has_alts'(부캐를 가진 본캐) / 'alt_limit'(부캐 5개 초과)
---            'alt_invalid_password'(부캐 비밀번호 불일치) / 'alt_time_conflict'(이번 주 신청 시간이 겹침)
+--            'alt_invalid_password'(부캐 비밀번호 불일치) / 'alt_time_conflict'(이번 주에 같은 레이드를 같은 시간에 신청함)
 create or replace function public.member_link_alt(p_nickname text, p_password text, p_alt_nickname text, p_alt_password text)
 returns text
 language plpgsql
@@ -641,14 +649,16 @@ begin
     end if;
   end if;
 
-  -- 부캐가 이번 주에 이미 신청한 시간이 본캐 · 다른 부캐와 겹치면 먼저 정리하게 한다.
+  -- 부캐가 이번 주에 본캐 · 다른 부캐와 같은 레이드를 같은 시간에 신청해 뒀으면 먼저 정리하게 한다.
   for alt_row in
     select * from public.raid_schedules
     where nickname = alt_value
       and attendance = '참'
       and updated_at >= public._current_week_start()
   loop
-    if public._schedule_time_conflict(nickname_value, '', '', '', alt_row.day_time_selection) is not null then
+    if public._schedule_time_conflict(
+      alt_value, alt_row.raid_name, alt_row.difficulty, alt_row.mode, alt_row.day_time_selection, nickname_value
+    ) is not null then
       return 'alt_time_conflict';
     end if;
   end loop;

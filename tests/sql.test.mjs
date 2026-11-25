@@ -31,6 +31,9 @@ await db.exec(`
 
 const stripExtension = (sql) => sql.replace(/create extension if not exists pg_net[^;]*;/, '')
 await db.exec(read('supabase_schema.sql'))
+// 예전 중복 확인 함수(5개 인자)가 있는 운영 DB에 다시 실행하는 경우도 함께 본다.
+await db.exec(`create function public._schedule_time_conflict(text, text, text, text, jsonb) returns jsonb language sql as $$ select null::jsonb $$`)
+await db.exec(read('supabase_member_password.sql'))
 await db.exec(read('supabase_member_password.sql'))
 await db.exec(read('supabase_schedule_archive.sql'))
 // 여러 번 실행해도 안전한지 보려고 두 번 실행한다.
@@ -198,8 +201,9 @@ check('이 인원으로 시작 성공', result.error ?? 'ok', 'ok')
 check('시작하면 전원 준비 상태', Boolean(result.run.gathered_at), true)
 const startMsg = (await rows(`select body from net.sent order by id desc limit 1`))[0].body
 check('시작 알림 제목', startMsg.embeds[0].title.startsWith('▶️ 이 인원으로 시작'), true)
-check('시작 알림 인원 문구', startMsg.embeds[0].fields[0].value, '2/3명 준비')
-check('시작 알림에 준비 안 한 사람', startMsg.embeds[0].fields.find((f) => f.name.includes('준비 안 함'))?.value, '다')
+check('시작 알림 인원 문구', startMsg.embeds[0].fields[0].value, '2/3명 출발')
+check('시작 알림에는 출발하는 사람만', startMsg.embeds[0].fields.find((f) => f.name === '참여 인원')?.value, '가, 나')
+check('시작 알림에 함께 출발하지 않는 사람', startMsg.embeds[0].fields.find((f) => f.name.includes('출발 안 함'))?.value, '다')
 result = await rally('다', 'start', '토', '21:00')
 check('이미 시작했으면 다시 시작 불가', result.error, 'already_gathered')
 result = await rows(`select public.member_set_raid_run_status('가','pw',$1::date,'토','21:00','무스펠','보통','트라이','cleared','O') r`, [weekStart])
@@ -279,6 +283,34 @@ for (const nick of erakusAlarm) await save(nick, selection(['월', '21:00']), { 
 check('초월은 5명이면 자동 알림', await remind2('20:40', 5), 1)
 check('초월 자동 알림 인원', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value, '5명')
 
+// ---------- 같은 시간 다른 레이드는 허용, 본캐 · 부캐의 같은 레이드는 막음 ----------
+const trySave = async (nick, sel, options) => save(nick, sel, options).then(() => 'ok', (error) => (error.message.includes('time_conflict') ? 'time_conflict' : error.message))
+const link = async (owner, alt) => (await rows(`select public.member_link_alt($1,'pw',$2,'pw') r`, [owner, alt]))[0].r
+const fri20 = selection(['금', '20:00'])
+check('옛 5개 인자 함수는 남지 않음', (await rows(`select count(*)::int c from pg_proc where proname='_schedule_time_conflict'`))[0].c, 1)
+check('중복 확인 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon', 'public._schedule_time_conflict(text,text,text,text,jsonb,text)', 'execute') ok`))[0].ok, false)
+check('본캐: 금 20:00 무스펠 어려움', await trySave('겹본캐', fri20, { difficulty: '어려움' }), 'ok')
+check('같은 캐릭터: 같은 시간 다른 난이도', await trySave('겹본캐', fri20, { difficulty: '보통' }), 'ok')
+check('같은 캐릭터: 같은 시간 다른 레이드', await trySave('겹본캐', fri20, { raid: '에라쿠스 유적', difficulty: '1단계' }), 'ok')
+check('같은 캐릭터: 같은 신청을 다시 저장', await trySave('겹본캐', fri20, { difficulty: '어려움' }), 'ok')
+
+check('부캐 연결', await link('겹본캐', '겹부캐'), 'ok')
+check('부캐: 본캐와 같은 레이드 같은 시간은 막음', await trySave('겹부캐', fri20, { difficulty: '어려움' }), 'time_conflict')
+check('부캐: 같은 시간 다른 레이드는 됨', await trySave('겹부캐', fri20, { raid: '비탄의 설원' }), 'ok')
+check('본캐: 부캐와 같은 레이드 같은 시간은 막음', await trySave('겹본캐', fri20, { raid: '비탄의 설원' }), 'time_conflict')
+check('부캐: 같은 레이드 다른 시간은 됨', await trySave('겹부캐', selection(['금', '22:00']), { difficulty: '어려움' }), 'ok')
+
+await trySave('겹부캐2', fri20, { raid: '비탄의 설원' })
+check('연결: 다른 부캐와 같은 레이드 같은 시간이면 막음', await link('겹본캐', '겹부캐2'), 'alt_time_conflict')
+await trySave('겹부캐3', fri20, { difficulty: '어려움' })
+check('연결: 본캐와 같은 레이드 같은 시간이면 막음', await link('겹본캐', '겹부캐3'), 'alt_time_conflict')
+await trySave('겹부캐4', fri20, { raid: '에라쿠스 유적', difficulty: '2단계' })
+check('연결: 같은 시간이어도 다른 레이드면 됨', await link('겹본캐', '겹부캐4'), 'ok')
+check('같은 시간 두 레이드의 정원은 따로', [
+  (await rows(`select nickname from public._raid_slot_roster($1::date,'금','20:00','무스펠','어려움','트라이')`, [weekStart])).map((r) => r.nickname).includes('겹본캐'),
+  (await rows(`select nickname from public._raid_slot_roster($1::date,'금','20:00','에라쿠스 유적','1단계','트라이')`, [weekStart])).map((r) => r.nickname),
+], [true, ['겹본캐']])
+
 // ---------- 횟수 제한 레이드 쓴 횟수 조정 (supabase_raid_entries.sql) ----------
 await db.exec(read('supabase_raid_entries.sql'))
 await db.exec(read('supabase_raid_entries.sql'))
@@ -298,10 +330,121 @@ check('이번 주로 저장', (await rows(`select week_start::text w from public
 check('누구나 읽기 가능', (await rows(`select has_table_privilege('anon', 'public.raid_entry_adjustments', 'select') ok`))[0].ok, true)
 check('표에 직접 쓰기 불가', (await rows(`select has_table_privilege('anon', 'public.raid_entry_adjustments', 'insert') ok`))[0].ok, false)
 
+// ---------- 에라쿠스: 한 번 출발해 여러 번 클리어, 출발한 사람만 차감, 0회가 될 때만 디스코드 ----------
+const ER = ['목', '22:00', '에라쿠스 유적', '3단계', '트라이']
+const erRally = async (nick, action) => (await rows(`select public.member_raid_rally($1,'pw',$2::date,$3,$4,$5,$6,$7,$8) r`, [nick, weekStart, ...ER, action]))[0].r
+const erDepart = async (nick, action, members) => (await rows(`select public.member_raid_rally($1,'pw',$2::date,$3,$4,$5,$6,$7,$8,$9::text[]) r`, [nick, weekStart, ...ER, action, members]))[0].r
+const erClear = async (nick, action, expected) => (await rows(`select public.member_raid_clear_count($1,'pw',$2::date,$3,$4,$5,$6,$7,$8,$9) r`, [nick, weekStart, ...ER, action, expected]))[0].r
+const erStatus = async (nick, value) => (await rows(`select public.member_set_raid_run_status($1,'pw',$2::date,$3,$4,$5,$6,$7,'cleared',$8) r`, [nick, weekStart, ...ER, value]))[0].r
+const left = async (nick) => (await rows(`select public._raid_entries_left($1::date,'에라쿠스 유적',$2) l`, [weekStart, nick]))[0].l
+const lefts = async (...nicks) => Promise.all(nicks.map(left))
+const sentTotal = async () => (await rows(`select count(*)::int c from net.sent`))[0].c
+const lastEmbed = async () => (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0]
+const crew = ['원정1', '원정2', '원정3', '원정4', '원정5', '원정6']
+for (const nick of crew) {
+  await db.exec(`select pg_sleep(0.002)`)
+  await save(nick, selection([ER[0], ER[1]]), { raid: ER[2], difficulty: ER[3] })
+}
+check('앱의 주간 제한과 같은 값', (await rows(`select public._raid_weekly_limit('에라쿠스 유적') a, public._raid_weekly_limit('무스펠') b`))[0], { a: 5, b: 0 })
+check('시작 전에는 클리어 불가', (await erClear('원정1', 'add', 0)).error, 'not_gathered')
+await erRally('원정1', 'call')
+for (const nick of ['원정2', '원정3', '원정4']) await erRally(nick, 'check')
+check('전원 준비 전에는 클리어 불가', (await erClear('원정1', 'add', 0)).error, 'not_gathered')
+await erRally('원정1', 'start')
+
+let sentBase = await sentTotal()
+let cleared = await erClear('원정1', 'add', 0)
+check('출발한 사람만 차감 (준비 안 한 원정5 · 대기 원정6 제외)', cleared.run.clear_log.map((e) => e.members), [['원정1', '원정2', '원정3', '원정4']])
+check('첫 클리어로 4/5', await lefts('원정1', '원정4', '원정5', '원정6'), [4, 4, 5, 5])
+check('횟수가 남은 클리어는 디스코드 알림 없음', [await sentTotal(), cleared.notified], [sentBase, false])
+check('동시에 누르면 한 번만', [(await erClear('원정2', 'add', 0)).error, (await left('원정1'))], ['clear_changed', 4])
+check('같은 출발에서 두 번째 클리어', (await erClear('원정2', 'add', 1)).run.clear_log.length, 2)
+check('두 번째 클리어로 3/5', await lefts('원정1', '원정5'), [3, 5])
+await erRally('원정5', 'check')
+await erClear('원정3', 'add', 2)
+check('늦게 준비한 사람은 그 뒤부터 차감', await lefts('원정1', '원정5'), [2, 4])
+const undone = await erClear('원정3', 'undo', 3)
+check('되돌리면 횟수도 돌아옴', [undone.run.clear_log.length, undone.run.cleared, ...(await lefts('원정1', '원정5'))], [2, 'O', 3, 5])
+check('신청 안 한 사람은 불가', (await erClear('외부인', 'add', 2)).error, 'not_participant')
+check('횟수 제한이 없는 레이드는 불가', (await rows(`select public.member_raid_clear_count('가','pw',$1::date,'토','21:00','무스펠','보통','트라이','add',0) r`, [weekStart]))[0].r.error, 'bad_request')
+
+// 원정1은 밖에서 2회 더 써서 남은 1회
+await adjust('원정1', 1)
+await adjust('원정1', 1)
+check('직접 조정도 반영해 남은 1회', await left('원정1'), 1)
+sentBase = await sentTotal()
+cleared = await erClear('원정2', 'add', 2)
+check('1/5에서 클리어하면 디스코드 1건', [await sentTotal(), cleared.notified], [sentBase + 1, true])
+let embed = await lastEmbed()
+check('알림 제목', embed.title, '🏆 이번 주 5회 완료! | 에라쿠스 유적 · 3단계 · 트라이')
+check('알림 일정 · 이번 출발 클리어 횟수', [embed.description.includes('(목) 22:00'), embed.description.includes('클리어 3회')], [true, true])
+check('알림에 다 쓴 사람', embed.fields[0].value, '원정1')
+check('알림에 참여 인원과 남은 횟수', embed.fields[1].value, '원정1 0/5, 원정2 2/5, 원정3 2/5, 원정4 2/5, 원정5 4/5')
+await erClear('원정2', 'undo', 3)
+cleared = await erClear('원정2', 'add', 2)
+check('되돌렸다 다시 눌러도 같은 사람은 다시 알리지 않음', [await sentTotal(), cleared.notified], [sentBase + 1, false])
+cleared = await erClear('원정2', 'add', 3)
+check('0회인 사람은 더 차감하지 않음', [cleared.run.clear_log.at(-1).members.includes('원정1'), await left('원정1')], [false, 0])
+check('0회인 사람 말고 나머지는 차감', await lefts('원정2', '원정5'), [1, 3])
+cleared = await erClear('원정2', 'add', 4)
+check('여러 명이 함께 0/5가 되면 한 번에 알림', [await sentTotal(), (await lastEmbed()).fields[0].value], [sentBase + 2, '원정2, 원정3, 원정4'])
+await rows(`select public.member_delete_schedule('원정2','pw','에라쿠스 유적','3단계','트라이')`)
+check('클리어한 뒤 신청을 지워도 차감 유지', await lefts('원정2', '원정6'), [0, 5])
+await erClear('원정5', 'add', 5)
+await erClear('원정5', 'add', 6)
+check('마지막 사람까지 0/5', await left('원정5'), 0)
+check('모두 0회면 더 셀 수 없음', (await erClear('원정5', 'add', 7)).error, 'no_entries_left')
+check('예전 화면에서 여러 번 센 클리어를 한꺼번에 못 지움', (await erStatus('원정5', null)).error, 'clear_count_only')
+await erRally('원정1', 'cancel')
+check('준비 확인을 취소하면 차감도 되돌아감', await lefts('원정1', '원정2', '원정5'), [3, 5, 5])
+
+// 출발 인원 고르기: 대기자를 대신 넣거나 시작한 뒤에 고친다. (원정2는 신청을 지워 원정6이 정원. 새로 대기자 추가)
+await save('원정7', selection([ER[0], ER[1]]), { raid: ER[2], difficulty: ER[3] })
+await erRally('원정1', 'call')
+check('시작 전에는 출발 인원을 못 고침', (await erDepart('원정1', 'members', ['원정1'])).error, 'not_gathered')
+check('아무도 안 고르면 시작 불가', (await erDepart('원정1', 'start', [])).error, 'no_members')
+check('신청하지 않은 사람만 고르면 시작 불가', (await erDepart('원정1', 'start', ['외부인'])).error, 'no_members')
+check('정원보다 많이 고르면 시작 불가', (await erDepart('원정1', 'start', ['원정1', '원정3', '원정4', '원정5', '원정6', '원정7'])).error, 'too_many_members')
+check('신청 안 한 사람은 출발 인원을 못 고름', (await erDepart('외부인', 'start', ['원정1'])).error, 'not_participant')
+const departRun = await erDepart('원정1', 'start', ['원정3', '원정7', '외부인'])
+check('고른 사람으로 시작 (신청자만, 대기자 포함)', [departRun.run.rally_checkins, Boolean(departRun.run.gathered_at)], [['원정3', '원정7'], true])
+check('고른 사람만 차감 (대기자 원정7 포함, 호출한 원정1 제외)', (await erClear('원정1', 'add', 0)).run.clear_log[0].members, ['원정3', '원정7'])
+check('시작한 뒤 출발 인원 고치기', (await erDepart('원정3', 'members', ['원정3', '원정4'])).run.rally_checkins, ['원정3', '원정4'])
+check('고친 뒤의 클리어는 새 인원으로, 앞 기록은 그대로', (await erClear('원정1', 'add', 1)).run.clear_log.map((e) => e.members), [['원정3', '원정7'], ['원정3', '원정4']])
+check('인원 고치기는 알림 없음', (await erDepart('원정3', 'members', ['원정3'])).notified, false)
+check('옛 9개 인자 함수는 남지 않음', (await rows(`select count(*)::int c from pg_proc where proname='member_raid_rally'`))[0].c, 1)
+await erRally('원정1', 'cancel')
+
+// 예전 화면(O/X)과의 호환
+await erRally('원정1', 'call')
+await erRally('원정1', 'start')
+check('예전 화면의 O는 1회로 기록', (await erStatus('원정1', 'O')).run.clear_log.map((e) => e.members), [['원정1']])
+check('예전 화면의 O를 다시 보내도 1회', (await erStatus('원정1', 'O')).run.clear_log.length, 1)
+check('표시를 지우면 차감도 되돌아감', [(await erStatus('원정1', null)).run.clear_log, await left('원정1')], [[], 3])
+check('실패(X)는 차감 없음', [(await erStatus('원정1', 'X')).run.cleared, await left('원정1')], ['X', 3])
+
+// 이 기능 전에 클리어 O로 표시한 기록 옮기기
+await db.exec(`update public.raid_runs set cleared='O', cleared_by='원정1', cleared_at=now(), clear_log='[]' where day='목' and time='22:00'`)
+await db.exec(stripExtension(read('supabase_raid_runs.sql')))
+await db.exec(stripExtension(read('supabase_raid_runs.sql')))
+check('예전 O 기록은 정원 전원 1회로 한 번만 옮김', (await rows(`select clear_log from public.raid_runs where day='목' and time='22:00'`))[0].clear_log.map((e) => e.members.length), [5])
+
+// 다른 레이드는 O/X 그대로, 명단만 남김
+await save('무스1', selection(['목', '23:00']))
+await save('무스2', selection(['목', '23:00']))
+await rally('무스1', 'call', '목', '23:00')
+await rally('무스1', 'start', '목', '23:00')
+sentBase = await sentTotal()
+const muspelClear = await rows(`select public.member_set_raid_run_status('무스1','pw',$1::date,'목','23:00','무스펠','보통','트라이','cleared','O') r`, [weekStart])
+check('다른 레이드: 준비한 사람을 클리어 명단에', muspelClear[0].r.run.clear_log.map((e) => e.members), [['무스1']])
+check('다른 레이드: 클리어 알림은 그대로 1건', [await sentTotal(), (await lastEmbed()).title], [sentBase + 1, '🏆 클리어! | 무스펠 · 보통 · 트라이'])
+check('클리어 내부 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_clear_add(uuid,text)','execute') a, has_function_privilege('anon','public._raid_entries_left(date,text,text)','execute') b, has_function_privilege('anon','public.member_raid_clear_count(text,text,date,text,text,text,text,text,text,integer)','execute') c`))[0], { a: false, b: false, c: true })
+
 await db.exec(`
   create or replace function public._verify_member_password(p_nickname text, p_password text, p_allow_initial boolean)
   returns text language sql as $$ select 'invalid'::text $$;
 `)
+check('비밀번호가 틀리면 클리어도 거절', (await erClear('원정1', 'add', 1)).error, 'invalid')
 check('비밀번호가 틀리면 거절', await adjust('조정캐', 1), { error: 'invalid' })
 check('거절되면 값 그대로', (await rows(`select adjustment from public.raid_entry_adjustments where nickname='조정캐'`))[0].adjustment, 1)
 

@@ -3289,7 +3289,47 @@ input::placeholder {
   box-shadow: 0 0 0 1px rgba(212, 217, 251, 0.35), 0 2px 10px var(--accent-glow);
 }
 
-/* 같은 계정의 다른 캐릭터 · 다른 레이드로 이미 신청한 시간 */
+/* 다른 레이드로도 신청한 시간: 막지 않고 칸 구석의 점으로만 알린다. */
+.time-pick-cell.has-other-raid,
+.mobile-time-button.has-other-raid {
+  position: relative;
+}
+
+.time-pick-cell.has-other-raid::after,
+.mobile-time-button.has-other-raid::after,
+.other-raid-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f5c542;
+}
+
+.time-pick-cell.has-other-raid::after,
+.mobile-time-button.has-other-raid::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+}
+
+.mobile-time-button.has-other-raid::after {
+  top: 7px;
+  right: 7px;
+}
+
+.other-raid-dot {
+  display: inline-block;
+  flex: none;
+}
+
+.mobile-other-raid-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+/* 내 다른 캐릭터가 같은 레이드로 이미 신청한 시간 */
 .time-pick-cell.is-taken {
   border: 1px dashed rgba(245, 197, 66, 0.8);
   background: repeating-linear-gradient(135deg, rgba(245, 197, 66, 0.22) 0 4px, transparent 4px 8px), var(--bg-control);
@@ -4819,6 +4859,441 @@ input::placeholder {
   background: rgba(255, 110, 110, 0.14);
   border-color: rgba(255, 128, 128, 0.36);
   color: #ffc2c2;
+}
+
+/* 출발 인원 고르기 팝업 */
+.depart-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  max-height: 46vh;
+  margin: 12px 0;
+  overflow-y: auto;
+}
+
+.depart-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-control);
+  color: #edf5ff;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.depart-option.is-picked {
+  border-color: rgba(94, 224, 170, 0.6);
+  background: rgba(94, 224, 170, 0.12);
+}
+
+.depart-option input {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #2fbf86;
+}
+
+.depart-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.depart-option small {
+  flex-shrink: 0;
+  color: #ffd27a;
+}
+
+.depart-count {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.depart-count.is-over {
+  color: #ffb0b0;
+}
+
+/* 같은 시간에 남은 다른 신청을 뺄지 묻는 안내 */
+.overlap-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 196, 77, 0.42);
+  border-radius: 12px;
+  background: rgba(255, 196, 77, 0.07);
+  font-size: 0.84rem;
+}
+
+.overlap-notice p {
+  flex: 1 1 320px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.overlap-notice strong {
+  color: #ffd27a;
+}
+
+.overlap-notice-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.overlap-notice-actions button {
+  width: auto;
+  min-height: 40px;
+  padding: 6px 14px;
+  font-size: 0.82rem;
+}
+
+/* 내 다음 레이드 카드의 클리어 */
+.day-raid-clear-count.is-large .day-raid-run-label {
+  font-size: 0.8rem;
+}
+
+.next-raid-left {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+/* 이번 주 클리어 머리 */
+.clear-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.clear-summary-head h3 {
+  margin: 0;
+}
+
+.clear-summary-head h3 small {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+/* 신청이 없는 요일은 좁히고, 있는 요일을 넓혀 인원 수 · 닉네임이 넘치지 않게 한다 */
+@media (min-width: 641px) {
+  .day-raid-card:not(.is-collapsed) {
+    flex: 3 1 118px;
+    max-width: 320px;
+  }
+
+  .day-raid-card.is-empty-day:not(.is-collapsed) {
+    flex: 0.4 1 88px;
+    max-width: none;
+  }
+
+  .day-raid-card.is-today.is-empty-day:not(.is-collapsed) {
+    flex-basis: 126px;
+  }
+
+  /* 신청이 없는 시간 줄은 얇게 */
+  .calendar-grid .is-empty-row {
+    min-height: 30px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+}
+
+.day-raid-time-tag {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.day-raid-member .member-name-wrap > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 모바일: 신청 화면의 리셋 · 다음 레이드 한 줄, 인원 탭 전환, 빈 시간 더 보기 */
+.summary-strip,
+.members-view-tabs,
+.vacant-times-toggle {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .summary-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    padding: 0 12px;
+    border: 1px solid var(--line-faint);
+    border-radius: 12px;
+    background: var(--bg-section);
+    color: #dfe9ff;
+    font-size: 0.78rem;
+  }
+
+  .summary-strip em {
+    color: var(--text-muted);
+    font-style: normal;
+  }
+
+  .summary-strip-item {
+    flex-shrink: 0;
+    padding: 10px 0;
+  }
+
+  .summary-strip-next {
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0 0 0 10px;
+    overflow: hidden;
+    border: 0;
+    border-left: 1px solid var(--line-faint);
+    background: none;
+    color: #9cc9ff;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 화면 이름은 위쪽 막대에 이미 있다. 사용법은 메뉴에서 볼 수 있다. */
+  .form-panel > .panel-header {
+    display: none;
+  }
+
+  .members-view-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .members-view-tab {
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-control);
+    color: #dfe9ff;
+    font: inherit;
+    font-size: 0.86rem;
+    font-weight: 700;
+  }
+
+  .members-view-tab.active {
+    border-color: transparent;
+    background: var(--accent);
+    color: #ffffff;
+  }
+
+  .members-view-count {
+    margin-left: 6px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.25);
+    font-size: 0.74rem;
+  }
+
+  .vacant-times-toggle {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    margin-top: 8px;
+  }
+
+  .next-raid-card .day-raid-clear-count.is-large {
+    width: 100%;
+    gap: 8px;
+  }
+
+  .next-raid-card .day-raid-clear-count.is-large .day-raid-rally-button.is-primary {
+    flex: 1;
+    min-height: 48px;
+    font-size: 0.95rem;
+  }
+
+  .overlap-notice-actions {
+    width: 100%;
+  }
+
+  .overlap-notice-actions button {
+    flex: 1;
+  }
+}
+
+/* PC: 상단 · 범례의 작은 버튼 크기를 맞추고 닉네임이 잘리지 않게 한다 */
+@media (min-width: 641px) {
+  .slot-legend .small-toggle {
+    width: auto;
+    padding: 7px 14px;
+    font-size: 0.8rem;
+  }
+
+  .user-badge-name {
+    max-width: 9em;
+  }
+
+  .small-logout {
+    white-space: nowrap;
+  }
+}
+
+/* 강조 버튼은 올리거나 누른 뒤에도 색을 유지한다. (터치 기기는 누른 뒤 hover가 남는다) */
+.day-raid-rally-button.is-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  filter: brightness(1.08);
+}
+
+/* 좁은 요일 카드에서 인원 수가 다음 줄로 넘어가도 타원이 되지 않게 한다 */
+.day-raid-time-tag {
+  row-gap: 0;
+  border-radius: 14px;
+  line-height: 1.3;
+}
+
+@media (min-width: 641px) {
+  .member-day-summary.clear-summary {
+    margin: 0 0 18px;
+  }
+
+  #schedule-day-field .form-section-title {
+    white-space: nowrap;
+  }
+
+  #schedule-day-field .field-label-row .small-toggle {
+    padding: 6px 8px;
+    font-size: 0.72rem;
+  }
+
+  .character-summary button {
+    width: auto;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+  }
+}
+
+/* 횟수 제한 레이드의 클리어 칸 (+1 클리어 · 되돌리기) */
+.day-raid-run-status.day-raid-clear-count {
+  flex-wrap: wrap;
+  max-width: 100%;
+  padding: 4px 6px;
+  border-radius: 12px;
+}
+
+.day-raid-clear-count .day-raid-run-label {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.day-raid-clear-count.is-yes .day-raid-run-label {
+  color: #5ee0aa;
+}
+
+/* 시간 줄 아래 사람별 남은 횟수 */
+.day-raid-clear-entries {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+}
+
+.day-raid-clear-entries-label {
+  width: 100%;
+  color: #dcc8ff;
+  font-weight: 700;
+}
+
+.day-raid-clear-entry {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 4px 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #edf5ff;
+}
+
+.day-raid-clear-entry.is-charged {
+  border-color: rgba(94, 224, 170, 0.6);
+  background: rgba(94, 224, 170, 0.12);
+}
+
+.day-raid-clear-entry.is-absent {
+  border-style: dashed;
+  opacity: 0.55;
+}
+
+/* 이번 주 클리어 목록 */
+.clear-summary .weekday-title small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.clear-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.clear-person .nickname-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.clear-person-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clear-person-count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.clear-person .entries-left-badge {
+  margin-left: 0;
+}
+
+.clear-person.is-me {
+  border-color: var(--accent-line);
+}
+
+.clear-person.is-done {
+  border-color: rgba(94, 224, 170, 0.5);
+}
+
+.clear-done-badge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #2fbf86;
+  color: #ffffff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .target-summary .entries-left-badge {
