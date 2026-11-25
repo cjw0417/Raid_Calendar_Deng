@@ -258,8 +258,11 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
   // 16. 추천 정렬
   await pcTab(page, '이번 주')
-  check('#16 추천은 한 줄로 접힘', [await page.locator('.recommend-list').count(), (await page.locator('.recommend-toggle-preview').innerText()).startsWith('금 21:00')], [0, true])
-  await page.locator('.recommend-toggle').click()
+  check('#16 PC 추천은 세 곳을 한 줄에', [
+    await page.locator('.recommend-card').count(),
+    new Set(await page.locator('.recommend-card').evaluateAll((cards) => cards.map((card) => Math.round(card.getBoundingClientRect().top)))).size,
+    await page.locator('.recommend-row').evaluate((el) => el.getBoundingClientRect().height <= 80),
+  ], [3, 1, true])
   const recommend = await page.locator('.recommend-card').evaluateAll((cards) => cards.map((c) => c.querySelector('.recommend-time').innerText + ' / ' + c.querySelector('.recommend-status').innerText))
   check('#16 정원 찬 시간이 1위, 출발 가능 표시', recommend[0], '금요일 21:00 / 출발 가능')
   check('#16 9명 시간이 리더 있는 소수 시간보다 위', recommend[1].startsWith('일요일 22:00'))
@@ -282,15 +285,16 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('#15 먼 시간은 펼치면 준비 확인 대신 안내', await thursdayRow.locator('.day-raid-rally-hint').count(), 1)
   await thursdayRow.locator('.day-raid-time-toggle').click()
   // 한 줄 시간 줄: 내 시간 표시, 직업 아이콘, 참여(+) · 대기 버튼
-  check('시간 줄: 내 시간은 색 띠와 나 표시', [await thursdayRow.evaluate((el) => el.classList.contains('is-mine')), await thursdayRow.locator('.my-slot-badge').innerText()], [true, '나'])
+  check('시간 줄: 내 시간은 색 띠와 글자', [await thursdayRow.evaluate((el) => el.classList.contains('is-mine')), await thursdayRow.locator('.my-slot-badge').innerText()], [true, '내 시간'])
+  check('시간 줄: 펼치기 화살표 표시', await thursdayRow.locator('.day-raid-toggle-arrow').isVisible())
   check('시간 줄: 직업 아이콘 유지', await thursdayRow.locator('.day-raid-stack-icon').count(), 1)
   const sundayRow = page.locator('[id="day-raid-row-일-무스펠 / 보통 / 트라이-22:00"]')
-  check('시간 줄: 리더 없음은 짧은 표시와 설명', [await sundayRow.locator('.slot-warn').innerText(), await sundayRow.locator('.slot-warn').getAttribute('title')], ['!', '리딩 가능한 사람이 없어요'])
-  check('시간 줄: 참여는 +, 정원이 차면 대기', [
+  check('시간 줄: 리더 없음 글자', await sundayRow.locator('.slot-warn').innerText(), '리더 없음')
+  check('시간 줄: 참여, 정원이 차면 대기', [
     await sundayRow.locator('.join-slot-button').innerText(),
     await page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-21:00"] .join-slot-button').innerText(),
     await thursdayRow.locator('.join-slot-button').count(),
-  ], ['+', '대기', 0])
+  ], ['+ 참여', '+ 대기', 0])
   await pcTab(page, '파티')
 
   // 7. 나도 참여 (금 21:00 정원 초과 → 대기 신청, 토 21:00 → 참여)
@@ -708,7 +712,6 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('초월: A/B 없이 한 파티', [await slot.locator('.party-column').count(), await slot.locator('.party-label').innerText()], [1, '파티'])
   check('초월: 6번째부터 대기', await slot.locator('.party-waiting').innerText(), '대기 2명: 초월원6, 초월원7')
   check('초월: 요일별 현황도 5명 정원', (await page.locator('.day-raid-time-count').allInnerTexts()).includes('5/5 +2'))
-  await page.locator('.recommend-toggle').click()
   check('초월: 추천 시간도 5명이면 출발 가능', (await page.locator('.recommend-status').allInnerTexts()).includes('출발 가능'))
   await pcTab(page, '파티')
   await slot.scrollIntoViewIfNeeded()
@@ -943,6 +946,13 @@ for (const device of ['pc', 'mobile']) {
     top: Math.round(card.getBoundingClientRect().top),
     over: [...card.querySelectorAll('.day-raid-time-tag, .join-slot-button, .day-raid-icon-stack')].some((el) => el.getBoundingClientRect().right > card.getBoundingClientRect().right),
   })))
+  check('PC 배치: 참여 버튼이 시간 · 아이콘과 겹치지 않음', await full.page.locator('.day-raid-time-head').evaluateAll((heads) => heads.filter((head) => {
+    const button = head.querySelector('.join-slot-button')?.getBoundingClientRect()
+    return button && [...head.querySelectorAll('.day-raid-time-tag, .slot-warn, .my-slot-badge, .day-raid-icon-stack, .day-raid-toggle-arrow')].some((el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.right > button.left + 1 && rect.left < button.right && rect.bottom > button.top + 1 && rect.top < button.bottom - 1
+    })
+  }).length), 0)
   check('PC 배치: 모든 요일에 신청이 있어도 한 줄 · 넘침 없음', [new Set(cards.map((card) => card.top)).size, cards.some((card) => card.over)], [1, false])
   await full.page.locator('.day-raid-summary-panel').screenshot({ path: join(out, 'pc-layout-full-week.png') })
   await full.context.close()
@@ -1173,7 +1183,7 @@ for (const device of ['pc', 'mobile']) {
   check('PC: 목록의 시간 칩은 눌러 지우기 유지', [(await page.locator('.saved-slot-chip').count()) > 0, await page.locator('.saved-slot-tag').count()], [true, 0])
   const pcHistory = await page.evaluate(() => history.length)
   await page.locator('.saved-schedule-clear').count()
-  check('PC: 추천은 한 줄, 누르면 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [0, 1])
+  check('PC: 추천 목록은 항상 펼침', [await page.locator('.recommend-list').count(), await page.locator('.recommend-toggle').count()], [1, 0])
   check('PC: 하단 탭 대신 위쪽 탭', [await page.locator('.pc-tab').allInnerTexts(), await page.locator('.mobile-tabbar').isVisible()], [['이번 주', '파티', '클리어', '인원'], false])
   check('PC: 뒤로 가기 기록을 건드리지 않음', await page.evaluate(() => history.length), pcHistory)
   check('PC: 칸 시간표 유지', [await page.locator('.time-pick-grid').count(), await page.locator('.mobile-time-list').count()], [1, 0])

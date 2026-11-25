@@ -3878,7 +3878,7 @@ function App() {
           : undefined}
         onClick={() => joinSlot(slot)}
       >
-        {extraClass === 'is-compact' ? (peopleCount >= getRaidFullSize(slot.raidName) ? '대기' : '+')
+        {extraClass === 'is-compact' ? (peopleCount >= getRaidFullSize(slot.raidName) ? '+ 대기' : '+ 참여')
           : extraClass === 'is-vacant-join' ? '+ 신청' : peopleCount >= getRaidFullSize(slot.raidName) ? '+ 대기 신청' : '+ 나도 참여'}
       </button>
     ) : null
@@ -5218,7 +5218,7 @@ function App() {
 
           {/* 모든 레이드 조합에서 아직 안 지난 시간 중 모이기 좋은 시간 TOP 3. 누르면 그 탭 · 그 칸으로 간다. */}
           <div className="recommend-row" data-section="calendar" data-pc="day">
-            {recommendedSlots.length > 0 ? (
+            {isMobile && recommendedSlots.length > 0 ? (
               <button
                 type="button"
                 className="recommend-toggle"
@@ -5234,7 +5234,7 @@ function App() {
             ) : (
               <span className="recommend-label">추천 레이드 시간 TOP 3</span>
             )}
-            {!recommendOpen && recommendedSlots.length > 0 ? null : recommendedSlots.length > 0 ? (
+            {isMobile && !recommendOpen && recommendedSlots.length > 0 ? null : recommendedSlots.length > 0 ? (
               <div className="recommend-list">
                 {recommendedSlots.map((slot, index) => {
                   const isConfirmed = isConfirmedSlot(slot)
@@ -5567,8 +5567,8 @@ function App() {
                                         {formatTimeLabel(time)}
                                         <span className="day-raid-time-count">{formatHeadcount(slotPeople.length, slotFullSize)}</span>
                                       </span>
-                                      {isSlotVoter && <span className="my-slot-badge" title="내가 신청한 시간" aria-label="내 시간">나</span>}
-                                      {!hasLeader && <span className="slot-warn" title="리딩 가능한 사람이 없어요" aria-label="리더 없음">{isExpanded ? '리더 없음' : '!'}</span>}
+                                      {isSlotVoter && <span className="my-slot-badge">내 시간</span>}
+                                      {!hasLeader && <span className="slot-warn" title="리딩 가능한 사람이 없어요">리더 없음</span>}
                                       {progressText && <span className={`day-raid-progress ${runRecord?.cleared === 'X' ? 'is-failed' : ''}`}>{progressText}</span>}
                                       {!isExpanded && (
                                         <span className="day-raid-icon-stack" aria-hidden="true">

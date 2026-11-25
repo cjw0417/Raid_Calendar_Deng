@@ -5065,22 +5065,99 @@ input::placeholder {
 }
 
 @media (min-width: 641px) {
-  /* 좁은 칸에서 화살표가 줄을 따로 차지하지 않게, 접힌 줄에서는 뺀다. (줄을 누르면 펼쳐진다) */
-  .day-raid-time-row:not(.expanded) .day-raid-toggle-arrow {
-    display: none;
+  .day-raid-time-head {
+    position: relative;
+    min-height: 26px;
   }
 
   .day-raid-time-head .day-raid-time-tag {
-    gap: 3px;
+    gap: 4px;
   }
 
-  .day-raid-time-head .slot-warn,
-  .day-raid-time-head .my-slot-badge {
-    padding: 0 4px;
+  /* 참여 버튼은 아이콘 줄 오른쪽에 둔다. 인원 수가 옆에 있으니 +N은 빼서 자리를 낸다. */
+  .day-raid-time-row:not(.expanded) .join-slot-button.is-compact {
+    position: absolute;
+    right: 0;
+    bottom: 0;
   }
 
-  .day-raid-time-head .day-raid-time-toggle {
-    column-gap: 3px;
+  .day-raid-time-row:not(.expanded) .day-raid-time-head:has(.join-slot-button) .day-raid-icon-stack {
+    max-width: calc(100% - 54px);
+    margin-right: 54px;
+  }
+
+  .day-raid-time-head .day-raid-stack-icon + .day-raid-stack-icon {
+    margin-left: -9px;
+  }
+
+  .day-raid-time-head:has(.join-slot-button) .day-raid-stack-more {
+    display: none;
+  }
+
+  .day-raid-time-row.expanded .day-raid-time-head {
+    flex-wrap: wrap;
+  }
+
+  /* 추천 TOP 3: 세 곳을 한 줄에 나란히, 참여 버튼은 카드 옆에 */
+  .recommend-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+  }
+
+  .recommend-label {
+    width: 6.2em;
+    line-height: 1.4;
+    word-break: keep-all;
+  }
+
+  .recommend-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+  }
+
+  .recommend-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 1px 8px;
+    padding: 7px 10px 7px 36px;
+  }
+
+  .recommend-rank {
+    left: 8px;
+  }
+
+  .recommend-raid,
+  .recommend-meta {
+    grid-column: 1 / -1;
+  }
+
+  .recommend-raid {
+    order: 2;
+  }
+
+  .recommend-meta {
+    order: 3;
+  }
+
+  .recommend-time {
+    font-size: 0.88rem;
+    white-space: nowrap;
+  }
+
+  .recommend-status {
+    align-self: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .recommend-item .join-slot-button.is-block {
+    width: 52px;
+    padding: 4px;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    white-space: normal;
+    word-break: keep-all;
   }
 }
 
@@ -5145,6 +5222,22 @@ input::placeholder {
   height: 20px;
 }
 
+/* 펼치기 화살표는 시간 바로 옆에 둔다. (좁은 칸에서 줄을 따로 차지하지 않게) */
+.day-raid-time-head .day-raid-toggle-arrow {
+  order: 1;
+  margin-left: 0;
+}
+
+.day-raid-time-head .my-slot-badge,
+.day-raid-time-head .slot-warn,
+.day-raid-time-head .day-raid-progress {
+  order: 2;
+}
+
+.day-raid-time-head .day-raid-icon-stack {
+  order: 3;
+}
+
 .day-raid-progress {
   padding: 0 6px;
   border-radius: 999px;
@@ -5162,11 +5255,10 @@ input::placeholder {
 
 .join-slot-button.is-compact {
   flex-shrink: 0;
-  min-width: 26px;
   height: 24px;
   padding: 0 6px;
   border-radius: 8px;
-  font-size: 0.8rem;
+  font-size: 0.68rem;
   line-height: 1;
 }
 
@@ -5185,9 +5277,9 @@ input::placeholder {
   }
 
   .join-slot-button.is-compact {
-    min-width: 48px;
+    min-width: 64px;
     height: 40px;
-    font-size: 1rem;
+    font-size: 0.84rem;
   }
 }
 
