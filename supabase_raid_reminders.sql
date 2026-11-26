@@ -6,6 +6,7 @@
 --   - 5분마다 시작 30분 안쪽으로 남은 시간대를 찾아 디스코드로 한 번 알린다.
 --   - 신청 인원이 기준(app_settings.reminder_min_members, 기본 10명) 이상인 시간대만 알린다.
 --     기준이 그 레이드 정원보다 크면 정원으로 본다. (초월 5인 레이드는 5명이 차면 알린다)
+--     정원을 넘어 2파티로 나뉜 시간대는 파티마다 기준을 넘었는지 보고 따로 알린다.
 --   - 이미 누군가 준비 확인을 시작한 시간대는 알리지 않는다.
 --
 -- 기준 인원 바꾸기:
@@ -31,6 +32,7 @@ declare
   week_start_time timestamptz := week_start_value::timestamp at time zone 'Asia/Seoul';
   min_members integer;
   slot record;
+  party_value integer;
   run_row public.raid_runs;
   member_count integer;
   members_text text;
@@ -63,48 +65,52 @@ begin
       continue;
     end if;
 
-    select
-      count(*),
-      string_agg(r.nickname || case when r.lead_ready = 'O' then '★' else '' end, ', ' order by (r.lead_ready = 'O') desc, r.nickname),
-      string_agg(r.nickname, ', ' order by r.nickname) filter (where r.lead_ready = 'O')
-    into member_count, members_text, leaders_text
-    from public._raid_slot_roster(week_start_value, slot.slot_day, slot.slot_time, slot.raid_name, slot.difficulty, slot.mode) r;
+    -- 정원을 넘어 2파티로 나뉜 시간대는 파티마다 따로 센다.
+    for party_value in 1 .. public._raid_max_parties() loop
+      select
+        count(*),
+        string_agg(r.nickname || case when r.lead_ready = 'O' then '★' else '' end, ', ' order by (r.lead_ready = 'O') desc, r.nickname),
+        string_agg(r.nickname, ', ' order by r.nickname) filter (where r.lead_ready = 'O')
+      into member_count, members_text, leaders_text
+      from public._raid_party_roster(week_start_value, slot.slot_day, slot.slot_time, slot.raid_name, slot.difficulty, slot.mode, party_value) r;
 
-    if member_count < least(min_members, public._raid_full_size(slot.raid_name)) then
-      continue;
-    end if;
+      if member_count = 0 or member_count < least(min_members, public._raid_full_size(slot.raid_name)) then
+        continue;
+      end if;
 
-    insert into public.raid_runs (week_start, day, time, raid_name, difficulty, mode)
-    values (week_start_value, slot.slot_day, slot.slot_time, slot.raid_name, slot.difficulty, slot.mode)
-    on conflict (week_start, day, time, raid_name, difficulty, mode) do nothing;
+      insert into public.raid_runs (week_start, day, time, raid_name, difficulty, mode, party)
+      values (week_start_value, slot.slot_day, slot.slot_time, slot.raid_name, slot.difficulty, slot.mode, party_value)
+      on conflict (week_start, day, time, raid_name, difficulty, mode, party) do nothing;
 
-    select * into run_row
-    from public.raid_runs
-    where week_start = week_start_value and day = slot.slot_day and time = slot.slot_time
-      and raid_name = slot.raid_name and difficulty = slot.difficulty and mode = slot.mode
-    for update;
+      select * into run_row
+      from public.raid_runs
+      where week_start = week_start_value and day = slot.slot_day and time = slot.slot_time
+        and raid_name = slot.raid_name and difficulty = slot.difficulty and mode = slot.mode
+        and party = party_value
+      for update;
 
-    if run_row.reminder_notified_at is not null or run_row.rally_called_at is not null then
-      continue;
-    end if;
+      if run_row.reminder_notified_at is not null or run_row.rally_called_at is not null then
+        continue;
+      end if;
 
-    if public._send_discord(jsonb_build_object(
-      'username', '레이드 캘린더',
-      'embeds', jsonb_build_array(jsonb_build_object(
-        'title', format('⏰ 곧 시작 | %s · %s · %s', slot.raid_name, slot.difficulty, slot.mode),
-        'description', '레이드 캘린더에서 준비 확인을 시작해 주세요.',
-        'color', 16763904,
-        'fields', jsonb_build_array(
-          jsonb_build_object('name', '📅 일정', 'value', public._raid_run_schedule_text(run_row), 'inline', true),
-          jsonb_build_object('name', '👥 인원', 'value', member_count || '명', 'inline', true),
-          jsonb_build_object('name', '★ 리딩', 'value', coalesce(leaders_text, '없음'), 'inline', true),
-          jsonb_build_object('name', '참여 인원', 'value', left(coalesce(members_text, '없음'), 1000))
-        )
-      ))
-    )) then
-      update public.raid_runs set reminder_notified_at = now() where id = run_row.id;
-      sent_count := sent_count + 1;
-    end if;
+      if public._send_discord(jsonb_build_object(
+        'username', '레이드 캘린더',
+        'embeds', jsonb_build_array(jsonb_build_object(
+          'title', '⏰ 곧 시작 | ' || public._raid_run_title(run_row),
+          'description', '레이드 캘린더에서 준비 확인을 시작해 주세요.',
+          'color', 16763904,
+          'fields', jsonb_build_array(
+            jsonb_build_object('name', '📅 일정', 'value', public._raid_run_schedule_text(run_row), 'inline', true),
+            jsonb_build_object('name', '👥 인원', 'value', member_count || '명', 'inline', true),
+            jsonb_build_object('name', '★ 리딩', 'value', coalesce(leaders_text, '없음'), 'inline', true),
+            jsonb_build_object('name', '참여 인원', 'value', left(coalesce(members_text, '없음'), 1000))
+          )
+        ))
+      )) then
+        update public.raid_runs set reminder_notified_at = now() where id = run_row.id;
+        sent_count := sent_count + 1;
+      end if;
+    end loop;
   end loop;
 
   return sent_count;

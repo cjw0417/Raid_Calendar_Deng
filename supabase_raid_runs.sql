@@ -6,9 +6,11 @@
 --   - 요일별 신청 현황의 시간 줄마다 준비 상태와 클리어 O/X를 기록한다. (한 주 단위, 수요일 시작)
 --   - 그 시간대에 투표한 사람만 로그인해서 바꿀 수 있고, 누가 바꿨는지 함께 남긴다.
 --   - 시간대별 신청 순서: raid_schedules.slot_signed_at에 시간대마다 처음 신청한 시각을 남긴다. (트리거가 채운다)
---     먼저 신청한 10명(초월 레이드는 5명, _raid_full_size)이 정원이고, 나머지는 대기다. 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
+--     먼저 신청한 10명(초월 레이드는 5명, _raid_full_size)이 1공대(초월은 1파티), 그다음 10명(5명)이 2공대(2파티)이고,
+--     그보다 늦은 사람은 대기다. (최대 2파티, _raid_max_parties) 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
 --     시간대를 뺐다가 1분 안에 다시 넣으면(삭제 되돌리기 포함) 원래 순서로 돌아가고, 그 뒤에는 맨 뒤로 간다.
---   - 정원에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
+--   - 준비 확인 · 전원 준비 · 출발 인원 · 클리어는 파티마다 따로 기록한다. (raid_runs.party: 1 | 2)
+--   - 정원(2파티까지)에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
 --   - 준비: 한 명이 "준비 확인"을 누르면 디스코드로 알림이 가고, 정원에 든 사람이 각자 "준비 완료"를 누른다.
 --     정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 되고 디스코드로 완료 알림이 간다.
 --     안 오는 사람이 있으면 "이 인원으로 시작"에서 실제로 갈 사람을 골라 기다리지 않고 넘어갈 수 있다. (대기자를 대신 고를 수도 있다)
@@ -41,9 +43,44 @@ create table if not exists public.raid_runs (
   cleared_by text,
   departed_at timestamptz,
   cleared_at timestamptz,
-  updated_at timestamptz not null default now(),
-  unique (week_start, day, time, raid_name, difficulty, mode)
+  updated_at timestamptz not null default now()
 );
+
+-- 파티 번호. 같은 시간대 · 레이드 조합에 2파티까지 기록이 따로 있다. 이 컬럼 전의 기록은 모두 1파티다.
+alter table public.raid_runs add column if not exists party smallint not null default 1;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.raid_runs'::regclass and conname = 'raid_runs_party_check') then
+    alter table public.raid_runs add constraint raid_runs_party_check check (party in (1, 2));
+  end if;
+end;
+$$;
+
+-- 예전 고유 조건(파티 없이 시간대 · 레이드 조합마다 한 줄)을 지우고 파티까지 넣은 고유 조건으로 바꾼다.
+do $$
+declare
+  constraint_row record;
+begin
+  for constraint_row in
+    select c.conname
+    from pg_constraint c
+    where c.conrelid = 'public.raid_runs'::regclass
+      and c.contype = 'u'
+      and not exists (
+        select 1
+        from unnest(c.conkey) k(attnum)
+        join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+        where a.attname = 'party'
+      )
+  loop
+    execute format('alter table public.raid_runs drop constraint %I', constraint_row.conname);
+  end loop;
+end;
+$$;
+
+create unique index if not exists raid_runs_slot_party_key
+on public.raid_runs (week_start, day, time, raid_name, difficulty, mode, party);
 
 -- 알림을 보낸 시각. 값이 있으면 같은 시간대의 같은 알림은 다시 보내지 않는다.
 alter table public.raid_runs add column if not exists departed_notified_at timestamptz;
@@ -256,6 +293,31 @@ $$;
 
 revoke execute on function public._raid_full_size(text) from public, anon, authenticated;
 
+-- 한 시간대에 꾸릴 수 있는 파티 수. 정원(_raid_full_size)을 넘으면 2파티를 꾸리고, 그보다 많으면 대기다.
+-- 앱의 MAX_PARTIES(src/lib/schedule.js)와 같은 값이어야 한다.
+create or replace function public._raid_max_parties()
+returns integer
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select 2;
+$$;
+
+revoke execute on function public._raid_max_parties() from public, anon, authenticated;
+
+-- 알림에 붙이는 파티 이름. 10인 레이드는 "2공대", 초월(5인 1파티)은 "2파티". 앱의 getPartyGroupLabel과 같아야 한다.
+create or replace function public._raid_party_label(p_raid_name text, p_party integer)
+returns text
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select p_party || case when public._raid_full_size(p_raid_name) <= 5 then '파티' else '공대' end;
+$$;
+
+revoke execute on function public._raid_party_label(text, integer) from public, anon, authenticated;
+
 -- 캐릭터마다 일주일에 클리어할 수 있는 횟수. 0이면 제한 없음. 앱의 raidOptions.weeklyLimit(src/lib/schedule.js)과 같은 값이어야 한다.
 create or replace function public._raid_weekly_limit(p_raid_name text)
 returns integer
@@ -268,7 +330,8 @@ $$;
 
 revoke execute on function public._raid_weekly_limit(text) from public, anon, authenticated;
 
--- 그 시간대의 정원: 먼저 신청한 _raid_full_size명(기본 10명, 초월 5명). 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
+-- 그 시간대의 정원(2파티까지): 먼저 신청한 _raid_full_size × _raid_max_parties명(기본 20명, 초월 10명). 나머지는 대기다.
+-- 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
 -- 앱은 밀리초까지만 다루므로 여기서도 밀리초로 맞추고, 같으면 닉네임 순(코드값)으로 정한다.
 create or replace function public._raid_slot_roster(
   p_week_start date,
@@ -289,10 +352,39 @@ as $$
   order by
     date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
     v.nickname collate "C"
-  limit public._raid_full_size(p_raid_name);
+  limit public._raid_full_size(p_raid_name) * public._raid_max_parties();
 $$;
 
 revoke execute on function public._raid_slot_roster(date, text, text, text, text, text) from public, anon, authenticated;
+
+-- 한 파티의 인원: 1파티는 정원 안의 앞쪽 _raid_full_size명, 2파티는 그다음 _raid_full_size명.
+-- 준비 확인 · 전원 준비 · 클리어는 이 인원을 기준으로 파티마다 따로 센다.
+create or replace function public._raid_party_roster(
+  p_week_start date,
+  p_day text,
+  p_time text,
+  p_raid_name text,
+  p_difficulty text,
+  p_mode text,
+  p_party integer
+)
+returns setof public.raid_schedules
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select v.*
+  from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+  where p_party between 1 and public._raid_max_parties()
+  order by
+    date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
+    v.nickname collate "C"
+  offset (p_party - 1) * public._raid_full_size(p_raid_name)
+  limit public._raid_full_size(p_raid_name);
+$$;
+
+revoke execute on function public._raid_party_roster(date, text, text, text, text, text, integer) from public, anon, authenticated;
 
 -- 신청에서 시간대가 빠졌을 때: 되돌리기에 쓸 신청 시각을 남기고, 대기 1번이 정원으로 올라갔으면 디스코드로 알린다.
 -- 이 트리거의 실패가 신청 저장 · 삭제를 막지 않도록 오류는 경고로만 남긴다.
@@ -349,10 +441,10 @@ begin
       continue;
     end if;
 
-    -- 뺀 뒤의 정원 마지막 사람(10번째, 초월은 5번째)이 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
+    -- 뺀 뒤의 정원 마지막 사람(2파티까지 20번째, 초월은 10번째)이 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
     select * into tenth
     from public._raid_slot_roster(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode)
-    offset public._raid_full_size(old.raid_name) - 1
+    offset public._raid_full_size(old.raid_name) * public._raid_max_parties() - 1
     limit 1;
 
     if tenth.nickname is null then
@@ -412,16 +504,35 @@ set search_path = public, extensions
 as $$
   select p_run.rally_called_at is not null
     and exists (
-      select 1 from public._raid_slot_roster(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode)
+      select 1 from public._raid_party_roster(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode, p_run.party)
     )
     and not exists (
       select 1
-      from public._raid_slot_roster(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode) v
+      from public._raid_party_roster(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode, p_run.party) v
       where not (v.nickname = any(p_run.rally_checkins))
     );
 $$;
 
 revoke execute on function public._raid_run_all_gathered(public.raid_runs) from public, anon, authenticated;
+
+-- 알림 제목의 레이드 이름: "무스펠 · 보통 · 트라이". 그 시간대가 2파티로 나뉘었으면 " · 2공대"처럼 파티를 붙인다.
+create or replace function public._raid_run_title(p_run public.raid_runs)
+returns text
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select format('%s · %s · %s', p_run.raid_name, p_run.difficulty, p_run.mode)
+    || case
+      when p_run.party > 1 or exists (
+        select 1 from public._raid_party_roster(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode, 2)
+      ) then ' · ' || public._raid_party_label(p_run.raid_name, p_run.party)
+      else ''
+    end;
+$$;
+
+revoke execute on function public._raid_run_title(public.raid_runs) from public, anon, authenticated;
 
 -- 알림에 넣는 일정 문구: "10월 8일 (수) 21:00". 00:00은 그 요일 밤 12시라서 앱과 같이 24:00으로 쓴다.
 create or replace function public._raid_run_schedule_text(p_run public.raid_runs)
@@ -560,7 +671,7 @@ begin
     notified := public._send_discord(jsonb_build_object(
       'username', '레이드 캘린더',
       'embeds', jsonb_build_array(jsonb_build_object(
-        'title', format('🏆 이번 주 %s회 완료! | %s · %s · %s', limit_value, run_row.raid_name, run_row.difficulty, run_row.mode),
+        'title', format('🏆 이번 주 %s회 완료! | %s', limit_value, public._raid_run_title(run_row)),
         'color', 16766720,
         'description', format(E'📅 %s\n이번 출발에서 클리어 %s회', public._raid_run_schedule_text(run_row), jsonb_array_length(run_row.clear_log)),
         'fields', jsonb_build_array(
@@ -592,6 +703,9 @@ revoke execute on function public._raid_clear_add(uuid, text) from public, anon,
 --    반환값: { "run": {...}, "notified": true|false }
 --            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_gathered'
 --                            | 'clear_changed'(다른 사람이 먼저 바꿈) | 'no_entries_left', "run": {...} }
+--    p_party: 1 | 2 (그 시간대의 몇 번째 파티인지). 예전 화면은 보내지 않아 1파티로 본다.
+drop function if exists public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer);
+
 create or replace function public.member_raid_clear_count(
   p_nickname text,
   p_password text,
@@ -602,7 +716,8 @@ create or replace function public.member_raid_clear_count(
   p_difficulty text,
   p_mode text,
   p_action text,
-  p_expected_count integer
+  p_expected_count integer,
+  p_party integer default 1
 )
 returns jsonb
 language plpgsql
@@ -621,7 +736,8 @@ begin
     return jsonb_build_object('error', verify_result);
   end if;
 
-  if p_action is null or p_action not in ('add', 'undo') or public._raid_weekly_limit(p_raid_name) = 0 then
+  if p_action is null or p_action not in ('add', 'undo') or public._raid_weekly_limit(p_raid_name) = 0
+     or p_party is null or p_party not between 1 and public._raid_max_parties() then
     return jsonb_build_object('error', 'bad_request');
   end if;
 
@@ -638,6 +754,7 @@ begin
   from public.raid_runs
   where week_start = p_week_start and day = p_day and time = p_time
     and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
+    and party = p_party
   for update;
 
   if run_row.id is null or run_row.rally_called_at is null then
@@ -680,17 +797,17 @@ begin
 end;
 $$;
 
-revoke execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer) from public;
-grant execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer) to anon, authenticated;
+revoke execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer, integer) from public;
+grant execute on function public.member_raid_clear_count(text, text, date, text, text, text, text, text, text, integer, integer) to anon, authenticated;
 
--- 이 기능 전에 클리어 O로 표시한 이번 주 기록을 클리어 1회로 옮긴다. (그때 기준대로 정원 전원. 한 번 옮긴 기록은 다시 바뀌지 않는다)
+-- 이 기능 전에 클리어 O로 표시한 이번 주 기록을 클리어 1회로 옮긴다. (그때 기준대로 그 파티 전원. 한 번 옮긴 기록은 다시 바뀌지 않는다)
 update public.raid_runs run
 set clear_log = jsonb_build_array(jsonb_build_object(
   'at', run.cleared_at,
   'by', run.cleared_by,
   'members', coalesce((
     select jsonb_agg(r.nickname)
-    from public._raid_slot_roster(run.week_start, run.day, run.time, run.raid_name, run.difficulty, run.mode) r
+    from public._raid_party_roster(run.week_start, run.day, run.time, run.raid_name, run.difficulty, run.mode, run.party) r
   ), '[]'::jsonb)
 ))
 where run.week_start = (public._current_week_start() at time zone 'Asia/Seoul')::date
@@ -703,6 +820,9 @@ where run.week_start = (public._current_week_start() at time zone 'Asia/Seoul'):
 --    p_field: 'cleared' (예전 'departed'는 준비로 바뀌어 받지 않는다), p_value: 'O' | 'X' | null(표시 지우기)
 --    반환값: { "run": {...}, "notified": true|false }
 --            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_gathered' | 'clear_count_only' }
+--    p_party: 1 | 2 (그 시간대의 몇 번째 파티인지). 예전 화면은 보내지 않아 1파티로 본다.
+drop function if exists public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text);
+
 create or replace function public.member_set_raid_run_status(
   p_nickname text,
   p_password text,
@@ -713,7 +833,8 @@ create or replace function public.member_set_raid_run_status(
   p_difficulty text,
   p_mode text,
   p_field text,
-  p_value text
+  p_value text,
+  p_party integer default 1
 )
 returns jsonb
 language plpgsql
@@ -725,7 +846,7 @@ declare
   verify_result text;
   run_row public.raid_runs;
   previous_value text;
-  run_title text := format('%s · %s · %s', p_raid_name, p_difficulty, p_mode);
+  run_title text;
   members_text text;
   payload jsonb;
   notified boolean := false;
@@ -738,7 +859,8 @@ begin
 
   if p_field is distinct from 'cleared'
      or (p_value is not null and p_value not in ('O', 'X'))
-     or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null then
+     or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null
+     or p_party is null or p_party not between 1 and public._raid_max_parties() then
     return jsonb_build_object('error', 'bad_request');
   end if;
 
@@ -755,11 +877,14 @@ begin
   from public.raid_runs
   where week_start = p_week_start and day = p_day and time = p_time
     and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
+    and party = p_party
   for update;
 
   if run_row.id is null or run_row.rally_called_at is null then
     return jsonb_build_object('error', 'not_gathered');
   end if;
+
+  run_title := public._raid_run_title(run_row);
 
   -- 호출 뒤에 체크하지 않은 사람이 투표를 지워 모두 모인 상태가 됐을 수 있으니 한 번 더 본다.
   if run_row.gathered_at is null and public._raid_run_all_gathered(run_row) then
@@ -789,7 +914,7 @@ begin
 
   update public.raid_runs
   set cleared = p_value,
-      -- 클리어한 사람: 출발한 사람. (아무도 없으면 정원 전원)
+      -- 클리어한 사람: 출발한 사람. (아무도 없으면 그 파티 전원)
       clear_log = case when p_value = 'O' then jsonb_build_array(jsonb_build_object(
         'at', now(),
         'by', nickname_value,
@@ -805,7 +930,7 @@ begin
           ),
           (
             select jsonb_agg(r.nickname)
-            from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) r
+            from public._raid_party_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode, p_party) r
           ),
           '[]'::jsonb
         )
@@ -854,21 +979,25 @@ begin
 end;
 $$;
 
-revoke execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text) from public;
-grant execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text) to anon, authenticated;
+revoke execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text, integer) from public;
+grant execute on function public.member_set_raid_run_status(text, text, date, text, text, text, text, text, text, text, integer) to anon, authenticated;
 
 -- 5. 준비 확인 / 준비 완료
 --    p_action: 'call'(호출, 호출한 사람은 자동 체크) | 'check' | 'uncheck' | 'cancel'(호출 취소)
 --              | 'remind'(준비 확인 중에 디스코드로 한 번 더 알림)
 --              | 'start'(아직 준비 안 한 사람을 기다리지 않고 전원 준비로 넘어감)
 --              | 'members'(시작한 뒤 출발 인원 고치기)
---    p_members: 'start' · 'members'에서 실제로 출발하는 사람. 그 시간대 신청자(대기 포함) 중에서 정원까지.
+--    p_members: 'start' · 'members'에서 실제로 출발하는 사람. 그 시간대 신청자(대기 포함) 중에서 한 파티 정원까지.
 --               'start'에서 비우면 지금까지 준비 완료한 사람 그대로 시작한다.
+--    p_party: 1 | 2 (그 시간대의 몇 번째 파티인지). 예전 화면은 보내지 않아 1파티로 본다.
+--             다른 파티 인원은 이 파티의 준비 확인 · 준비 완료를 누를 수 없고, 다른 파티로 이미 출발한 사람은 고를 수 없다.
 --    반환값: { "run": {...}, "notified": true|false }
 --            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant'
 --                            | 'already_called' | 'not_called' | 'already_gathered' | 'not_gathered' | 'notify_limit'
---                            | 'no_members'(아무도 안 고름) | 'too_many_members'(정원 초과) }
+--                            | 'no_members'(아무도 안 고름) | 'too_many_members'(정원 초과)
+--                            | 'other_party'(다른 파티 인원) | 'in_other_party'(다른 파티로 이미 출발한 사람을 고름) }
 drop function if exists public.member_raid_rally(text, text, date, text, text, text, text, text, text);
+drop function if exists public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[]);
 
 create or replace function public.member_raid_rally(
   p_nickname text,
@@ -880,7 +1009,8 @@ create or replace function public.member_raid_rally(
   p_difficulty text,
   p_mode text,
   p_action text,
-  p_members text[] default null
+  p_members text[] default null,
+  p_party integer default 1
 )
 returns jsonb
 language plpgsql
@@ -891,7 +1021,7 @@ declare
   nickname_value text := btrim(p_nickname);
   verify_result text;
   run_row public.raid_runs;
-  run_title text := format('%s · %s · %s', p_raid_name, p_difficulty, p_mode);
+  run_title text;
   member_count integer;
   ready_count integer;
   members_text text;
@@ -911,7 +1041,8 @@ begin
 
   if p_action not in ('call', 'check', 'uncheck', 'cancel', 'remind', 'start', 'members')
      or (p_action = 'members' and p_members is null)
-     or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null then
+     or array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null
+     or p_party is null or p_party not between 1 and public._raid_max_parties() then
     return jsonb_build_object('error', 'bad_request');
   end if;
 
@@ -921,6 +1052,19 @@ begin
     where v.nickname = nickname_value
   ) then
     return jsonb_build_object('error', 'not_participant');
+  end if;
+
+  -- 다른 파티에 든 사람은 이 파티의 준비 확인을 시작하거나 준비 완료를 누를 수 없다. (대기자는 어느 파티든 누를 수 있다)
+  if p_action in ('call', 'check') and exists (
+    select 1
+    from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) r
+    where r.nickname = nickname_value
+  ) and not exists (
+    select 1
+    from public._raid_party_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode, p_party) r
+    where r.nickname = nickname_value
+  ) then
+    return jsonb_build_object('error', 'other_party');
   end if;
 
   -- 고른 출발 인원. 그 사이 신청을 지운 사람은 빠진다.
@@ -936,17 +1080,33 @@ begin
     if array_length(departing, 1) > public._raid_full_size(p_raid_name) then
       return jsonb_build_object('error', 'too_many_members');
     end if;
+
+    -- 한 사람이 두 파티로 출발하면 클리어가 두 번 차감되므로 막는다.
+    if exists (
+      select 1
+      from public.raid_runs o
+      where o.week_start = p_week_start and o.day = p_day and o.time = p_time
+        and o.raid_name = p_raid_name and o.difficulty = p_difficulty and o.mode = p_mode
+        and o.party <> p_party
+        and o.gathered_at is not null
+        and o.rally_checkins && departing
+    ) then
+      return jsonb_build_object('error', 'in_other_party');
+    end if;
   end if;
 
-  insert into public.raid_runs (week_start, day, time, raid_name, difficulty, mode)
-  values (p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode)
-  on conflict (week_start, day, time, raid_name, difficulty, mode) do nothing;
+  insert into public.raid_runs (week_start, day, time, raid_name, difficulty, mode, party)
+  values (p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode, p_party)
+  on conflict (week_start, day, time, raid_name, difficulty, mode, party) do nothing;
 
   select * into run_row
   from public.raid_runs
   where week_start = p_week_start and day = p_day and time = p_time
     and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
+    and party = p_party
   for update;
+
+  run_title := public._raid_run_title(run_row);
 
   if p_action = 'call' then
     if run_row.rally_called_at is not null then
@@ -1044,7 +1204,7 @@ begin
     just_gathered := true;
   end if;
 
-  -- 이 시간대 정원에 든 인원 (리딩 가능자 먼저, ★ 표시)
+  -- 이 파티에 든 인원 (리딩 가능자 먼저, ★ 표시)
   select
     count(*),
     count(*) filter (where s.nickname = any(run_row.rally_checkins)),
@@ -1052,7 +1212,7 @@ begin
     string_agg(s.nickname, ', ' order by s.nickname) filter (where s.lead_ready = 'O'),
     string_agg(s.nickname, ', ' order by s.nickname) filter (where not (s.nickname = any(run_row.rally_checkins)))
   into member_count, ready_count, members_text, leaders_text, waiting_text
-  from public._raid_slot_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) s;
+  from public._raid_party_roster(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode, p_party) s;
 
   -- '이 인원으로 시작' 알림에는 정원 전체가 아니라 실제로 출발하는 사람을 적는다.
   if p_action = 'start' then
@@ -1065,7 +1225,7 @@ begin
     where v.nickname = any(run_row.rally_checkins);
   end if;
 
-  -- 정원을 넘어 대기 중인 인원
+  -- 정원(2파티까지)을 넘어 대기 중인 인원
   select string_agg(v.nickname, ', ' order by v.nickname)
   into overflow_text
   from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
@@ -1143,8 +1303,8 @@ begin
 end;
 $$;
 
-revoke execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[]) from public;
-grant execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[]) to anon, authenticated;
+revoke execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[], integer) from public;
+grant execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[], integer) to anon, authenticated;
 
 notify pgrst, 'reload schema';
 
@@ -1173,7 +1333,7 @@ notify pgrst, 'reload schema';
 -- update public.app_settings set value = '' where key = 'discord_webhook_url';
 
 -- [4] 이번 주 준비 / 클리어 기록 보기
--- select day, time, raid_name, difficulty, mode,
+-- select day, time, raid_name, difficulty, mode, party,
 --        rally_called_by, rally_checkins, gathered_at is not null as 전원준비,
 --        cleared, cleared_by,
 --        rally_notify_count as 확인알림횟수,
@@ -1181,14 +1341,15 @@ notify pgrst, 'reload schema';
 --        cleared_notified_at is not null as 클리어알림
 -- from public.raid_runs
 -- where week_start = (current_date - ((extract(isodow from current_date)::int + 4) % 7))
--- order by array_position(array['수', '목', '금', '토', '일', '월', '화'], day), time;
+-- order by array_position(array['수', '목', '금', '토', '일', '월', '화'], day), time, party;
 
 -- [5] 테스트로 누른 시간대 기록 지우기
 --     기록과 알림 여부가 함께 초기화되므로, 다시 호출하면 알림이 또 간다.
 -- delete from public.raid_runs
 -- where week_start = (current_date - ((extract(isodow from current_date)::int + 4) % 7))
 --   and day = '수' and time = '21:00'
---   and raid_name = '무스펠' and difficulty = '보통' and mode = '트라이';
+--   and raid_name = '무스펠' and difficulty = '보통' and mode = '트라이'
+--   and party = 1;
 
 -- [7] 준비 확인이 끝까지 가는 비율 (이 인원으로 시작을 넣은 효과 확인용)
 -- select week_start,

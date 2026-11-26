@@ -34,6 +34,8 @@ const resultMessages = {
   already_gathered: '이미 전원 준비가 되어 준비를 취소할 수 없어요. 필요하면 준비 확인을 취소해 주세요.',
   no_members: '출발할 사람을 한 명 이상 골라 주세요.',
   too_many_members: '정원보다 많이 골랐어요. 실제로 가는 사람만 골라 주세요.',
+  other_party: '다른 파티에 든 사람은 이 파티의 준비 확인을 누를 수 없어요. 내 파티 줄에서 눌러 주세요.',
+  in_other_party: '다른 파티로 이미 출발한 사람이 있어요. 그 사람을 빼고 골라 주세요.',
   clear_changed: '그 사이 다른 사람이 클리어 횟수를 바꿨어요. 지금 횟수를 확인하고 다시 눌러 주세요.',
   no_entries_left: '출발한 사람 중 횟수가 남은 사람이 없어요. 출발 인원을 확인해 주세요.',
   clear_count_only: '클리어를 여러 번 기록한 시간대예요. 되돌리기로 1회씩 빼 주세요.',
@@ -265,6 +267,9 @@ export function unlinkMemberAlt(nickname, password, altNickname) {
   return callRpc('member_unlink_alt', { p_nickname: nickname, p_password: password, p_alt_nickname: altNickname })
 }
 
+// 2파티 기록만 파티 번호를 보낸다. 1파티는 보내지 않아 파티 칸이 생기기 전의 DB 함수로도 그대로 동작한다.
+const partyParam = (run) => ((run.party ?? 1) > 1 ? { p_party: run.party } : {})
+
 // 시간대별 클리어 표시 (supabase_raid_runs.sql). field: 'cleared', value: 'O' | 'X' | null
 // O로 바뀌면 DB가 디스코드 웹후크로 알림을 보낸다. 반환값: { run, notified } 또는 { error }
 export function setRaidRunStatus(nickname, password, run, field, value) {
@@ -279,6 +284,7 @@ export function setRaidRunStatus(nickname, password, run, field, value) {
     p_mode: run.mode,
     p_field: field,
     p_value: value,
+    ...partyParam(run),
   })
 }
 
@@ -297,6 +303,7 @@ export function setRaidClearCount(nickname, password, run, action, expectedCount
     p_mode: run.mode,
     p_action: action,
     p_expected_count: expectedCount,
+    ...partyParam(run),
   })
 }
 
@@ -326,5 +333,6 @@ export function setRaidRally(nickname, password, run, action, members = null) {
     p_mode: run.mode,
     p_action: action,
     ...(members ? { p_members: members } : {}),
+    ...partyParam(run),
   })
 }

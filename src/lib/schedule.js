@@ -51,8 +51,49 @@ export function isSinglePartyRaid(raidLabel) {
   return getRaidFullSize(raidLabel) <= PARTY_SIZE
 }
 
+// 한 시간대에 꾸릴 수 있는 파티 수. 정원을 넘으면 2파티(10인 레이드는 2공대)를 꾸리고, 그보다 많으면 대기다.
+// DB의 _raid_max_parties와 같은 값이어야 한다.
+export const MAX_PARTIES = 2
+
+// 한 시간대에 대기 없이 들어갈 수 있는 인원 (기본 20명, 초월 10명)
+export function getRaidSlotCapacity(raidLabel) {
+  return getRaidFullSize(raidLabel) * MAX_PARTIES
+}
+
+// 파티 이름: 10인 레이드는 "1공대" · "2공대", 초월(5인 1파티)은 "1파티" · "2파티". (DB의 _raid_party_label과 같다)
+export function getPartyGroupLabel(raidLabel, party) {
+  return `${party}${isSinglePartyRaid(raidLabel) ? '파티' : '공대'}`
+}
+
+// 신청 순서로 정렬된 인원을 파티로 나눈다. 앞의 fullSize명이 1파티, 그다음 fullSize명이 2파티, 나머지는 대기다.
+// groups: [{ party: 1, members }, { party: 2, members }] (2파티는 정원을 넘었을 때만 있다)
+export function splitSlotParties(people, fullSize = RAID_FULL_SIZE) {
+  const groups = Array.from({ length: MAX_PARTIES }, (_, index) => ({
+    party: index + 1,
+    members: people.slice(index * fullSize, (index + 1) * fullSize),
+  })).filter((group) => group.party === 1 || group.members.length > 0)
+
+  return { groups, waiting: people.slice(fullSize * MAX_PARTIES) }
+}
+
+// 그 사람이 든 파티 번호. 대기면 0, 신청하지 않았으면 null.
+export function getSlotPartyNumber(people, nickname, fullSize = RAID_FULL_SIZE) {
+  const index = people.findIndex((person) => person.nickname === nickname)
+
+  if (index < 0) {
+    return null
+  }
+
+  return index < fullSize * MAX_PARTIES ? Math.floor(index / fullSize) + 1 : 0
+}
+
+// 그 파티의 인원 (party: 1 | 2)
+export function getPartyMembers(people, fullSize, party = 1) {
+  return people.slice((party - 1) * fullSize, party * fullSize)
+}
+
 // 한 시간대의 클리어 기록 목록 [{ at, by, members }]. 클리어할 때 남긴 명단(clearLog)을 쓴다.
-// 명단을 남기기 전의 클리어 O는 정원(먼저 신청한 getRaidFullSize명) 전원이 1회 클리어한 것으로 본다.
+// 명단을 남기기 전의 클리어 O는 그 파티 전원(1파티는 먼저 신청한 getRaidFullSize명)이 1회 클리어한 것으로 본다.
 // getSlotPeople(run): 그 시간대 · 레이드 조합의 신청 인원 (신청 순서대로)
 export function getRunClears(run, getSlotPeople) {
   if (run?.clearLog?.length) {
@@ -63,7 +104,7 @@ export function getRunClears(run, getSlotPeople) {
     return []
   }
 
-  const roster = getSlotPeople(run).slice(0, getRaidFullSize(run.raidName)).map((person) => person.nickname)
+  const roster = getPartyMembers(getSlotPeople(run), getRaidFullSize(run.raidName), run.party ?? 1).map((person) => person.nickname)
   return [{ at: null, by: run.clearedBy ?? null, members: [...new Set(roster)] }]
 }
 
@@ -428,10 +469,11 @@ export function formatTimeLabel(time) {
   return time === '00:00' ? '24:00' : time
 }
 
-// 인원 표시: 정원까지는 "7/10", 넘으면 "10/10 +3" (fullSize: 그 레이드 정원)
+// 인원 표시: 한 파티 정원까지는 "7/10", 넘으면 2파티까지 세어 "13/20", 그보다 많으면 "20/20 +3" (fullSize: 그 레이드 정원)
 export function formatHeadcount(count, fullSize = RAID_FULL_SIZE) {
-  const overflow = count - fullSize
-  return `${Math.min(count, fullSize)}/${fullSize}${overflow > 0 ? ` +${overflow}` : ''}`
+  const capacity = fullSize * Math.min(MAX_PARTIES, Math.max(1, Math.ceil(count / fullSize)))
+  const overflow = count - capacity
+  return `${Math.min(count, capacity)}/${capacity}${overflow > 0 ? ` +${overflow}` : ''}`
 }
 
 export function buildEmptyDayTimeSelection() {
@@ -826,8 +868,9 @@ export function formatDateKey(date) {
   return `${date.getFullYear()}-${month}-${day}`
 }
 
+// 기록 한 건의 키. 같은 시간대 · 레이드 조합도 파티(1 | 2)마다 기록이 따로 있다.
 export function getRaidRunKey(run) {
-  return [run.weekStart, run.day, run.time, run.raidName, run.difficulty, run.mode].join('|')
+  return [run.weekStart, run.day, run.time, run.raidName, run.difficulty, run.mode, run.party ?? 1].join('|')
 }
 
 export function normalizeRaidRun(entry) {
@@ -842,6 +885,8 @@ export function normalizeRaidRun(entry) {
     raidName: entry.raid_name ?? entry.raidName,
     difficulty: entry.difficulty,
     mode: entry.mode,
+    // 그 시간대의 몇 번째 파티 기록인지 (파티 칸이 생기기 전 기록은 1파티)
+    party: Number(entry.party ?? 1) || 1,
     // 준비: 호출한 사람 · 시각, 체크한 닉네임, 모두 모인 시각
     rallyCalledBy: entry.rally_called_by ?? entry.rallyCalledBy ?? null,
     rallyCalledAt: entry.rally_called_at ?? entry.rallyCalledAt ?? null,

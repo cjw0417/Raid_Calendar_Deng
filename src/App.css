@@ -5845,3 +5845,43 @@ input::placeholder {
 .party-split.is-single {
   grid-template-columns: minmax(0, 1fr);
 }
+
+/* 정원을 넘어 2파티(10인 레이드는 2공대)로 나뉜 시간대: 파티마다 묶고 이름표를 붙인다. */
+.party-block + .party-block {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line-faint);
+}
+
+.party-block-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--accent-line);
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.day-raid-run-row.has-party {
+  align-items: center;
+}
+
+.day-raid-party-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-faint);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.day-raid-party-tag.is-mine {
+  border-color: var(--accent-line);
+  color: var(--accent-line);
+}
+
+.day-raid-party-label {
+  color: var(--accent-line);
+}

@@ -47,8 +47,9 @@ const sched = (nickname, i, sel, extra = {}) => ({
   ...extra,
 })
 
-// 금 21:00에 12명: 신청 순서는 레기온원1이 가장 먼저. 목록 순서는 일부러 뒤집어 둔다.
-const crowd = Array.from({ length: 12 }, (_, i) => sched(i === 0 ? '일곱글자닉네임' : `레기온원${i + 1}`, i, { 금: ['21:00'] }, {
+// 금 21:00에 22명: 신청 순서는 레기온원1이 가장 먼저. 목록 순서는 일부러 뒤집어 둔다.
+// 앞의 10명이 1공대, 그다음 10명이 2공대, 21 · 22번째는 대기다.
+const crowd = Array.from({ length: 22 },(_, i) => sched(i === 0 ? '일곱글자닉네임' : `레기온원${i + 1}`, i, { 금: ['21:00'] }, {
   slotSignedAt: { '금|21:00': `2026-12-23T1${Math.floor(i / 10)}:${String(i).padStart(2, '0')}:00+09:00` },
   updatedAt: `2026-12-23T19:${String(59 - i).padStart(2, '0')}:00+09:00`,
 })).reverse()
@@ -241,9 +242,15 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await pcTab(page, '파티')
   check('PC 탭: 파티를 누르면 주간 표만 보임', [await page.locator('.day-raid-summary-panel').isVisible(), await page.locator('.calendar-grid').isVisible()], [false, true])
 
-  // 1. 정원/대기
-  const waitingText = await page.locator('[id="calendar-slot-금-21:00"] .party-waiting').innerText()
-  check('#1 늦게 신청한 사람이 대기', waitingText, '대기 2명: 레기온원11, 레기온원12')
+  // 1. 정원/2공대/대기
+  const fridayCell = page.locator('[id="calendar-slot-금-21:00"]')
+  check('#1 정원을 넘으면 2공대를 따로 보여 줌', await fridayCell.locator('.party-block-label').allInnerTexts(), ['1공대', '2공대'])
+  check('#1 공대마다 A/B 5명씩', await fridayCell.locator('.party-column').evaluateAll((cols) => cols.map((c) => c.querySelectorAll('.time-member-pill').length)), [5, 5, 5, 5])
+  const secondPartyNames = await fridayCell.locator('.party-block').nth(1).locator('.member-name-wrap > span:first-child').allInnerTexts()
+  check('#1 11~20번째가 2공대', secondPartyNames.sort(), Array.from({ length: 10 }, (_, i) => `레기온원${i + 11}`).sort())
+  const waitingText = await fridayCell.locator('.party-waiting').innerText()
+  check('#1 2공대까지 차면 늦게 신청한 사람이 대기', waitingText, '대기 2명: 레기온원21, 레기온원22')
+  check('#1 정원을 안 넘으면 공대 이름 없음', await page.locator('[id="calendar-slot-토-21:00"] .party-block-label').count(), 0)
 
   // 17. 치유성 분산
   const satColumns = await page.locator('[id="calendar-slot-토-21:00"] .party-column').evaluateAll((columns) => columns.map((c) => c.querySelectorAll('img.nickname-icon[alt="치유성"]').length))
@@ -266,11 +273,11 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   const recommend = await page.locator('.recommend-card').evaluateAll((cards) => cards.map((c) => c.querySelector('.recommend-time').innerText + ' / ' + c.querySelector('.recommend-status').innerText))
   check('#16 정원 찬 시간이 1위, 출발 가능 표시', recommend[0], '금요일 21:00 / 출발 가능')
   check('#16 9명 시간이 리더 있는 소수 시간보다 위', recommend[1].startsWith('일요일 22:00'))
-  check('#16 정원 초과는 10/10 +대기 수로', (await page.locator('.recommend-meta').first().innerText()).startsWith('10/10 +2 · 리딩'))
+  check('#16 2공대까지 넘으면 20/20 +대기 수로', (await page.locator('.recommend-meta').first().innerText()).startsWith('20/20 +2 · 리딩'))
   // 추천을 누르면 파티 탭의 그 칸으로 간다.
   await page.locator('.recommend-card').first().click()
   check('#16 추천을 누르면 파티 탭으로', [await page.locator('.pc-tab.active').innerText(), await page.locator('[id="calendar-slot-금-21:00"]').isVisible()], ['파티', true])
-  check('표기 통일: 캘린더 칸', await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText(), '10/10 +2')
+  check('표기 통일: 캘린더 칸', await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText(), '20/20 +2')
 
   // 15. 내 다음 레이드
   const small = await page.locator('.next-raid-card small').first().innerText()
@@ -332,9 +339,10 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
   // 8. 대기 인원은 준비 집계에서 빠짐: 금 21:00 줄의 숫자
   const fridayRow = page.locator('[id="day-raid-row-금-무스펠 / 보통 / 트라이-21:00"]')
-  check('#1 요일별 현황 인원 표기', await fridayRow.locator('.day-raid-time-count').innerText(), '10/10 +2')
+  check('#1 요일별 현황 인원 표기', await fridayRow.locator('.day-raid-time-count').innerText(), '20/20 +2')
   await fridayRow.locator('.day-raid-time-toggle').click()
-  check('#1 펼치면 대기 구분', await fridayRow.locator('.day-raid-overflow-label').count(), 1)
+  check('#1 펼치면 1공대 · 2공대 · 대기 구분', await fridayRow.locator('.day-raid-overflow-label').allInnerTexts(), ['1공대 (10/10)', '2공대 (10/10)', '대기 (신청 순)'])
+  check('#1 2공대 사람은 1공대 다음에', (await fridayRow.locator('.day-raid-member .member-name-wrap > span:first-child').allInnerTexts()).slice(10, 20).sort(), Array.from({ length: 10 }, (_, i) => `레기온원${i + 11}`).sort())
 
   await page.screenshot({ path: join(out, 'pc-full.png'), fullPage: true })
   await context.close()
@@ -343,11 +351,34 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 // ---------- 15. 대기 인원의 카드 ----------
 {
   const me = sched(NICK, 0, { 수: ['21:00'] }, { id: 'mine', slotSignedAt: { '수|21:00': '2026-12-23T20:00:00+09:00' } })
-  const others = Array.from({ length: 10 }, (_, i) => sched(`선착${i + 1}`, i, { 수: ['21:00'] }, { slotSignedAt: { '수|21:00': `2026-12-23T1${i}:00:00+09:00` } }))
+  // 나보다 먼저 20명(1공대 + 2공대)이 신청했다.
+  const others = Array.from({ length: 20 }, (_, i) => sched(`선착${i + 1}`, i, { 수: ['21:00'] }, { slotSignedAt: { '수|21:00': `2026-12-23T10:${String(i).padStart(2, '0')}:00+09:00` } }))
   const { page, context } = await open(LOCAL, { schedules: [me, ...others] })
   await login(page)
   check('#15 내가 대기면 대기 번호 표시', (await page.locator('.next-raid-card small').first().innerText()).includes('대기 1번'))
   await context.close()
+
+  // 11번째로 신청했으면 2공대: 카드에 2공대 · A/B 파티를 함께 보여 주고, 준비 확인은 2공대 인원만 센다.
+  const second = await open(LOCAL, { schedules: [me, ...others.slice(0, 10)] })
+  await login(second.page)
+  const secondSmall = await second.page.locator('.next-raid-card small').first().innerText()
+  check('#15 2공대면 카드에 2공대 표시', /2공대 [AB]파티/.test(secondSmall))
+  check('#15 2공대 인원 표기', secondSmall.includes('11/20'))
+  // 요일별 현황: 1공대 줄은 내가 다룰 수 없어 숨기고, 내 공대(2공대) 줄에만 준비 확인 버튼
+  const row = second.page.locator('[id="day-raid-row-수-무스펠 / 보통 / 트라이-21:00"]')
+  check('#15 요일별 현황: 내 공대 줄만', [await row.locator('.day-raid-party-tag').allInnerTexts(), await row.locator('.day-raid-party-tag.is-mine').count()], [['2공대'], 1])
+  check('#15 요일별 현황: 시간 줄에 내 공대', await row.locator('.my-slot-badge').innerText(), '내 시간 · 2공대')
+  await second.page.locator('.next-raid-card .day-raid-rally-button').click()
+  check('#15 2공대 준비 확인 팝업에 2공대', (await second.page.locator('.save-confirm-modal .save-confirm-nickname').innerText()).includes('2공대'))
+  await second.page.locator('.save-confirm-modal .primary-button').click()
+  await second.page.locator('.next-raid-status').waitFor()
+  check('#15 2공대 준비는 2공대 인원만 (나 혼자라 바로 출발)', await second.page.locator('.next-raid-status').innerText(), '전원 준비 1/1')
+  const firstPartyRun = await second.page.evaluate(() => JSON.parse(localStorage.getItem('raid-calendar-raid-runs-v1')).map((run) => [run.party, run.rallyCheckins]))
+  check('#15 2공대 기록은 따로 저장', firstPartyRun, [[2, [NICK]]])
+  check('#15 접힌 줄 진행 표시 대신 내 공대 줄', await row.locator('.day-raid-run-label').first().innerText(), '전원 준비 1/1')
+  await row.locator('.day-raid-time-toggle').click()
+  await row.screenshot({ path: join(out, 'pc-two-party-row.png') })
+  await second.context.close()
 }
 
 // ---------- 11. 모바일 ----------
@@ -467,7 +498,7 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   check('모바일: 한 줄로 접기', await page.locator('.target-summary').count(), 1)
 
   // 시간 고르기
-  check('모바일: 그 시간 신청 인원 표시', await page.locator('[aria-label="금요일 21:00"] small').innerText(), '12명 신청')
+  check('모바일: 그 시간 신청 인원 표시', await page.locator('[aria-label="금요일 21:00"] small').innerText(), '22명 신청')
   await page.locator('[aria-label="금요일 21:00"]').tap()
   await page.locator('[aria-label="금요일 22:00"]').tap()
   check('모바일: 요일 탭에 고른 개수', await page.locator('.form-panel .mobile-day-tab.active .mobile-day-tab-count').innerText(), '2')
@@ -697,21 +728,25 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
 // ---------- 초월(에라쿠스 유적)은 5인 1파티 ----------
 {
-  // 토 21:00에 7명: 앞의 5명이 정원, 2명은 대기
-  const party = Array.from({ length: 7 }, (_, i) => sched(`초월원${i + 1}`, i, { 토: ['21:00'] }, {
+  // 토 21:00에 12명: 앞의 5명이 1파티, 그다음 5명이 2파티, 2명은 대기
+  const party = Array.from({ length: 12 }, (_, i) => sched(`초월원${i + 1}`, i, { 토: ['21:00'] }, {
     id: `p${i}`,
     raidName: '에라쿠스 유적',
     difficulty: '1단계',
-    slotSignedAt: { '토|21:00': `2026-12-23T10:0${i}:00+09:00` },
+    slotSignedAt: { '토|21:00': `2026-12-23T10:${String(i).padStart(2, '0')}:00+09:00` },
   }))
   const { page, context } = await open(LOCAL, { schedules: party })
   await login(page)
   await pickTarget(page, '에라쿠스 유적', '1단계', '트라이')
   const slot = page.locator('[id="calendar-slot-토-21:00"]')
-  check('초월: 캘린더 칸 인원은 5명 정원 기준', await slot.locator('.slot-count').innerText(), '5/5 +2')
-  check('초월: A/B 없이 한 파티', [await slot.locator('.party-column').count(), await slot.locator('.party-label').innerText()], [1, '파티'])
-  check('초월: 6번째부터 대기', await slot.locator('.party-waiting').innerText(), '대기 2명: 초월원6, 초월원7')
-  check('초월: 요일별 현황도 5명 정원', (await page.locator('.day-raid-time-count').allInnerTexts()).includes('5/5 +2'))
+  check('초월: 캘린더 칸 인원은 5명 × 2파티 기준', await slot.locator('.slot-count').innerText(), '10/10 +2')
+  check('초월: 파티마다 A/B 없이 한 줄 (열 이름 대신 1파티 · 2파티 이름표)', [await slot.locator('.party-column').count(), await slot.locator('.party-label').count()], [2, 0])
+  check('초월: 6번째부터 2파티', [
+    await slot.locator('.party-block-label').allInnerTexts(),
+    (await slot.locator('.party-block').nth(1).locator('.member-name-wrap > span:first-child').allInnerTexts()).sort(),
+  ], [['1파티', '2파티'], ['초월원10', '초월원6', '초월원7', '초월원8', '초월원9']])
+  check('초월: 11번째부터 대기', await slot.locator('.party-waiting').innerText(), '대기 2명: 초월원11, 초월원12')
+  check('초월: 요일별 현황도 5명 × 2파티', (await page.locator('.day-raid-time-count').allInnerTexts()).includes('10/10 +2'))
   check('초월: 추천 시간도 5명이면 출발 가능', (await page.locator('.recommend-status').allInnerTexts()).includes('출발 가능'))
   await pcTab(page, '파티')
   await slot.scrollIntoViewIfNeeded()
@@ -875,17 +910,18 @@ for (const device of ['pc', 'mobile']) {
   const row = page.locator('[id="day-raid-row-수-에라쿠스 유적 / 1단계 / 트라이-20:00"]')
   check(`${device} 겹침 정리: 출발 전에는 묻지 않음`, await page.locator('.overlap-notice').count(), 0)
   await press(row.locator('.day-raid-rally-button', { hasText: '이 인원으로 시작' }))
-  check(`${device} 시작: 대기자까지 고를 수 있고 준비한 사람이 골라져 있음`, [
+  // 6번째(대기6)는 2파티다. 1파티 출발 인원으로 대신 고를 수 있다.
+  check(`${device} 시작: 2파티 사람까지 고를 수 있고 준비한 사람이 골라져 있음`, [
     await page.locator('.depart-option').evaluateAll((items) => items.filter((item) => item.querySelector('input').checked).map((item) => item.querySelector('.depart-option-name').innerText)),
     await page.locator('.depart-option', { hasText: '대기6' }).locator('small').innerText(),
-  ], [[NICK, '출발2'], '대기'])
+  ], [[NICK, '출발2'], '2파티'])
   for (const name of ['출발3', '출발4', '출발5', '대기6']) await press(page.locator('.depart-option', { hasText: name }))
   check(`${device} 시작: 정원보다 많으면 못 시작`, [await page.locator('.save-confirm-modal .primary-button').isDisabled(), (await page.locator('.depart-count').innerText()).includes('정원보다 많아요')], [true, true])
   await press(page.locator('.depart-option', { hasText: '출발5' }))
   await press(page.locator('.save-confirm-modal .primary-button'))
   await row.locator('.day-raid-clear-count').waitFor()
-  check(`${device} 시작: 대기자를 넣어 5명 출발`, await row.locator('.day-raid-rally .day-raid-run-label').innerText(), '출발 5/5')
-  await press(row.locator('[aria-label="20:00 클리어 1회 추가"]'))
+  check(`${device} 시작: 2파티 사람을 넣어 5명 출발`, await row.locator('.day-raid-rally .day-raid-run-label').first().innerText(), '출발 5/5')
+  await press(row.locator('[aria-label="20:00 1파티 클리어 1회 추가"]'))
   await page.waitForFunction(() => document.querySelector('.day-raid-clear-count .day-raid-run-label')?.innerText === '클리어 1회')
   check(`${device} 시작: 고른 사람만 차감`, await row.locator('.day-raid-clear-entry').evaluateAll((items) => Object.fromEntries(items.map((item) => [item.firstChild.textContent, item.querySelector('.entries-left-badge').innerText]))), { [NICK]: '4/5', 출발2: '4/5', 출발3: '4/5', 출발4: '4/5', 출발5: '5/5', 대기6: '4/5' })
 
@@ -1057,26 +1093,26 @@ for (const device of ['pc', 'mobile']) {
 
 // ---------- 같은 시간에 다른 레이드 함께 신청 ----------
 {
-  // 금 20:00에 무스펠 어려움 반숙이상(10인, 11명)과 에라쿠스 1단계(5인, 6명). 같은 사람 6명이 양쪽에 있다.
-  const muspel = Array.from({ length: 11 }, (_, i) => sched(`겹침${i + 1}`, i, { 금: ['20:00'] }, {
+  // 금 20:00에 무스펠 어려움 반숙이상(10인 × 2공대, 21명)과 에라쿠스 1단계(5인 × 2파티, 11명). 같은 사람 11명이 양쪽에 있다.
+  const muspel = Array.from({ length: 21 }, (_, i) => sched(`겹침${i + 1}`, i, { 금: ['20:00'] }, {
     id: `dm${i}`, difficulty: '어려움', mode: '반숙이상',
     slotSignedAt: { '금|20:00': `2026-12-23T10:${String(i).padStart(2, '0')}:00+09:00` },
   }))
-  const erakus = Array.from({ length: 6 }, (_, i) => sched(`겹침${i + 1}`, i, { 금: ['20:00'] }, {
+  const erakus = Array.from({ length: 11 }, (_, i) => sched(`겹침${i + 1}`, i, { 금: ['20:00'] }, {
     id: `de${i}`, raidName: '에라쿠스 유적', difficulty: '1단계', mode: '트라이',
-    slotSignedAt: { '금|20:00': `2026-12-23T11:0${i}:00+09:00` },
+    slotSignedAt: { '금|20:00': `2026-12-23T11:${String(i).padStart(2, '0')}:00+09:00` },
   }))
   const { page, context } = await open(LOCAL, { schedules: [...muspel, ...erakus] })
   await login(page)
   const slot = page.locator('[id="calendar-slot-금-20:00"]')
   const names = () => slot.locator('.party-column .member-name-wrap > span:first-child').allInnerTexts().then((list) => list.sort())
 
-  // 무스펠: 10인 A/B 두 파티, 11번째는 대기
+  // 무스펠: 10인 A/B 두 파티 × 2공대, 21번째는 대기
   await pcTab(page, '파티')
   await pickTarget(page, '무스펠', '어려움', '반숙이상')
-  check('겹침: 무스펠은 10명 정원', await slot.locator('.slot-count').innerText(), '10/10 +1')
-  check('겹침: 무스펠은 A/B 5명씩', await slot.locator('.party-column').evaluateAll((cols) => cols.map((c) => c.querySelectorAll('.time-member-pill').length)), [5, 5])
-  check('겹침: 무스펠 대기', await slot.locator('.party-waiting').innerText(), '대기 1명: 겹침11')
+  check('겹침: 무스펠은 10명 × 2공대 정원', await slot.locator('.slot-count').innerText(), '20/20 +1')
+  check('겹침: 무스펠은 공대마다 A/B 5명씩', await slot.locator('.party-column').evaluateAll((cols) => cols.map((c) => c.querySelectorAll('.time-member-pill').length)), [5, 5, 5, 5])
+  check('겹침: 무스펠 대기', await slot.locator('.party-waiting').innerText(), '대기 1명: 겹침21')
   await slot.scrollIntoViewIfNeeded()
   await slot.screenshot({ path: join(out, 'pc-same-time-muspel.png') })
 
@@ -1085,9 +1121,9 @@ for (const device of ['pc', 'mobile']) {
   await page.locator('.member-actions .primary-button').click()
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((el) => el.innerText.includes('저장했어요')))
   await pickTarget(page, '에라쿠스 유적', '1단계', '트라이')
-  check('겹침: 에라쿠스는 5명 정원', await slot.locator('.slot-count').innerText(), '5/5 +1')
-  check('겹침: 에라쿠스는 한 파티 5명', [await slot.locator('.party-column').count(), await names()], [1, ['겹침1', '겹침2', '겹침3', '겹침4', '겹침5']])
-  check('겹침: 에라쿠스 대기', await slot.locator('.party-waiting').innerText(), '대기 1명: 겹침6')
+  check('겹침: 에라쿠스는 5명 × 2파티 정원', await slot.locator('.slot-count').innerText(), '10/10 +1')
+  check('겹침: 에라쿠스는 파티마다 한 줄 5명', [await slot.locator('.party-column').count(), await names()], [2, Array.from({ length: 10 }, (_, i) => `겹침${i + 1}`).sort()])
+  check('겹침: 에라쿠스 대기', await slot.locator('.party-waiting').innerText(), '대기 1명: 겹침11')
   await slot.screenshot({ path: join(out, 'pc-same-time-erakus.png') })
   check('겹침: 다른 레이드 신청이 있어도 바로 신청 버튼', await slot.locator('.join-slot-button').innerText(), '+ 대기 신청')
   const cell = page.locator('[aria-label="금요일 20:00"]')
@@ -1103,7 +1139,7 @@ for (const device of ['pc', 'mobile']) {
 
   // 요일별 현황 · 내 다음 레이드
   const dayCount = (key) => page.locator(`[id="day-raid-row-금-${key}-20:00"] .day-raid-time-count`).innerText()
-  check('겹침: 요일별 현황도 레이드별 정원', [await dayCount('무스펠 / 어려움 / 반숙이상'), await dayCount('에라쿠스 유적 / 1단계 / 트라이')], ['10/10 +2', '5/5 +2'])
+  check('겹침: 요일별 현황도 레이드별 정원', [await dayCount('무스펠 / 어려움 / 반숙이상'), await dayCount('에라쿠스 유적 / 1단계 / 트라이')], ['20/20 +2', '10/10 +2'])
   await pcTab(page, '이번 주')
   const card = await page.locator('.summary-strip').innerText()
   check('겹침: 내 다음 레이드에 둘 다', [card.includes('무스펠 어려움'), card.includes('에라쿠스 유적 1단계')], [true, true])
@@ -1253,8 +1289,8 @@ for (const device of ['pc', 'mobile']) {
   const payload = { ids: info.bindings.map((binding) => binding.id), data }
   const beforeCount = await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText()
   socketRoute.send(info.array ? JSON.stringify([info.joinRef, null, topic, 'postgres_changes', payload]) : JSON.stringify({ topic, event: 'postgres_changes', ref: null, payload }))
-  await page.waitForFunction(() => document.querySelector('[id="calendar-slot-금-21:00"] .slot-count')?.innerText === '10/10 +1', null, { timeout: 3000 }).catch(() => {})
-  check('#2 다른 사람의 삭제가 바로 반영', [beforeCount, await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText()], ['10/10 +2', '10/10 +1'])
+  await page.waitForFunction(() => document.querySelector('[id="calendar-slot-금-21:00"] .slot-count')?.innerText === '20/20 +1', null, { timeout: 3000 }).catch(() => {})
+  check('#2 다른 사람의 삭제가 바로 반영', [beforeCount, await page.locator('[id="calendar-slot-금-21:00"] .slot-count').innerText()], ['20/20 +2', '20/20 +1'])
 
   // 10. 돌아왔을 때 다시 불러오기 (30초 제한을 넘긴 뒤 focus)
   state.rows = state.rows.slice(0, 5)
@@ -1265,7 +1301,7 @@ for (const device of ['pc', 'mobile']) {
 
   // 대기에서 정원으로 올라오면 앱에서 바로 알림
   const promoteRows = [
-    ...Array.from({ length: 10 }, (_, i) => toRow(sched(`선착${i + 1}`, i, { 금: ['21:00'] }, { id: `p-${i}`, slotSignedAt: { '금|21:00': `2026-12-23T10:0${i}:00+09:00` } }))),
+    ...Array.from({ length: 20 }, (_, i) => toRow(sched(`선착${i + 1}`, i, { 금: ['21:00'] }, { id: `p-${i}`, slotSignedAt: { '금|21:00': `2026-12-23T10:${String(i).padStart(2, '0')}:00+09:00` } }))),
     toRow(sched(NICK, 1, { 금: ['21:00'] }, { id: 'p-me', slotSignedAt: { '금|21:00': '2026-12-23T11:00:00+09:00' } })),
   ]
   state.rows = promoteRows
@@ -1351,11 +1387,11 @@ for (const device of ['pc', 'mobile']) {
   const { page, context } = await open(LOCAL, { schedules: [first, ...crowd] })
   await login(page)
   const waiting = () => page.locator('[id="calendar-slot-금-21:00"] .party-waiting').innerText()
-  check('삭제 전 대기 3명', await waiting(), '대기 3명: 레기온원10, 레기온원11, 레기온원12')
+  check('삭제 전 대기 3명', await waiting(), '대기 3명: 레기온원20, 레기온원21, 레기온원22')
   await page.locator('.saved-schedule-delete').click()
   await page.locator('.toast-action', { hasText: '되돌리기' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].some((t) => t.innerText.includes('되돌렸어요')))
-  check('삭제를 되돌리면 원래 순서', await waiting(), '대기 3명: 레기온원10, 레기온원11, 레기온원12')
+  check('삭제를 되돌리면 원래 순서', await waiting(), '대기 3명: 레기온원20, 레기온원21, 레기온원22')
   await context.close()
 
   const ghost = { ...memberRow, id: 'ghost', nickname: '유령', days: ['토'], times: ['20:00'], attendance: '참', updatedAt: THIS_WEEK }

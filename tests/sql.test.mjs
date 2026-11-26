@@ -41,6 +41,12 @@ await db.exec(stripExtension(read('supabase_raid_runs.sql')))
 await db.exec(stripExtension(read('supabase_raid_runs.sql')))
 console.log('PASS SQL 파일 전체 실행 (raid_runs 2회)')
 
+// 파티 칸이 생기기 전의 운영 DB: 시간대 · 레이드 조합마다 한 줄인 고유 조건이 있다. 다시 실행하면 파티까지 넣은 조건으로 바뀌어야 한다.
+await db.exec(`alter table public.raid_runs add constraint raid_runs_week_start_day_time_raid_name_difficulty_mode_key unique (week_start, day, time, raid_name, difficulty, mode)`)
+await db.exec(stripExtension(read('supabase_raid_runs.sql')))
+check('예전 고유 조건(파티 없음)은 지움', (await rows(`select count(*)::int c from pg_constraint where conrelid='public.raid_runs'::regclass and contype='u'`))[0].c, 0)
+check('파티까지 넣은 고유 조건', (await rows(`select count(*)::int c from pg_indexes where tablename='raid_runs' and indexname='raid_runs_slot_party_key'`))[0].c, 1)
+
 check('새 설치의 초기 비밀번호는 임의 숫자 8자리', /^\d{8}$/.test((await rows(`select value from public.app_settings where key='initial_password'`))[0].value), true)
 
 await db.exec(`insert into public.members (nickname, days, times) values ('옛방식', '{금}', '{21:00}')`)
@@ -81,7 +87,17 @@ const rally = async (nick, action, day = '금', time = '21:00') => (await rows(
   `select public.member_raid_rally($1,'pw',$2::date,$3,$4,'무스펠','보통','트라이',$5) r`,
   [nick, weekStart, day, time, action],
 ))[0].r
-const roster = async (day = '금', time = '21:00') => (await rows(
+// 파티를 골라 준비 확인 (members: 출발 인원, 없으면 null)
+const rallyParty = async (nick, action, party, members = null, day = '금', time = '21:00') => (await rows(
+  `select public.member_raid_rally($1,'pw',$2::date,$3,$4,'무스펠','보통','트라이',$5,$6::text[],$7) r`,
+  [nick, weekStart, day, time, action, members, party],
+))[0].r
+// 1공대 인원 (먼저 신청한 10명). party 2는 그다음 10명.
+const roster = async (day = '금', time = '21:00', party = 1) => (await rows(
+  `select nickname from public._raid_party_roster($1::date,$2,$3,'무스펠','보통','트라이',$4)`, [weekStart, day, time, party],
+)).map((r) => r.nickname)
+// 2공대까지의 정원
+const slotRoster = async (day = '금', time = '21:00') => (await rows(
   `select nickname from public._raid_slot_roster($1::date,$2,$3,'무스펠','보통','트라이')`, [weekStart, day, time],
 )).map((r) => r.nickname)
 
@@ -91,7 +107,10 @@ for (const nick of names) {
   await db.exec(`select pg_sleep(0.002)`)
   await save(nick, selection(['금', '21:00']))
 }
-check('신청 순서대로 앞 10명이 정원', await roster(), names.slice(0, 10))
+check('신청 순서대로 앞 10명이 1공대', await roster(), names.slice(0, 10))
+check('11번째부터 2공대', await roster('금', '21:00', 2), names.slice(10))
+check('2공대까지 정원 (20명까지)', await slotRoster(), names)
+check('파티 번호는 1 · 2만', (await rows(`select count(*)::int c from public._raid_party_roster($1::date,'금','21:00','무스펠','보통','트라이',3)`, [weekStart]))[0].c, 0)
 
 const before = (await rows(`select slot_signed_at from public.raid_schedules where nickname='유저01'`))[0].slot_signed_at['금|21:00']
 await db.exec(`select pg_sleep(0.01)`)
@@ -99,11 +118,11 @@ const resaved = await save('유저01', selection(['금', '21:00'], ['토', '20:0
 const after = resaved.schedule.slot_signed_at
 check('다시 저장해도 기존 시간대 신청 시각 유지', after['금|21:00'], before)
 check('새로 넣은 시간대는 새 시각', after['토|20:00'] !== before && Boolean(after['토|20:00']), true)
-check('다시 저장해도 정원 순서 유지', await roster(), names.slice(0, 10))
+check('다시 저장해도 1공대 순서 유지', await roster(), names.slice(0, 10))
 
 const removed = await save('유저01', selection(['토', '20:00']))
 check('뺀 시간대는 신청 시각에서도 빠짐', Object.keys(removed.schedule.slot_signed_at), ['토|20:00'])
-check('1번이 빠지면 대기 1번이 정원으로', await roster(), names.slice(1, 11))
+check('1번이 빠지면 2공대 1번이 1공대로', await roster(), names.slice(1, 11))
 await save('유저01', selection(['금', '21:00'], ['토', '20:00']))
 check('뺐다가 1분 안에 다시 넣으면 원래 순서', await roster(), names.slice(0, 10))
 
@@ -121,7 +140,8 @@ await save('유저02', selection(['금', '21:00']))
 check('삭제를 되돌리면 원래 순서', (await roster())[0], '유저02')
 
 // 대기 → 정원 알림: 지난 시간은 알리지 않으므로 이번 주 마지막 날 밤 시간대로 확인한다.
-const promoteNames = Array.from({ length: 12 }, (_, i) => `승격${String(i + 1).padStart(2, '0')}`)
+// 2공대까지 20명이 정원이라 22명이 신청하면 21 · 22번째가 대기다.
+const promoteNames = Array.from({ length: 22 }, (_, i) => `승격${String(i + 1).padStart(2, '0')}`)
 const isLastHour = (await rows(`select (select public._current_week_start()) + interval '6 days 23 hours' <= now() as v`))[0].v
 if (isLastHour) {
   console.log('SKIP 대기 → 정원 알림: 화요일 23시 이후에는 미래 시간대가 없어 건너뜀')
@@ -133,21 +153,27 @@ if (isLastHour) {
     await save(nick, selection(['화', '23:00']))
   }
   let sent = await sentCount()
-  await save('승격12', selection(['화', '22:00']))
+  await save('승격22', selection(['화', '22:00']))
   check('대기자가 빠지면 알림 없음', await sentCount(), sent)
-  await save('승격12', selection(['화', '23:00']))
+  await save('승격22', selection(['화', '23:00']))
 
   sent = await sentCount()
   await rows(`select public.member_delete_schedule('승격03','pw','무스펠','보통','트라이')`)
   check('정원이 빠지면 알림 1건', await sentCount(), sent + 1)
   const promotedMessage = await lastSent()
   check('알림 제목', promotedMessage.embeds[0].title, '🎟 대기에서 정원으로')
-  check('올라온 사람이 알림에 있음', promotedMessage.embeds[0].description.endsWith('승격11'), true)
+  check('올라온 사람(21번째)이 알림에 있음', promotedMessage.embeds[0].description.endsWith('승격21'), true)
   check('알림의 시간대', promotedMessage.embeds[0].description.includes('(화) 23:00 · 무스펠 · 보통 · 트라이'), true)
 
-  await rows(`select public.member_delete_schedule('승격10','pw','무스펠','보통','트라이')`)
-  await rows(`select public.member_delete_schedule('승격11','pw','무스펠','보통','트라이')`)
-  await rows(`select public.member_delete_schedule('승격12','pw','무스펠','보통','트라이')`)
+  // 2공대에서 빠져도 대기 1번이 정원으로 올라온다.
+  sent = await sentCount()
+  await rows(`select public.member_delete_schedule('승격15','pw','무스펠','보통','트라이')`)
+  check('2공대가 빠지면 알림 1건', await sentCount(), sent + 1)
+  check('2공대로 올라온 사람이 알림에 있음', (await lastSent()).embeds[0].description.endsWith('승격22'), true)
+
+  for (const nick of ['승격19', '승격20', '승격21', '승격22']) {
+    await rows(`select public.member_delete_schedule($1,'pw','무스펠','보통','트라이')`, [nick])
+  }
   const afterDrop = await sentCount()
   await rows(`select public.member_delete_schedule('승격01','pw','무스펠','보통','트라이')`)
   check('대기자가 없으면 알림 없음', await sentCount(), afterDrop)
@@ -169,15 +195,18 @@ const oldUpdated = (await rows(`select updated_at from public.raid_schedules whe
 const legacy = await save('유저11', selection(['금', '21:00']))
 check('기록 없던 기존 행은 마지막 저장 시각을 신청 시각으로', new Date(legacy.schedule.slot_signed_at['금|21:00']).getTime(), new Date(oldUpdated).getTime())
 
-// 4. 준비 확인은 정원만 센다
+// 4. 준비 확인은 파티마다 그 파티 인원만 센다
 const current = await roster()
-const overflow = names.concat().filter((n) => !current.includes(n))
-check('대기 인원 있음', overflow.length > 0, true)
+const overflow = await roster('금', '21:00', 2)
+check('2공대 인원 있음', overflow.length > 0 && overflow.every((n) => !current.includes(n)), true)
+check('2공대 사람은 1공대 준비 확인을 시작할 수 없음', (await rally(overflow[0], 'call')).error, 'other_party')
 let result = await rally(current[0], 'call')
 check('호출 성공', result.error ?? 'ok', 'ok')
+check('호출 알림 제목에 1공대', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].title, '📣 준비 확인 | 무스펠 · 보통 · 트라이 · 1공대')
+check('2공대 사람은 1공대 준비 완료를 누를 수 없음', (await rally(overflow[0], 'check')).error, 'other_party')
 for (const nick of current.slice(1, 9)) await rally(nick, 'check')
-result = await rally(current[9], 'check').then(() => rows(`select gathered_at is not null g from public.raid_runs where day='금' and time='21:00'`))
-check('정원 10명이 다 누르면 대기 인원 없이도 전원 준비', result[0].g, true)
+result = await rally(current[9], 'check').then(() => rows(`select gathered_at is not null g from public.raid_runs where day='금' and time='21:00' and party=1`))
+check('1공대 10명이 다 누르면 2공대 없이도 전원 준비', result[0].g, true)
 
 const gatheredMsg = (await rows(`select body from net.sent order by id desc limit 1`))[0].body
 check('전원 준비 알림 제목', gatheredMsg.embeds[0].title.startsWith('✅ 전원 준비'), true)
@@ -185,6 +214,20 @@ check('전원 준비 알림 인원 문구', gatheredMsg.embeds[0].fields[0].valu
 
 result = await rows(`select public.member_set_raid_run_status($1,'pw',$2::date,'금','21:00','무스펠','보통','트라이','cleared','O') r`, [current[0], weekStart])
 check('전원 준비 뒤 클리어 표시', result[0].r.error ?? 'ok', 'ok')
+
+// 2공대는 따로 준비 확인 · 시작 · 클리어
+check('1공대 사람은 2공대 준비 확인을 시작할 수 없음', (await rallyParty(current[1], 'call', 2)).error, 'other_party')
+result = await rallyParty(overflow[0], 'call', 2)
+check('2공대 호출 성공 (1공대와 다른 기록)', [result.error ?? 'ok', result.run.party, result.run.rally_checkins], ['ok', 2, [overflow[0]]])
+check('2공대 호출 알림 제목', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].title, '📣 준비 확인 | 무스펠 · 보통 · 트라이 · 2공대')
+check('2공대 호출 알림 인원은 2공대만', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value, `${overflow.length}명`)
+check('1공대로 이미 출발한 사람은 2공대 출발 인원으로 못 고름', (await rallyParty(overflow[0], 'start', 2, [overflow[0], current[0]])).error, 'in_other_party')
+for (const nick of overflow.slice(1)) await rallyParty(nick, 'check', 2)
+check('2공대가 다 누르면 2공대 전원 준비', (await rows(`select gathered_at is not null g from public.raid_runs where day='금' and time='21:00' and party=2`))[0].g, true)
+check('2공대 클리어 전에는 클리어 기록 없음', (await rows(`select cleared from public.raid_runs where day='금' and time='21:00' and party=2`))[0].cleared, null)
+result = (await rows(`select public.member_set_raid_run_status($1,'pw',$2::date,'금','21:00','무스펠','보통','트라이','cleared','X',2) r`, [overflow[0], weekStart]))[0].r
+check('2공대만 실패(X)로 표시, 1공대는 그대로', [result.run.cleared, (await rows(`select cleared from public.raid_runs where day='금' and time='21:00' and party=1`))[0].cleared], ['X', 'O'])
+check('파티 번호가 틀리면 거절', (await rallyParty(overflow[0], 'check', 3)).error, 'bad_request')
 
 // 5. 이 인원으로 시작
 const sat = selection(['토', '21:00'])
@@ -222,8 +265,8 @@ const callMsgBefore = (await rows(`select count(*)::int c from net.sent`))[0].c
 await rally(current[0], 'call')
 const overflowMsg = (await rows(`select body from net.sent order by id desc limit 1`))[0].body
 check('호출 알림 전송', (await rows(`select count(*)::int c from net.sent`))[0].c, callMsgBefore + 1)
-check('호출 알림에 대기 인원 표시', Boolean(overflowMsg.embeds[0].fields.find((f) => f.name.includes('대기'))), true)
-check('호출 알림 인원은 정원 기준', overflowMsg.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value, '10명')
+check('2공대 인원은 대기로 안 나옴', Boolean(overflowMsg.embeds[0].fields.find((f) => f.name.includes('대기'))), false)
+check('호출 알림 인원은 1공대 기준', overflowMsg.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value, '10명')
 
 // 7. 자동 알림
 const reminderNames = Array.from({ length: 10 }, (_, i) => `알림${i + 1}`)
@@ -252,6 +295,19 @@ const beforeCalled = await reminderSentCount()
 check('이미 준비 확인을 시작했으면 알림 없음', await remind('22:40'), 0)
 check('자동 알림 추가 전송 없음', await reminderSentCount(), beforeCalled)
 
+// 2공대까지 찬 시간대는 파티마다 따로 알린다. (기준 3명: 1공대 10명, 2공대 3명)
+await db.exec(`update public.app_settings set value='3' where key='reminder_min_members'`)
+for (let i = 1; i <= 13; i += 1) {
+  await db.exec(`select pg_sleep(0.002)`)
+  await save(`두공대${i}`, selection(['일', '22:00']))
+}
+const beforeTwoParty = await reminderSentCount()
+check('2공대 시간대는 파티마다 자동 알림', await remind('21:40'), 2)
+check('파티마다 제목과 인원', (await rows(`select body from net.sent where id > $1 order by id`, [beforeTwoParty])).map((r) => [
+  r.body.embeds[0].title,
+  r.body.embeds[0].fields.find((f) => f.name.includes('인원') && f.inline)?.value,
+]), [['⏰ 곧 시작 | 무스펠 · 보통 · 트라이 · 1공대', '10명'], ['⏰ 곧 시작 | 무스펠 · 보통 · 트라이 · 2공대', '3명']])
+
 // 8. 초월(에라쿠스 유적)은 5인 1파티라 정원이 5명
 check('레이드별 정원', (await rows(`select public._raid_full_size('에라쿠스 유적') a, public._raid_full_size('무스펠') b`))[0], { a: 5, b: 10 })
 const erakusNames = Array.from({ length: 7 }, (_, i) => `초월${i + 1}`)
@@ -259,21 +315,32 @@ for (const nick of erakusNames) {
   await db.exec(`select pg_sleep(0.002)`)
   await save(nick, selection(['화', '22:00']), { raid: '에라쿠스 유적', difficulty: '1단계' })
 }
-const erakusRoster = async () => (await rows(
-  `select nickname from public._raid_slot_roster($1::date,'화','22:00','에라쿠스 유적','1단계','트라이')`, [weekStart],
+const erakusRoster = async (party = 1) => (await rows(
+  `select nickname from public._raid_party_roster($1::date,'화','22:00','에라쿠스 유적','1단계','트라이',$2)`, [weekStart, party],
 )).map((r) => r.nickname)
-check('초월은 먼저 신청한 5명이 정원', await erakusRoster(), erakusNames.slice(0, 5))
+check('초월은 먼저 신청한 5명이 1파티', await erakusRoster(), erakusNames.slice(0, 5))
+check('초월 6번째부터 2파티', await erakusRoster(2), erakusNames.slice(5))
 
 // 대기 → 정원 알림은 지난 시간대에는 가지 않으므로, 화요일 22시가 지났으면 건너뛴다.
 const isPastErakusSlot = (await rows(`select (select public._current_week_start()) + interval '6 days 22 hours' <= now() as v`))[0].v
 if (isPastErakusSlot) {
   console.log('SKIP 초월 대기 → 정원 알림: 화요일 22시 이후라 건너뜀')
 } else {
-  const sentBefore = await reminderSentCount()
+  let sentBefore = await reminderSentCount()
   await rows(`select public.member_delete_schedule('초월2','pw','에라쿠스 유적','1단계','트라이')`)
-  check('초월 정원이 빠지면 대기 1번(6번째)이 정원으로', await erakusRoster(), ['초월1', '초월3', '초월4', '초월5', '초월6'])
+  check('초월 1파티가 빠지면 2파티 1번(6번째)이 1파티로', await erakusRoster(), ['초월1', '초월3', '초월4', '초월5', '초월6'])
+  check('대기자가 없으면 승격 알림 없음', await reminderSentCount(), sentBefore)
+
+  // 2파티까지 10명이 차고 11번째부터 대기
+  for (const nick of ['초월8', '초월9', '초월10', '초월11', '초월12']) {
+    await db.exec(`select pg_sleep(0.002)`)
+    await save(nick, selection(['화', '22:00']), { raid: '에라쿠스 유적', difficulty: '1단계' })
+  }
+  sentBefore = await reminderSentCount()
+  await rows(`select public.member_delete_schedule('초월3','pw','에라쿠스 유적','1단계','트라이')`)
+  check('초월 정원이 빠지면 대기 1번(11번째)이 2파티로', await erakusRoster(2), ['초월8', '초월9', '초월10', '초월11', '초월12'])
   check('초월 승격 알림 1건', await reminderSentCount(), sentBefore + 1)
-  check('초월 승격 알림에 6번째', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].description.endsWith('초월6'), true)
+  check('초월 승격 알림에 11번째', (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].description.endsWith('초월12'), true)
 }
 
 // 자동 알림 기준(10명)이 정원보다 크면 정원(5명)이 차도 알린다.
@@ -354,7 +421,7 @@ await erRally('원정1', 'start')
 
 let sentBase = await sentTotal()
 let cleared = await erClear('원정1', 'add', 0)
-check('출발한 사람만 차감 (준비 안 한 원정5 · 대기 원정6 제외)', cleared.run.clear_log.map((e) => e.members), [['원정1', '원정2', '원정3', '원정4']])
+check('출발한 사람만 차감 (준비 안 한 원정5 · 2파티 원정6 제외)', cleared.run.clear_log.map((e) => e.members), [['원정1', '원정2', '원정3', '원정4']])
 check('첫 클리어로 4/5', await lefts('원정1', '원정4', '원정5', '원정6'), [4, 4, 5, 5])
 check('횟수가 남은 클리어는 디스코드 알림 없음', [await sentTotal(), cleared.notified], [sentBase, false])
 check('동시에 누르면 한 번만', [(await erClear('원정2', 'add', 0)).error, (await left('원정1'))], ['clear_changed', 4])
@@ -376,7 +443,7 @@ sentBase = await sentTotal()
 cleared = await erClear('원정2', 'add', 2)
 check('1/5에서 클리어하면 디스코드 1건', [await sentTotal(), cleared.notified], [sentBase + 1, true])
 let embed = await lastEmbed()
-check('알림 제목', embed.title, '🏆 이번 주 5회 완료! | 에라쿠스 유적 · 3단계 · 트라이')
+check('알림 제목 (2파티가 있는 시간대라 1파티 표시)', embed.title, '🏆 이번 주 5회 완료! | 에라쿠스 유적 · 3단계 · 트라이 · 1파티')
 check('알림 일정 · 이번 출발 클리어 횟수', [embed.description.includes('(목) 22:00'), embed.description.includes('클리어 3회')], [true, true])
 check('알림에 다 쓴 사람', embed.fields[0].value, '원정1')
 check('알림에 참여 인원과 남은 횟수', embed.fields[1].value, '원정1 0/5, 원정2 2/5, 원정3 2/5, 원정4 2/5, 원정5 4/5')
@@ -398,7 +465,7 @@ check('예전 화면에서 여러 번 센 클리어를 한꺼번에 못 지움',
 await erRally('원정1', 'cancel')
 check('준비 확인을 취소하면 차감도 되돌아감', await lefts('원정1', '원정2', '원정5'), [3, 5, 5])
 
-// 출발 인원 고르기: 대기자를 대신 넣거나 시작한 뒤에 고친다. (원정2는 신청을 지워 원정6이 정원. 새로 대기자 추가)
+// 출발 인원 고르기: 다른 파티 사람을 대신 넣거나 시작한 뒤에 고친다. (원정2는 신청을 지워 원정6이 1파티. 원정7은 2파티)
 await save('원정7', selection([ER[0], ER[1]]), { raid: ER[2], difficulty: ER[3] })
 await erRally('원정1', 'call')
 check('시작 전에는 출발 인원을 못 고침', (await erDepart('원정1', 'members', ['원정1'])).error, 'not_gathered')
@@ -407,12 +474,22 @@ check('신청하지 않은 사람만 고르면 시작 불가', (await erDepart('
 check('정원보다 많이 고르면 시작 불가', (await erDepart('원정1', 'start', ['원정1', '원정3', '원정4', '원정5', '원정6', '원정7'])).error, 'too_many_members')
 check('신청 안 한 사람은 출발 인원을 못 고름', (await erDepart('외부인', 'start', ['원정1'])).error, 'not_participant')
 const departRun = await erDepart('원정1', 'start', ['원정3', '원정7', '외부인'])
-check('고른 사람으로 시작 (신청자만, 대기자 포함)', [departRun.run.rally_checkins, Boolean(departRun.run.gathered_at)], [['원정3', '원정7'], true])
-check('고른 사람만 차감 (대기자 원정7 포함, 호출한 원정1 제외)', (await erClear('원정1', 'add', 0)).run.clear_log[0].members, ['원정3', '원정7'])
+check('고른 사람으로 시작 (신청자만, 2파티 사람 포함)', [departRun.run.rally_checkins, Boolean(departRun.run.gathered_at)], [['원정3', '원정7'], true])
+check('고른 사람만 차감 (2파티 원정7 포함, 호출한 원정1 제외)', (await erClear('원정1', 'add', 0)).run.clear_log[0].members, ['원정3', '원정7'])
 check('시작한 뒤 출발 인원 고치기', (await erDepart('원정3', 'members', ['원정3', '원정4'])).run.rally_checkins, ['원정3', '원정4'])
 check('고친 뒤의 클리어는 새 인원으로, 앞 기록은 그대로', (await erClear('원정1', 'add', 1)).run.clear_log.map((e) => e.members), [['원정3', '원정7'], ['원정3', '원정4']])
 check('인원 고치기는 알림 없음', (await erDepart('원정3', 'members', ['원정3'])).notified, false)
-check('옛 9개 인자 함수는 남지 않음', (await rows(`select count(*)::int c from pg_proc where proname='member_raid_rally'`))[0].c, 1)
+check('옛 9 · 10개 인자 함수는 남지 않음', (await rows(`select count(*)::int c from pg_proc where proname in ('member_raid_rally', 'member_raid_clear_count', 'member_set_raid_run_status')`))[0].c, 3)
+// 1파티로 출발한 원정7은 2파티에서 다시 출발할 수 없다. (클리어가 두 번 차감되지 않게)
+const party2Call = (await rows(`select public.member_raid_rally('원정7','pw',$1::date,$2,$3,$4,$5,$6,'call',null,2) r`, [weekStart, ...ER]))[0].r
+check('2파티 호출 (원정7 혼자라 바로 전원 준비)', [party2Call.run.party, Boolean(party2Call.run.gathered_at)], [2, true])
+check('다른 파티로 이미 출발한 사람은 못 고름', (await rows(`select public.member_raid_rally('원정7','pw',$1::date,$2,$3,$4,$5,$6,'members',array['원정3','원정7'],2) r`, [weekStart, ...ER]))[0].r.error, 'in_other_party')
+const party2Clear = (await rows(`select public.member_raid_clear_count('원정7','pw',$1::date,$2,$3,$4,$5,$6,'add',0,2) r`, [weekStart, ...ER]))[0].r
+check('2파티 클리어는 1파티와 따로 셈', [
+  party2Clear.run.clear_log.map((e) => e.members),
+  (await rows(`select jsonb_array_length(clear_log) n from public.raid_runs where day=$1 and time=$2 and raid_name=$3 and party=1`, ER.slice(0, 3)))[0].n,
+], [[['원정7']], 2])
+await rows(`select public.member_raid_rally('원정7','pw',$1::date,$2,$3,$4,$5,$6,'cancel',null,2) r`, [weekStart, ...ER])
 await erRally('원정1', 'cancel')
 
 // 예전 화면(O/X)과의 호환
@@ -427,7 +504,7 @@ check('실패(X)는 차감 없음', [(await erStatus('원정1', 'X')).run.cleare
 await db.exec(`update public.raid_runs set cleared='O', cleared_by='원정1', cleared_at=now(), clear_log='[]' where day='목' and time='22:00'`)
 await db.exec(stripExtension(read('supabase_raid_runs.sql')))
 await db.exec(stripExtension(read('supabase_raid_runs.sql')))
-check('예전 O 기록은 정원 전원 1회로 한 번만 옮김', (await rows(`select clear_log from public.raid_runs where day='목' and time='22:00'`))[0].clear_log.map((e) => e.members.length), [5])
+check('예전 O 기록은 그 파티 전원 1회로 한 번만 옮김', (await rows(`select party, clear_log from public.raid_runs where day='목' and time='22:00' order by party`)).map((r) => [r.party, r.clear_log.map((e) => e.members)]), [[1, [['원정1', '원정3', '원정4', '원정5', '원정6']]], [2, [['원정7']]]])
 
 // 다른 레이드는 O/X 그대로, 명단만 남김
 await save('무스1', selection(['목', '23:00']))
@@ -438,7 +515,7 @@ sentBase = await sentTotal()
 const muspelClear = await rows(`select public.member_set_raid_run_status('무스1','pw',$1::date,'목','23:00','무스펠','보통','트라이','cleared','O') r`, [weekStart])
 check('다른 레이드: 준비한 사람을 클리어 명단에', muspelClear[0].r.run.clear_log.map((e) => e.members), [['무스1']])
 check('다른 레이드: 클리어 알림은 그대로 1건', [await sentTotal(), (await lastEmbed()).title], [sentBase + 1, '🏆 클리어! | 무스펠 · 보통 · 트라이'])
-check('클리어 내부 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_clear_add(uuid,text)','execute') a, has_function_privilege('anon','public._raid_entries_left(date,text,text)','execute') b, has_function_privilege('anon','public.member_raid_clear_count(text,text,date,text,text,text,text,text,text,integer)','execute') c`))[0], { a: false, b: false, c: true })
+check('클리어 내부 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_clear_add(uuid,text)','execute') a, has_function_privilege('anon','public._raid_entries_left(date,text,text)','execute') b, has_function_privilege('anon','public.member_raid_clear_count(text,text,date,text,text,text,text,text,text,integer,integer)','execute') c, has_function_privilege('anon','public._raid_party_roster(date,text,text,text,text,text,integer)','execute') d`))[0], { a: false, b: false, c: true, d: false })
 
 await db.exec(`
   create or replace function public._verify_member_password(p_nickname text, p_password text, p_allow_initial boolean)
