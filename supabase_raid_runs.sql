@@ -10,6 +10,8 @@
 --     그보다 늦은 사람은 대기다. (최대 2파티, _raid_max_parties) 시간을 다시 저장해도 이미 있던 시간대의 순서는 그대로다.
 --     시간대를 뺐다가 1분 안에 다시 넣으면(삭제 되돌리기 포함) 원래 순서로 돌아가고, 그 뒤에는 맨 뒤로 간다.
 --   - 준비 확인 · 전원 준비 · 출발 인원 · 클리어는 파티마다 따로 기록한다. (raid_runs.party: 1 | 2)
+--   - 그 시간대 리딩 가능자는 사람을 끌어서 공대(파티) · A/B · 대기를 직접 옮길 수 있다. (raid_slot_layouts)
+--     옮긴 배치가 준비 확인 · 클리어 인원에도 그대로 쓰인다.
 --   - 정원(2파티까지)에 든 사람이 시간대를 빼면 대기 1번이 정원으로 올라가고 디스코드로 알린다.
 --   - 준비: 한 명이 "준비 확인"을 누르면 디스코드로 알림이 가고, 정원에 든 사람이 각자 "준비 완료"를 누른다.
 --     정원에 든 사람이 모두 준비 완료를 누르면 전원 준비가 되고 디스코드로 완료 알림이 간다.
@@ -114,12 +116,36 @@ on public.raid_runs
 for select
 using (true);
 
--- 실시간 반영 (다른 사람이 바꾼 신청 · 준비 · 클리어 표시가 바로 보이도록)
+-- 직접 배치: 그 시간대 리딩 가능자가 끌어서 옮긴 공대(파티) · A/B 자리. 주마다 따로다.
+-- layout: { "닉네임": "1A" | "1B" | "2A" | "2B" | "W" } (1 · 2 = 공대(파티), A · B = 파티 안의 자리, W = 대기. 초월은 A만 쓴다)
+-- 여기 없는 사람(새로 신청한 사람 등)은 신청순으로 빈자리를 채운다. 비어 있으면({}) 모두 신청순 자동 배치다.
+create table if not exists public.raid_slot_layouts (
+  week_start date not null,
+  day text not null,
+  time text not null,
+  raid_name text not null,
+  difficulty text not null,
+  mode text not null,
+  layout jsonb not null default '{}',
+  updated_by text,
+  updated_at timestamptz not null default now(),
+  primary key (week_start, day, time, raid_name, difficulty, mode)
+);
+
+alter table public.raid_slot_layouts enable row level security;
+
+drop policy if exists "Anyone can read raid slot layouts" on public.raid_slot_layouts;
+create policy "Anyone can read raid slot layouts"
+on public.raid_slot_layouts
+for select
+using (true);
+
+-- 실시간 반영 (다른 사람이 바꾼 신청 · 준비 · 클리어 표시 · 직접 배치가 바로 보이도록)
 do $$
 declare
   table_name_value text;
 begin
-  foreach table_name_value in array array['raid_runs', 'raid_schedules', 'members'] loop
+  foreach table_name_value in array array['raid_runs', 'raid_schedules', 'members', 'raid_slot_layouts'] loop
     if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
        and not exists (
          select 1 from pg_publication_tables
@@ -330,9 +356,86 @@ $$;
 
 revoke execute on function public._raid_weekly_limit(text) from public, anon, authenticated;
 
--- 그 시간대의 정원(2파티까지): 먼저 신청한 _raid_full_size × _raid_max_parties명(기본 20명, 초월 10명). 나머지는 대기다.
--- 앱의 정렬(compareSlotPeople)과 같은 기준이어야 한다.
--- 앱은 밀리초까지만 다루므로 여기서도 밀리초로 맞추고, 같으면 닉네임 순(코드값)으로 정한다.
+-- 그 시간대 신청자마다 든 공대(파티): 1 | 2, 대기는 0. 앱의 arrangeSlot(src/lib/schedule.js)과 같은 기준이어야 한다.
+--   1. 직접 배치(raid_slot_layouts)에 공대가 정해진 사람은 그 공대에 둔다. (공대마다 신청순으로 _raid_full_size명까지)
+--      W로 정해진 사람은 대기다.
+--   2. 나머지는 신청순으로 1공대 빈자리, 2공대 빈자리를 채우고, 그래도 남으면 대기다.
+--   직접 배치가 없으면 먼저 신청한 _raid_full_size명이 1공대, 그다음 _raid_full_size명이 2공대다.
+-- is_pinned: 직접 배치로 자리가 정해졌는지, unpinned_rank: 직접 배치되지 않은 사람 사이의 신청 순서
+-- 신청 순서는 앱의 정렬(compareSlotPeople)과 같다. 앱은 밀리초까지만 다루므로 여기서도 밀리초로 맞추고, 같으면 닉네임 순(코드값)으로 정한다.
+create or replace function public._raid_slot_assignment(
+  p_week_start date,
+  p_day text,
+  p_time text,
+  p_raid_name text,
+  p_difficulty text,
+  p_mode text
+)
+returns table (nickname text, party integer, is_pinned boolean, unpinned_rank bigint, sort_order bigint)
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  with layout as (
+    select coalesce((
+      select l.layout
+      from public.raid_slot_layouts l
+      where l.week_start = p_week_start and l.day = p_day and l.time = p_time
+        and l.raid_name = p_raid_name and l.difficulty = p_difficulty and l.mode = p_mode
+    ), '{}'::jsonb) as value
+  ),
+  voters as (
+    select
+      v.nickname,
+      row_number() over (
+        order by
+          date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
+          v.nickname collate "C"
+      ) as sort_order,
+      case left(layout.value ->> v.nickname, 1) when '1' then 1 when '2' then 2 when 'W' then 0 end as pin
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    cross join layout
+  ),
+  placed as (
+    select
+      vo.nickname,
+      vo.sort_order,
+      case
+        when vo.pin = 0 then 0
+        when vo.pin in (1, 2)
+          and row_number() over (partition by vo.pin order by vo.sort_order) <= public._raid_full_size(p_raid_name) then vo.pin
+      end as pinned_party
+    from voters vo
+  ),
+  ranked as (
+    select
+      pl.*,
+      case when pl.pinned_party is null then row_number() over (partition by pl.pinned_party is null order by pl.sort_order) end as unpinned_rank
+    from placed pl
+  ),
+  free as (
+    select
+      public._raid_full_size(p_raid_name) - count(*) filter (where pl.pinned_party = 1) as free1,
+      public._raid_full_size(p_raid_name) - count(*) filter (where pl.pinned_party = 2) as free2
+    from placed pl
+  )
+  select
+    r.nickname,
+    coalesce(
+      r.pinned_party,
+      case when r.unpinned_rank <= f.free1 then 1 when r.unpinned_rank <= f.free1 + f.free2 then 2 else 0 end
+    )::integer,
+    r.pinned_party is not null,
+    r.unpinned_rank,
+    r.sort_order
+  from ranked r
+  cross join free f;
+$$;
+
+revoke execute on function public._raid_slot_assignment(date, text, text, text, text, text) from public, anon, authenticated;
+
+-- 그 시간대의 정원(2파티까지): 1공대 · 2공대에 든 사람 (기본 20명, 초월 10명까지). 나머지는 대기다.
 create or replace function public._raid_slot_roster(
   p_week_start date,
   p_day text,
@@ -349,16 +452,14 @@ set search_path = public, extensions
 as $$
   select v.*
   from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
-  order by
-    date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
-    v.nickname collate "C"
-  limit public._raid_full_size(p_raid_name) * public._raid_max_parties();
+  join public._raid_slot_assignment(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) a on a.nickname = v.nickname
+  where a.party in (1, 2)
+  order by a.party, a.sort_order;
 $$;
 
 revoke execute on function public._raid_slot_roster(date, text, text, text, text, text) from public, anon, authenticated;
 
--- 한 파티의 인원: 1파티는 정원 안의 앞쪽 _raid_full_size명, 2파티는 그다음 _raid_full_size명.
--- 준비 확인 · 전원 준비 · 클리어는 이 인원을 기준으로 파티마다 따로 센다.
+-- 한 공대(파티)의 인원. 준비 확인 · 전원 준비 · 클리어는 이 인원을 기준으로 공대마다 따로 센다.
 create or replace function public._raid_party_roster(
   p_week_start date,
   p_day text,
@@ -376,12 +477,10 @@ set search_path = public, extensions
 as $$
   select v.*
   from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+  join public._raid_slot_assignment(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) a on a.nickname = v.nickname
   where p_party between 1 and public._raid_max_parties()
-  order by
-    date_trunc('milliseconds', coalesce((v.slot_signed_at ->> (p_day || '|' || p_time))::timestamptz, v.updated_at)),
-    v.nickname collate "C"
-  offset (p_party - 1) * public._raid_full_size(p_raid_name)
-  limit public._raid_full_size(p_raid_name);
+    and a.party = p_party
+  order by a.sort_order;
 $$;
 
 revoke execute on function public._raid_party_roster(date, text, text, text, text, text, integer) from public, anon, authenticated;
@@ -403,6 +502,9 @@ declare
   slot_start timestamptz;
   tenth public.raid_schedules;
   tenth_order timestamptz;
+  last_rank bigint;
+  free_total bigint;
+  removed_pin text;
   promoted_lines text[] := '{}';
 begin
   if old.attendance <> '참' or old.updated_at < public._current_week_start() then
@@ -441,19 +543,42 @@ begin
       continue;
     end if;
 
-    -- 뺀 뒤의 정원 마지막 사람(2파티까지 20번째, 초월은 10번째)이 뺀 사람보다 늦게 신청했으면, 그 사람이 대기에서 올라온 것이다.
-    select * into tenth
-    from public._raid_slot_roster(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode)
-    offset public._raid_full_size(old.raid_name) * public._raid_max_parties() - 1
-    limit 1;
+    -- 뺀 뒤에 직접 배치되지 않은 사람이 남은 정원 자리를 꽉 채웠으면, 그 마지막 사람이 대기에서 올라왔을 수 있다.
+    -- (직접 배치가 없으면 2파티까지 20번째, 초월은 10번째 사람)
+    select
+      max(a.unpinned_rank) filter (where a.party in (1, 2) and not a.is_pinned),
+      public._raid_full_size(old.raid_name) * public._raid_max_parties() - count(*) filter (where a.is_pinned and a.party in (1, 2))
+    into last_rank, free_total
+    from public._raid_slot_assignment(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode) a;
+
+    if last_rank is null or last_rank <> free_total then
+      continue;
+    end if;
+
+    select v.* into tenth
+    from public._raid_slot_voters(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode) v
+    join public._raid_slot_assignment(week_start_value, removed.slot_day, removed.slot_time, old.raid_name, old.difficulty, old.mode) a
+      on a.nickname = v.nickname
+    where not a.is_pinned and a.unpinned_rank = last_rank;
 
     if tenth.nickname is null then
       continue;
     end if;
 
+    -- 뺀 사람이 정원 안에 있었는지: 직접 배치로 공대에 있었으면 정원, 대기(W)로 정해져 있었으면 아니다.
+    -- 직접 배치가 없었으면 올라온 사람보다 먼저 신청했을 때 정원이었다.
+    select l.layout ->> old.nickname into removed_pin
+    from public.raid_slot_layouts l
+    where l.week_start = week_start_value and l.day = removed.slot_day and l.time = removed.slot_time
+      and l.raid_name = old.raid_name and l.difficulty = old.difficulty and l.mode = old.mode;
+
     tenth_order := date_trunc('milliseconds', coalesce((tenth.slot_signed_at ->> slot_key_value)::timestamptz, tenth.updated_at));
 
-    if removed_order < tenth_order or (removed_order = tenth_order and (old.nickname collate "C") < (tenth.nickname collate "C")) then
+    if coalesce(removed_pin, '') <> 'W' and (
+      left(coalesce(removed_pin, ''), 1) in ('1', '2')
+      or removed_order < tenth_order
+      or (removed_order = tenth_order and (old.nickname collate "C") < (tenth.nickname collate "C"))
+    ) then
       promoted_lines := promoted_lines || format(
         '%s월 %s일 (%s) %s · %s · %s · %s: %s',
         extract(month from slot_date),
@@ -1305,6 +1430,114 @@ $$;
 
 revoke execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[], integer) from public;
 grant execute on function public.member_raid_rally(text, text, date, text, text, text, text, text, text, text[], integer) to anon, authenticated;
+
+-- 6. 직접 배치 저장
+--    그 시간대에 리딩 가능(O)으로 신청한 사람만 바꿀 수 있다.
+--    p_layout: { "닉네임": "1A" | "1B" | "2A" | "2B" | "W" }. 비우면({} 또는 null) 신청순 자동 배치로 돌아간다.
+--              그 시간대 신청자가 아닌 닉네임은 버린다. 초월(5인 1파티)은 "1A" · "2A" · "W"만 쓴다.
+--    반환값: { "layout": {...} }
+--            또는 { "error": 'invalid' | 'locked' | 'bad_request' | 'not_participant' | 'not_leader' | 'party_full' }
+create or replace function public.member_save_slot_layout(
+  p_nickname text,
+  p_password text,
+  p_week_start date,
+  p_day text,
+  p_time text,
+  p_raid_name text,
+  p_difficulty text,
+  p_mode text,
+  p_layout jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  nickname_value text := btrim(p_nickname);
+  verify_result text;
+  full_size integer := public._raid_full_size(p_raid_name);
+  clean_layout jsonb;
+  layout_row public.raid_slot_layouts;
+begin
+  verify_result := public._verify_member_password(nickname_value, p_password, false);
+
+  if verify_result <> 'ok' then
+    return jsonb_build_object('error', verify_result);
+  end if;
+
+  if array_position(array['수', '목', '금', '토', '일', '월', '화'], p_day) is null
+     or (p_layout is not null and jsonb_typeof(p_layout) <> 'object') then
+    return jsonb_build_object('error', 'bad_request');
+  end if;
+
+  if not exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = nickname_value
+  ) then
+    return jsonb_build_object('error', 'not_participant');
+  end if;
+
+  if not exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = nickname_value and v.lead_ready = 'O'
+  ) then
+    return jsonb_build_object('error', 'not_leader');
+  end if;
+
+  -- 자리 값 확인 (초월은 B 자리가 없다)
+  if exists (
+    select 1
+    from jsonb_each(coalesce(p_layout, '{}'::jsonb)) e
+    where jsonb_typeof(e.value) <> 'string'
+       or (e.value #>> '{}') not in ('1A', '1B', '2A', '2B', 'W')
+       or (full_size <= 5 and (e.value #>> '{}') in ('1B', '2B'))
+  ) then
+    return jsonb_build_object('error', 'bad_request');
+  end if;
+
+  -- 그 시간대 신청자만 남긴다.
+  select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) into clean_layout
+  from jsonb_each(coalesce(p_layout, '{}'::jsonb)) e
+  where exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = e.key
+  );
+
+  -- 공대마다 정원까지, 10인 레이드는 A · B 파티마다 5명까지
+  if exists (
+    select 1
+    from jsonb_each_text(clean_layout) e
+    where e.value <> 'W'
+    group by left(e.value, 1)
+    having count(*) > full_size
+  ) or (full_size > 5 and exists (
+    select 1
+    from jsonb_each_text(clean_layout) e
+    where e.value <> 'W'
+    group by e.value
+    having count(*) > 5
+  )) then
+    return jsonb_build_object('error', 'party_full');
+  end if;
+
+  insert into public.raid_slot_layouts (week_start, day, time, raid_name, difficulty, mode, layout, updated_by, updated_at)
+  values (p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode, clean_layout, nickname_value, now())
+  on conflict (week_start, day, time, raid_name, difficulty, mode) do update
+  set layout = excluded.layout,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at
+  returning * into layout_row;
+
+  return jsonb_build_object('layout', to_jsonb(layout_row));
+end;
+$$;
+
+revoke execute on function public.member_save_slot_layout(text, text, date, text, text, text, text, text, jsonb) from public;
+grant execute on function public.member_save_slot_layout(text, text, date, text, text, text, text, text, jsonb) to anon, authenticated;
 
 notify pgrst, 'reload schema';
 

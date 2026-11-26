@@ -18,6 +18,7 @@ import {
   setRaidRally,
   setRaidRunStatus,
   setRaidClearCount,
+  saveSlotLayout,
   unlinkMemberAlt,
 } from './lib/memberApi'
 import {
@@ -42,9 +43,15 @@ import {
   getRaidFullSize,
   getRaidSlotCapacity,
   getPartyGroupLabel,
-  getPartyMembers,
-  getSlotPartyNumber,
-  splitSlotParties,
+  arrangeSlot,
+  formatArrangementHeadcount,
+  getArrangedMembers,
+  buildMovedLayout,
+  getSlotLayoutKey,
+  normalizeSlotLayout,
+  upsertSlotLayout,
+  loadLocalSlotLayouts,
+  saveLocalSlotLayouts,
   isSinglePartyRaid,
   RAID_ONGOING_MS,
   RALLY_OPEN_BEFORE_MS,
@@ -92,7 +99,6 @@ import {
   getDayTimePairs,
   getSlotStartDate,
   formatTimeUntil,
-  buildBalancedParties,
   compareSchedules,
   buildDefaultMember,
   normalizeMemberRecord,
@@ -268,6 +274,11 @@ function App() {
   // 횟수 제한 레이드(에라쿠스 주 5회)의 쓴 횟수 직접 조정 기록 (레기온 밖에서 쓴 횟수 등)
   const [entryAdjustments, setEntryAdjustments] = useState(() => (supabase ? [] : loadLocalEntryAdjustments()))
   const [isAdjustingEntries, setIsAdjustingEntries] = useState(false)
+  // 시간대별 직접 배치 (리딩 가능자가 끌어서 옮긴 공대 · A/B · 대기)
+  const [slotLayouts, setSlotLayouts] = useState(() => (supabase ? [] : loadLocalSlotLayouts()))
+  // 배치를 바꾸는 중인 칸 { key: 직접 배치 키, picked: 고른 닉네임 }. 모바일은 끌기 대신 눌러서 고르고 옮긴다.
+  const [arrangingSlot, setArrangingSlot] = useState(null)
+  const [savingLayoutKey, setSavingLayoutKey] = useState('')
   // 디스코드 알림이 가거나 기록이 지워지는 동작 전 확인 팝업 대상: { run, action: 'call' | 'cancel' | 'start' | 'members' | 'cleared' | 'clear-count', alreadyNotified }
   // 'start' · 'members'는 candidates(고를 수 있는 사람)와 picked(고른 닉네임)를 함께 둔다.
   const [pendingRunStatus, setPendingRunStatus] = useState(null)
@@ -467,6 +478,52 @@ function App() {
       saveLocalEntryAdjustments(entryAdjustments)
     }
   }, [entryAdjustments])
+
+  useEffect(() => {
+    if (!supabase) {
+      saveLocalSlotLayouts(slotLayouts)
+    }
+  }, [slotLayouts])
+
+  // 이번 주 직접 배치를 불러오고, 다른 사람이 바꾸면 바로 반영한다.
+  // SQL을 아직 실행하지 않아 표가 없으면 모두 신청순 자동 배치로 보인다. (구독 오류가 다른 구독에 번지지 않게 채널을 따로 둔다)
+  useEffect(() => {
+    if (!supabase) {
+      return undefined
+    }
+
+    let isMounted = true
+
+    supabase
+      .from('raid_slot_layouts')
+      .select('*')
+      .eq('week_start', weekStartKey)
+      .then(({ data, error }) => {
+        if (isMounted && !error && Array.isArray(data)) {
+          setSlotLayouts(data.map((entry) => normalizeSlotLayout(entry)).filter(Boolean))
+        }
+      })
+
+    const layoutChannel = supabase
+      .channel('raid-slot-layouts-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'raid_slot_layouts' },
+        (payload) => {
+          const next = normalizeSlotLayout(payload.new)
+
+          if (next?.weekStart === weekStartKey) {
+            setSlotLayouts((prev) => upsertSlotLayout(prev, next))
+          }
+        },
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      supabase.removeChannel(layoutChannel)
+    }
+  }, [weekStartKey, raidRunsReloadTick])
 
   // 화면에 보이는 지난 신청을 보관 목록에 모아 둔다.
   // 다시 등록해서 덮어쓰거나 지운 뒤에도 불러오기 목록에 남기기 위해서다. (DB에서는 트리거가 같은 일을 한다)
@@ -1126,6 +1183,19 @@ function App() {
     memberByRaidDateTime.get(`${run.day}-${run.time}`)?.[`${run.raidName} ${run.difficulty} ${run.mode}`] ?? []
   ), [memberByRaidDateTime])
 
+  // 이번 주 직접 배치 (getSlotLayoutKey → 기록)
+  const slotLayoutByKey = useMemo(
+    () => new Map(slotLayouts.filter((entry) => entry.weekStart === weekStartKey).map((entry) => [getSlotLayoutKey(entry), entry])),
+    [slotLayouts, weekStartKey],
+  )
+
+  // 그 시간대(이번 주)의 공대 · A/B · 대기 배치. 직접 배치가 있으면 반영한다. (DB의 _raid_slot_assignment와 같은 기준)
+  const getSlotArrangement = useCallback((slot) => arrangeSlot(
+    getRunPeople(slot),
+    getRaidFullSize(slot.raidName),
+    slotLayoutByKey.get(getSlotLayoutKey({ ...slot, weekStart: weekStartKey }))?.layout,
+  ), [getRunPeople, slotLayoutByKey, weekStartKey])
+
   // 횟수 제한 레이드(에라쿠스 유적 주 5회)의 이번 주 사용 횟수. 클리어할 때마다 남긴 명단으로 센다.
   const weeklyEntryCounts = useMemo(
     () => countWeeklyEntries(raidRuns, weekStartKey, getRunPeople),
@@ -1343,9 +1413,8 @@ function App() {
 
   useEffect(() => {
     const nextState = new Map(myUpcomingSlots.map((slot) => {
-      const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
       const key = [slot.nickname, slot.day, slot.time, slot.raidName, slot.difficulty, slot.mode].join('|')
-      return [key, { slot, isWaitlisted: people.slice(getRaidSlotCapacity(slot.raidName)).some((person) => person.nickname === slot.nickname) }]
+      return [key, { slot, isWaitlisted: getSlotArrangement(slot).partyOf.get(slot.nickname) === 0 }]
     }))
     const previousState = myWaitlistStateRef.current
 
@@ -1363,7 +1432,7 @@ function App() {
         )
       }
     })
-  }, [myUpcomingSlots, memberByRaidDateTime])
+  }, [myUpcomingSlots, getSlotArrangement])
 
   // 다른 사람이 클리어를 눌러 내 캐릭터 횟수가 차감되면 앱을 켜 둔 사람에게 바로 알려 준다. (내가 누른 것은 그때 안내한다)
   // 처음 불러온 기록은 알리지 않고, 보고 있던 기록에 클리어가 늘었을 때만 알린다.
@@ -2860,7 +2929,7 @@ function App() {
     const fullSize = getRaidFullSize(run.raidName)
     const voters = getRunPeople(run).map((person) => person.nickname)
     const departed = voters.filter((name) => current.rallyCheckins.includes(name)).slice(0, fullSize)
-    const partyRoster = getPartyMembers(voters, fullSize, run.party ?? 1)
+    const partyRoster = getArrangedMembers(getSlotArrangement(run), run.party ?? 1).map((person) => person.nickname)
     const clearLog = value === 'O' ? [{ at: new Date().toISOString(), by: nickname, members: departed.length > 0 ? departed : partyRoster }] : []
 
     setRaidRuns((prev) => upsertRaidRun(prev, { ...current, cleared: value, clearedBy: value ? nickname : null, clearLog }))
@@ -3190,8 +3259,9 @@ function App() {
             ))
             .flatMap((record) => record.rallyCheckins),
         )
+        const { partyOf } = getSlotArrangement(run)
         const getTag = (nickname) => {
-          const memberParty = getSlotPartyNumber(people, nickname, fullSize)
+          const memberParty = partyOf.get(nickname)
           return memberParty === party ? '' : memberParty === 0 ? '대기' : getPartyGroupLabel(run.raidName, memberParty)
         }
         pending.candidates = names
@@ -3521,19 +3591,20 @@ function App() {
   const myUpcomingSlotDetails = myUpcomingSlots.map((slot) => {
     const people = memberByRaidDateTime.get(`${slot.day}-${slot.time}`)?.[`${slot.raidName} ${slot.difficulty} ${slot.mode}`] ?? []
     const fullSize = getRaidFullSize(slot.raidName)
-    // 내가 든 파티(1 | 2)의 기록을 본다. 대기면 1파티 기록을 보여 준다.
-    const myParty = getSlotPartyNumber(people, slot.nickname, fullSize) ?? 1
+    // 내가 든 파티(1 | 2)의 기록을 본다. 대기면 1파티 기록을 보여 준다. (직접 배치를 반영)
+    const arrangement = getSlotArrangement(slot)
+    const myParty = arrangement.partyOf.get(slot.nickname) ?? 1
     const party = myParty || 1
     const run = { weekStart: weekStartKey, day: slot.day, time: slot.time, raidName: slot.raidName, difficulty: slot.difficulty, mode: slot.mode, party }
     const runKey = getRaidRunKey(run)
     const runRecord = raidRunByKey.get(runKey)
-    const partyMembers = getPartyMembers(people, fullSize, party)
-    const { partyA, partyB } = buildBalancedParties(partyMembers, fullSize)
+    const myGroup = arrangement.groups.find((group) => group.party === party)
+    const partyMembers = myGroup?.members ?? []
     const isInParty = (members) => members.some((person) => person.nickname === slot.nickname)
-    const waitingIndex = myParty === 0 ? people.slice(getRaidSlotCapacity(slot.raidName)).findIndex((person) => person.nickname === slot.nickname) : -1
+    const waitingIndex = arrangement.waiting.findIndex((person) => person.nickname === slot.nickname)
     // 2파티로 나뉜 시간대면 몇 번째 파티인지 붙인다. (10인 레이드는 "2공대 A파티", 초월은 "2파티")
-    const groupLabel = people.length > fullSize ? getPartyGroupLabel(slot.raidName, party) : ''
-    const abLabel = isSinglePartyRaid(slot.raidName) ? '' : isInParty(partyA) ? 'A파티' : isInParty(partyB) ? 'B파티' : ''
+    const groupLabel = arrangement.groups.length > 1 ? getPartyGroupLabel(slot.raidName, party) : ''
+    const abLabel = isSinglePartyRaid(slot.raidName) || !myGroup ? '' : isInParty(myGroup.partyA) ? 'A파티' : isInParty(myGroup.partyB) ? 'B파티' : ''
     // 준비 확인은 그 파티에 든 사람만 센다. (DB의 _raid_party_roster와 같은 기준)
     const voterNicknames = [...new Set(partyMembers.map((person) => person.nickname))]
     const rallyCheckins = runRecord?.rallyCheckins ?? []
@@ -3553,6 +3624,7 @@ function App() {
       isMeChecked: rallyCheckins.includes(slot.nickname),
       isWaitlisted: myParty === 0,
       fullSize,
+      headcountText: formatArrangementHeadcount(arrangement, fullSize),
       // 1파티 레이드(초월)는 A/B 구분이 없어 2파티로 나뉘었을 때만 파티 이름을 붙인다.
       partyLabel: myParty === 0 ? `대기 ${waitingIndex + 1}번` : [groupLabel, abLabel].filter(Boolean).join(' '),
       canCallRally: slot.startTime - currentTime.getTime() <= RALLY_OPEN_BEFORE_MS,
@@ -3902,6 +3974,81 @@ function App() {
   const getDepartLabel = (checkedCount, departedCount, rosterCount) => (
     `${checkedCount === rosterCount && departedCount === rosterCount ? '전원 준비' : '출발'} ${departedCount}/${rosterCount}`
   )
+
+  // 그 시간대에서 배치를 바꿀 수 있는 내 캐릭터: 그 시간대에 리딩 가능(O)으로 신청한 내 캐릭터(본캐 · 부캐). 없으면 ''.
+  const getSlotArranger = (people) => (
+    loggedInNickname ? people.find((person) => myCharacters.includes(person.nickname) && person.leadReady === 'O')?.nickname ?? '' : ''
+  )
+
+  // 직접 배치를 저장한다. 바로 보이게 먼저 바꾸고, 저장에 실패하면 되돌린다.
+  // Supabase 모드에서는 DB 함수가 리딩 가능자인지 · 자리가 남는지 한 번 더 확인한다.
+  const applySlotLayout = async (slot, layout, arrangerNickname, successMessage) => {
+    const next = {
+      weekStart: weekStartKey,
+      day: slot.day,
+      time: slot.time,
+      raidName: slot.raidName,
+      difficulty: slot.difficulty,
+      mode: slot.mode,
+      layout,
+      updatedBy: arrangerNickname,
+      updatedAt: new Date().toISOString(),
+    }
+    const key = getSlotLayoutKey(next)
+    const previous = slotLayoutByKey.get(key) ?? null
+    const revert = () => setSlotLayouts((prev) => (previous ? upsertSlotLayout(prev, previous) : prev.filter((entry) => getSlotLayoutKey(entry) !== key)))
+
+    setSlotLayouts((prev) => upsertSlotLayout(prev, next))
+
+    if (!supabase) {
+      showToast(successMessage, 'success', 'slot-layout')
+      return
+    }
+
+    setSavingLayoutKey(key)
+
+    let result
+
+    try {
+      result = await saveSlotLayout(arrangerNickname, sessionPassword, next, layout)
+    } catch (error) {
+      revert()
+      showToast(`배치를 저장하지 못했어요. (${error.message})`, 'error', 'slot-layout')
+      return
+    } finally {
+      setSavingLayoutKey('')
+    }
+
+    if (result?.error) {
+      revert()
+      showToast(`배치를 저장하지 못했어요. ${describeAuthResult(result.error)}`, 'error', 'slot-layout')
+      return
+    }
+
+    setSlotLayouts((prev) => upsertSlotLayout(prev, normalizeSlotLayout(result.layout)))
+    showToast(successMessage, 'success', 'slot-layout')
+  }
+
+  // 한 사람을 옮긴다. target: { party, side } | { party: 0 }(대기) | { swapWith: 닉네임 }
+  const moveSlotMember = (slot, arrangement, arrangerNickname, nickname, target) => {
+    if (!nickname) {
+      return
+    }
+
+    const result = buildMovedLayout(arrangement, getRaidFullSize(slot.raidName), nickname, target)
+    setArrangingSlot((prev) => (prev ? { ...prev, picked: null } : prev))
+
+    if (result.error === 'same') {
+      return
+    }
+
+    if (result.error) {
+      showToast(describeAuthResult(result.error), 'error', 'slot-layout')
+      return
+    }
+
+    applySlotLayout(slot, result.layout, arrangerNickname, target.swapWith ? `${nickname} ↔ ${target.swapWith} 자리를 바꿨어요.` : `${nickname}님을 옮겼어요.`)
+  }
 
   const renderJoinButton = (slot, peopleCount, extraClass = '') => (
     canJoinSlot(slot) ? (
@@ -4479,7 +4626,7 @@ function App() {
               <em>다음</em> {nextRaidSlot.day} {formatTimeLabel(nextRaidSlot.time)} {nextRaidSlot.raidName} {nextRaidSlot.difficulty}
               {!isMobile && (
                 <span className="summary-strip-detail">
-                  {nextRaidSlot.mode} · {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())} · {formatHeadcount(nextRaidSlot.people.length, nextRaidSlot.fullSize)}
+                  {nextRaidSlot.mode} · {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())} · {nextRaidSlot.headcountText}
                   {nextRaidSlot.partyLabel && ` · ${nextRaidSlot.partyLabel}`}
                   {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
                   {laterRaidSlots.length > 0 && ` · 이후 ${laterRaidSlots[0].day} ${formatTimeLabel(laterRaidSlots[0].time)} ${laterRaidSlots[0].raidName} ${laterRaidSlots[0].difficulty}${laterRaidSlots.length > 1 ? ` 외 ${laterRaidSlots.length - 1}건` : ''}`}
@@ -4508,7 +4655,7 @@ function App() {
               </strong>
               <small>
                 {formatTimeUntil(nextRaidSlot.startTime - currentTime.getTime())}
-                {` · ${formatHeadcount(nextRaidSlot.people.length, nextRaidSlot.fullSize)} · 리딩 ${nextRaidSlot.leaderCount}명`}
+                {` · ${nextRaidSlot.headcountText} · 리딩 ${nextRaidSlot.leaderCount}명`}
                 {nextRaidSlot.partyLabel && ` · ${nextRaidSlot.partyLabel}`}
                 {nextRaidSlot.nickname !== loggedInNickname && ` · ${nextRaidSlot.nickname}`}
               </small>
@@ -5311,7 +5458,7 @@ function App() {
           {calendarHelpOpen && (
             <div className="help-panel compact" data-section="calendar" data-pc="calendar">
               <p>• 탭을 누르면 레이드 · 난이도 · 공략 방식을 바꿀 수 있어요.</p>
-              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명(초월 레이드는 5명)이 1공대(1파티)이고, 넘는 인원은 신청 순서대로 2공대(2파티)로 따로 보여요. 2공대까지 차면 그 뒤는 대기로 표시돼요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
+              <p>• 각 시간칸은 해당 조건의 인원이 저장한 시간대를 보여줘요. 먼저 신청한 10명(초월 레이드는 5명)이 1공대(1파티)이고, 넘는 인원은 신청 순서대로 2공대(2파티)로 따로 보여요. 2공대까지 차면 그 뒤는 대기로 표시돼요. 그 시간에 리딩 가능으로 신청했다면 칸의 '배치'를 눌러 사람을 끌어(모바일은 눌러서) 공대 · A/B · 대기를 옮길 수 있고, 모두에게 같은 배치로 보여요. A/B 파티는 리딩 가능자와 치유성을 양쪽에 나누고 전투력이 비슷하도록 자동으로 나눠요.</p>
               <p>• 추천 레이드 시간은 모든 레이드에서 아직 안 지난 시간 중 정원이 차고 리더가 있는 '출발 가능' 시간을 먼저, 그다음 인원이 많은 순서로 보여 줘요. 누르면 그 레이드 탭과 칸으로 이동해요.</p>
               <p>• 한 타임에 한 포스, 한 파티당 5명씩 총 10명이 기준이며(초월 레이드는 5명 1파티), O는 리딩 가능, X는 리딩 불가를 뜻해요.</p>
               <p>• 요일별 신청 현황에서는 해당 요일에 어떤 레이드와 시간대가 신청됐는지 한눈에 확인할 수 있어요.</p>
@@ -5425,18 +5572,20 @@ function App() {
                                 const previewVoters = timeVoters.slice(0, SUMMARY_ICON_PREVIEW_LIMIT)
                                 const hiddenCount = timeVoters.length - previewVoters.length
                                 // 신청 순서로 정렬된 이 시간대 인원. 앞의 정원(10명, 초월 5명)이 1공대(초월은 1파티),
-                                // 그다음 정원만큼이 2공대(2파티), 나머지는 대기다. 준비 확인 · 클리어는 파티마다 따로 한다.
+                                // 그다음 정원만큼이 2공대(2파티), 나머지는 대기다. 리딩 가능자가 직접 옮겼으면 그 배치를 따른다.
+                                // 준비 확인 · 클리어는 파티마다 따로 한다.
                                 const slotFullSize = getRaidFullSize(raidName)
                                 const slotPeople = memberByRaidDateTime.get(`${day}-${time}`)?.[`${raidName} ${difficulty} ${mode}`] ?? []
-                                const { groups: partyGroups, waiting: waitingPeople } = splitSlotParties(slotPeople, slotFullSize)
-                                const hasMultipleParties = partyGroups.length > 1
                                 const slotRun = { weekStart: weekStartKey, day, time, raidName, difficulty, mode }
+                                const slotArrangement = getSlotArrangement(slotRun)
+                                const { groups: partyGroups, waiting: waitingPeople } = slotArrangement
+                                const hasMultipleParties = partyGroups.length > 1
                                 // 이 시간대에 투표한 사람만 표시할 수 있다. (DB 함수도 같은 규칙으로 막는다)
                                 // 부캐로 투표했으면 그 부캐로 표시한다. (같은 레이드 · 같은 시간은 한 캐릭터만 신청할 수 있어 많아야 하나)
                                 const mySlotNickname = timeVoters.find((member) => myCharacters.includes(member.nickname))?.nickname ?? ''
                                 const isSlotVoter = Boolean(mySlotNickname)
                                 // 내가 든 파티 번호 (대기면 0, 신청하지 않았으면 null)
-                                const myParty = isSlotVoter ? getSlotPartyNumber(slotPeople, mySlotNickname, slotFullSize) : null
+                                const myParty = isSlotVoter ? slotArrangement.partyOf.get(mySlotNickname) ?? null : null
                                 const editDisabledReason = !loggedInNickname
                                   ? '로그인한 뒤에 표시할 수 있어요.'
                                   : !isSlotVoter ? describeAuthResult('not_participant') : ''
@@ -5647,7 +5796,7 @@ function App() {
                                     >
                                       <span className={`day-raid-time-tag ${isFullSlot ? 'is-full' : ''}`}>
                                         {formatTimeLabel(time)}
-                                        <span className="day-raid-time-count">{formatHeadcount(slotPeople.length, slotFullSize)}</span>
+                                        <span className="day-raid-time-count">{formatArrangementHeadcount(slotArrangement, slotFullSize)}</span>
                                       </span>
                                       {isSlotVoter && <span className="my-slot-badge">내 시간{hasMultipleParties && myParty ? ` · ${getPartyGroupLabel(raidName, myParty)}` : ''}</span>}
                                       {!hasLeader && <span className="slot-warn" title="리딩 가능한 사람이 없어요">리더 없음</span>}
@@ -6025,37 +6174,148 @@ function App() {
                     const isSingleParty = isSinglePartyRaid(activeTabMeta.raid)
                     const fillLevel = people.length >= fullSize ? 3 : people.length >= fullSize / 2 ? 2 : 1
                     const hasLeader = people.some((member) => member.leadReady === 'O')
-                    // 정원을 넘으면 2파티(10인 레이드는 2공대)까지 꾸리고, 그보다 많으면 대기다.
-                    const { groups: partyGroups, waiting } = splitSlotParties(people, fullSize)
+                    // 정원을 넘으면 2파티(10인 레이드는 2공대)까지 꾸리고, 그보다 많으면 대기다. 직접 배치가 있으면 그대로 따른다.
+                    const cellSlot = { day: dayLabel, time, raidName: activeTabMeta.raid, difficulty: activeTabMeta.difficulty, mode: activeModeTab }
+                    const arrangement = getSlotArrangement(cellSlot)
+                    const { waiting } = arrangement
+                    const layoutKey = getSlotLayoutKey({ ...cellSlot, weekStart: weekStartKey })
+                    const layoutRecord = slotLayoutByKey.get(layoutKey)
+                    // 배치 바꾸기: 그 시간 리딩 가능자만. 바꾸는 중에는 빈 2공대(2파티)와 대기 자리도 놓을 곳으로 보여 준다.
+                    const arrangerNickname = getSlotArranger(people)
+                    const isArranging = Boolean(arrangerNickname) && arrangingSlot?.key === layoutKey
+                    const pickedName = isArranging ? arrangingSlot.picked : null
+                    const partyGroups = isArranging && arrangement.groups.length < 2
+                      ? [...arrangement.groups, { party: 2, members: [], partyA: [], partyB: [] }]
+                      : arrangement.groups
                     // 공대마다 A/B로 나눈다. 1파티 레이드(초월)는 A/B 없이 한 줄로 보여 준다.
-                    const partyBlocks = partyGroups.map(({ party, members: groupMembers }) => {
-                      const { partyA, partyB } = buildBalancedParties(groupMembers, fullSize)
-                      return {
-                        party,
-                        label: partyGroups.length > 1 ? getPartyGroupLabel(activeTabMeta.raid, party) : '',
-                        // 초월이 2파티로 나뉘면 위의 "1파티" · "2파티" 이름표로 충분해서 열 이름을 비운다.
-                        columns: isSingleParty ? [[partyGroups.length > 1 ? '' : '파티', partyA]] : [['A', partyA], ['B', partyB]],
-                      }
+                    const partyBlocks = partyGroups.map(({ party, partyA, partyB }) => ({
+                      party,
+                      label: partyGroups.length > 1 ? getPartyGroupLabel(activeTabMeta.raid, party) : '',
+                      // 초월이 2파티로 나뉘면 위의 "1파티" · "2파티" 이름표로 충분해서 열 이름을 비운다.
+                      columns: isSingleParty ? [[partyGroups.length > 1 ? '' : '파티', partyA, 'A']] : [['A', partyA, 'A'], ['B', partyB, 'B']],
+                    }))
+                    const moveTo = (nickname, target) => moveSlotMember(cellSlot, arrangement, arrangerNickname, nickname, target)
+                    // 옮길 곳(파티 열 · 대기)에 끌어 놓거나, 사람을 고른 뒤 누르면 그리로 옮긴다.
+                    const getDropProps = (target, label) => (isArranging ? {
+                      role: 'button',
+                      tabIndex: 0,
+                      'aria-label': `${label}(으)로 옮기기`,
+                      onDragOver: (event) => event.preventDefault(),
+                      onDrop: (event) => {
+                        event.preventDefault()
+                        moveTo(event.dataTransfer.getData('text/plain'), target)
+                      },
+                      onClick: () => pickedName && moveTo(pickedName, target),
+                    } : {})
+                    // 사람: 끌어서 옮기고, 다른 사람 위에 놓거나 고른 뒤 누르면 서로 자리를 바꾼다.
+                    const getArrangePillProps = (member) => ({
+                      role: 'button',
+                      tabIndex: 0,
+                      draggable: true,
+                      'aria-pressed': pickedName === member.nickname,
+                      'aria-label': `${member.nickname} ${pickedName && pickedName !== member.nickname ? `과(와) ${pickedName} 자리 바꾸기` : '고르기'}`,
+                      onDragStart: (event) => {
+                        event.dataTransfer.setData('text/plain', member.nickname)
+                        event.dataTransfer.effectAllowed = 'move'
+                      },
+                      onDragOver: (event) => event.preventDefault(),
+                      onDrop: (event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        moveTo(event.dataTransfer.getData('text/plain'), { swapWith: member.nickname })
+                      },
+                      onClick: (event) => {
+                        event.stopPropagation()
+
+                        if (!pickedName) {
+                          setArrangingSlot({ key: layoutKey, picked: member.nickname })
+                        } else if (pickedName === member.nickname) {
+                          setArrangingSlot({ key: layoutKey, picked: null })
+                        } else {
+                          moveTo(pickedName, { swapWith: member.nickname })
+                        }
+                      },
                     })
+                    const renderPill = (member, keyPrefix) => (
+                      <span
+                        key={`${keyPrefix}-${member.nickname}`}
+                        className={`time-member-pill ${isArranging ? 'is-arrangeable' : 'has-hover-tooltip'} ${pickedName === member.nickname ? 'is-picked' : ''}`}
+                        {...(isArranging ? getArrangePillProps(member) : getMemberPillProps(member))}
+                      >
+                        <span className="nickname-with-icon">
+                          <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
+                          <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
+                            <span>{member.nickname}</span>
+                            <span className="member-power-inline">{member.power}</span>
+                          </span>
+                          {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
+                        </span>
+                        {/* 남은 횟수(에라쿠스)는 칸 오른쪽 위에 띄운다. 모바일은 칸이 좁아 이름 · 전투력을 밀어내지 않게 한다. */}
+                        {renderEntriesLeft(activeTabMeta.raid, member.nickname)}
+                        {!isArranging && <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />}
+                      </span>
+                    )
 
                     return (
                       <div
                         key={`${date.toISOString()}-${time}`}
                         id={`calendar-slot-${slotKey}`}
                         data-day-index={dayIndex}
-                        className={`slot-cell occupied fill-${fillLevel} ${isMySlot ? 'my-schedule-slot' : ''}${slotStateClass}`}
+                        className={`slot-cell occupied fill-${fillLevel} ${isMySlot ? 'my-schedule-slot' : ''}${isArranging ? ' is-arranging' : ''}${slotStateClass}`}
                       >
                         <div className="slot-cell-head">
                           {isMySlot && <span className="my-slot-badge">내 시간</span>}
                           <span className={`slot-count ${fillLevel === 3 ? 'is-full' : ''}`}>
-                            {formatHeadcount(people.length, fullSize)}
+                            {formatArrangementHeadcount(arrangement, fullSize)}
                           </span>
                           {!hasLeader && <span className="slot-warn">리더 없음</span>}
-                          {renderJoinButton(
+                          {arrangement.isManual && !isArranging && (
+                            <span className="slot-manual-badge" title={`${layoutRecord?.updatedBy ?? '리딩 가능자'}님이 직접 옮긴 배치예요. 새로 신청한 사람은 신청순으로 빈자리에 들어가요.`}>
+                              직접 배치
+                            </span>
+                          )}
+                          {arrangerNickname && !isArranging && (
+                            <button
+                              type="button"
+                              className="slot-arrange-button"
+                              aria-label={`${dayLabel}요일 ${formatTimeLabel(time)} 배치 바꾸기`}
+                              title="사람을 끌어서 공대 · 파티 · 대기를 옮겨요. 모두에게 같은 배치로 보여요."
+                              onClick={() => setArrangingSlot({ key: layoutKey, picked: null })}
+                            >
+                              배치
+                            </button>
+                          )}
+                          {!isArranging && renderJoinButton(
                             { raidName: activeTabMeta.raid, difficulty: activeTabMeta.difficulty, mode: activeModeTab, day: dayLabel, time },
                             people.length,
                           )}
                         </div>
+
+                        {isArranging && (
+                          <div className="slot-arrange-bar">
+                            <span className="slot-arrange-hint">
+                              {pickedName
+                                ? `${pickedName}님을 옮길 자리나 바꿀 사람을 누르세요.`
+                                : isMobile ? '옮길 사람을 누르세요.' : '사람을 끌어서 옮기세요. 사람 위에 놓으면 서로 바뀌어요.'}
+                            </span>
+                            {arrangement.isManual && (
+                              <button
+                                type="button"
+                                className="slot-arrange-button"
+                                disabled={savingLayoutKey === layoutKey}
+                                onClick={() => {
+                                  setArrangingSlot({ key: layoutKey, picked: null })
+                                  applySlotLayout(cellSlot, {}, arrangerNickname, '신청순 자동 배치로 돌렸어요.')
+                                }}
+                              >
+                                자동 배치로
+                              </button>
+                            )}
+                            <button type="button" className="slot-arrange-button is-primary" onClick={() => setArrangingSlot(null)}>
+                              완료
+                            </button>
+                          </div>
+                        )}
 
                         <div className="raid-group-list">
                           <div className="raid-group-item selected-raid-item">
@@ -6063,36 +6323,37 @@ function App() {
                             <div key={party} className={`party-block ${label ? 'has-label' : ''}`}>
                             {label && <span className="party-block-label">{label}</span>}
                             <div className={`party-split ${isSingleParty ? 'is-single' : ''}`}>
-                              {columns.map(([partyName, partyMembers]) => (
-                                <div key={partyName} className="party-column">
+                              {columns.map(([partyName, partyMembers, side]) => (
+                                <div
+                                  key={side}
+                                  className={`party-column ${isArranging ? 'is-drop-target' : ''}`}
+                                  {...getDropProps({ party, side }, `${label || ''} ${partyName || ''}`.trim() || '파티')}
+                                >
                                   {partyName && <span className="party-label">{partyName}</span>}
                                   {partyMembers.length > 0 ? (
                                     <div className="time-member-list vertical">
-                                      {partyMembers.map((member) => (
-                                        <span key={`${slotKey}-${tabKey}-${party}-${partyName}-${member.nickname}`} className="time-member-pill has-hover-tooltip" {...getMemberPillProps(member)}>
-                                          <span className="nickname-with-icon">
-                                            <img src={getClassIconPath(member.className)} alt={member.className} className="nickname-icon" />
-                                            <span className={`member-name-wrap ${getNicknameClassName(member.nickname)}`}>
-                                              <span>{member.nickname}</span>
-                                              <span className="member-power-inline">{member.power}</span>
-                                            </span>
-                                            {member.leadReady === 'O' && <span className="lead-badge" role="img" aria-label="리딩 가능"><LeadMark value="O" /></span>}
-                                          </span>
-                                          {/* 남은 횟수(에라쿠스)는 칸 오른쪽 위에 띄운다. 모바일은 칸이 좁아 이름 · 전투력을 밀어내지 않게 한다. */}
-                                          {renderEntriesLeft(activeTabMeta.raid, member.nickname)}
-                                          <MemberTooltip member={member} ownerNickname={altOwnerByNickname.get(member.nickname)} />
-                                        </span>
-                                      ))}
+                                      {partyMembers.map((member) => renderPill(member, `${slotKey}-${tabKey}-${party}-${side}`))}
                                     </div>
                                   ) : (
-                                    <span className="empty-raid-text">-</span>
+                                    <span className="empty-raid-text">{isArranging ? '여기로' : '-'}</span>
                                   )}
                                 </div>
                               ))}
                             </div>
                             </div>
                             ))}
-                            {waiting.length > 0 && (
+                            {isArranging ? (
+                              <div className="party-waiting is-drop-target" {...getDropProps({ party: 0 }, '대기')}>
+                                <span className="party-label">대기</span>
+                                {waiting.length > 0 ? (
+                                  <div className="time-member-list vertical">
+                                    {waiting.map((member) => renderPill(member, `${slotKey}-${tabKey}-waiting`))}
+                                  </div>
+                                ) : (
+                                  <span className="empty-raid-text">여기에 놓으면 대기</span>
+                                )}
+                              </div>
+                            ) : waiting.length > 0 && (
                               <div className="party-waiting" title={waiting.map((member) => member.nickname).join(', ')}>
                                 대기 {waiting.length}명: {waiting.map((member) => member.nickname).join(', ')}
                               </div>

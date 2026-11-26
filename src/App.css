@@ -5885,3 +5885,98 @@ input::placeholder {
 .day-raid-party-label {
   color: var(--accent-line);
 }
+
+/* 직접 배치: 리딩 가능자가 사람을 끌어(모바일은 눌러서) 공대 · 파티 · 대기를 옮긴다. */
+.slot-manual-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  color: var(--accent-line);
+  font-size: 0.58rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.slot-arrange-button {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-faint);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.slot-arrange-button:hover {
+  border-color: var(--accent-line);
+  color: var(--accent-line);
+}
+
+.slot-arrange-button.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.slot-arrange-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.slot-arrange-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 6px;
+}
+
+.slot-arrange-hint {
+  flex-basis: 100%;
+  color: var(--accent-line);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.slot-cell.is-arranging {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
+.party-column.is-drop-target,
+.party-waiting.is-drop-target {
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px dashed var(--accent-line);
+  cursor: pointer;
+}
+
+.party-waiting.is-drop-target {
+  color: inherit;
+}
+
+.time-member-pill.is-arrangeable {
+  cursor: grab;
+}
+
+.time-member-pill.is-picked {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+  background: var(--accent-glow);
+}
+
+/* 모바일: 배치 버튼도 손가락 크기로 */
+@media (max-width: 640px) {
+  .slot-arrange-button {
+    min-height: 40px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
+
+  .party-column.is-drop-target,
+  .party-waiting.is-drop-target {
+    min-height: 44px;
+  }
+}

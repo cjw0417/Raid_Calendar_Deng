@@ -58,7 +58,7 @@ await db.exec(beforeCron)
 await db.exec(beforeCron)
 console.log('PASS 자동 알림 SQL 실행 (예약 작업 부분 제외, 2회)')
 
-check('실시간 대상 3개 등록', (await rows(`select tablename from pg_publication_tables where pubname='supabase_realtime' order by 1`)).map((r) => r.tablename), ['members', 'raid_runs', 'raid_schedules'])
+check('실시간 대상 4개 등록 (직접 배치 포함)', (await rows(`select tablename from pg_publication_tables where pubname='supabase_realtime' order by 1`)).map((r) => r.tablename), ['members', 'raid_runs', 'raid_schedules', 'raid_slot_layouts'])
 
 await db.exec(`update public.app_settings set value='https://discord.example/webhook' where key='discord_webhook_url'`)
 
@@ -517,10 +517,84 @@ check('다른 레이드: 준비한 사람을 클리어 명단에', muspelClear[0
 check('다른 레이드: 클리어 알림은 그대로 1건', [await sentTotal(), (await lastEmbed()).title], [sentBase + 1, '🏆 클리어! | 무스펠 · 보통 · 트라이'])
 check('클리어 내부 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_clear_add(uuid,text)','execute') a, has_function_privilege('anon','public._raid_entries_left(date,text,text)','execute') b, has_function_privilege('anon','public.member_raid_clear_count(text,text,date,text,text,text,text,text,text,integer,integer)','execute') c, has_function_privilege('anon','public._raid_party_roster(date,text,text,text,text,text,integer)','execute') d`))[0], { a: false, b: false, c: true, d: false })
 
+// ---------- 직접 배치: 리딩 가능자가 공대 · A/B · 대기를 옮긴다 ----------
+const saveLayout = async (nick, day, time, layout, raid = '무스펠', difficulty = '보통') => (await rows(
+  `select public.member_save_slot_layout($1,'pw',$2::date,$3,$4,$5,$6,'트라이',$7::jsonb) r`,
+  [nick, weekStart, day, time, raid, difficulty, layout === null ? null : JSON.stringify(layout)],
+))[0].r
+const assignment = async (day, time, raid = '무스펠', difficulty = '보통') => Object.fromEntries((await rows(
+  `select nickname, party from public._raid_slot_assignment($1::date,$2,$3,$4,$5,'트라이')`, [weekStart, day, time, raid, difficulty],
+)).map((r) => [r.nickname, r.party]))
+const byParty = (map, party) => Object.entries(map).filter(([, p]) => p === party).map(([n]) => n).sort()
+
+const layoutNames = Array.from({ length: 13 }, (_, i) => `배치${String(i + 1).padStart(2, '0')}`)
+for (const [i, nick] of layoutNames.entries()) {
+  await db.exec(`select pg_sleep(0.002)`)
+  await save(nick, selection(['목', '21:00']), { lead: i === 0 || i === 11 ? 'O' : 'X' })
+}
+check('직접 배치 전에는 신청순', [byParty(await assignment('목', '21:00'), 1), byParty(await assignment('목', '21:00'), 2)], [layoutNames.slice(0, 10), layoutNames.slice(10)])
+check('신청 안 한 사람은 배치 못 바꿈', (await saveLayout('외부인', '목', '21:00', {})).error, 'not_participant')
+check('리딩 가능자가 아니면 배치 못 바꿈', (await saveLayout('배치02', '목', '21:00', {})).error, 'not_leader')
+check('잘못된 자리 값은 거절', (await saveLayout('배치01', '목', '21:00', { 배치02: '3A' })).error, 'bad_request')
+check('한 파티(A)에 6명은 거절', (await saveLayout('배치01', '목', '21:00', Object.fromEntries(layoutNames.slice(0, 6).map((n) => [n, '1A'])))).error, 'party_full')
+check('한 공대에 11명은 거절', (await saveLayout('배치01', '목', '21:00', Object.fromEntries(layoutNames.slice(0, 11).map((n, i) => [n, i < 5 ? '1A' : '1B'])))).error, 'party_full')
+
+// 2공대의 배치12를 1공대로, 1공대의 배치01을 2공대로. 나머지는 신청순으로 빈자리를 채운다.
+let layoutResult = await saveLayout('배치12', '목', '21:00', { 배치12: '1A', 배치01: '2B', 외부인: '1A' })
+check('배치 저장 (신청자가 아닌 닉네임은 버림)', [Object.entries(layoutResult.layout?.layout ?? {}).sort(), layoutResult.layout?.updated_by], [[['배치01', '2B'], ['배치12', '1A']], '배치12'])
+let placed = await assignment('목', '21:00')
+check('옮긴 사람은 그 공대에, 나머지는 신청순으로 빈자리', [byParty(placed, 1), byParty(placed, 2)], [
+  [...layoutNames.slice(1, 10), '배치12'].sort(),
+  ['배치01', '배치11', '배치13'],
+])
+check('파티 인원도 직접 배치를 따름', (await roster('목', '21:00', 1)).includes('배치12'), true)
+check('준비 확인도 직접 배치를 따름 (2공대로 간 배치01은 1공대 호출 불가)', (await rally('배치01', 'call', '목', '21:00')).error, 'other_party')
+check('1공대로 옮긴 배치12는 1공대 호출 가능', (await rally('배치12', 'call', '목', '21:00')).error ?? 'ok', 'ok')
+await rally('배치12', 'cancel', '목', '21:00')
+
+// 대기(W)로 옮기면 정원 자리가 비어 다음 사람이 들어온다.
+await saveLayout('배치01', '목', '21:00', { 배치03: 'W' })
+placed = await assignment('목', '21:00')
+check('대기로 옮기면 그 사람은 대기, 자리는 신청순으로 채움', [placed['배치03'], byParty(placed, 0), byParty(placed, 2)], [0, ['배치03'], ['배치12', '배치13']])
+await saveLayout('배치01', '목', '21:00', null)
+check('비우면 신청순 자동 배치로', byParty(await assignment('목', '21:00'), 1), layoutNames.slice(0, 10))
+await save('초월리더', selection(['목', '21:00']), { raid: '에라쿠스 유적', difficulty: '1단계', lead: 'O' })
+check('초월은 B 자리 없음', (await saveLayout('초월리더', '목', '21:00', { 초월리더: '1B' }, '에라쿠스 유적', '1단계')).error, 'bad_request')
+check('초월은 2파티(2A)로 옮길 수 있음', [(await saveLayout('초월리더', '목', '21:00', { 초월리더: '2A' }, '에라쿠스 유적', '1단계')).error ?? 'ok', (await assignment('목', '21:00', '에라쿠스 유적', '1단계'))['초월리더']], ['ok', 2])
+check('배치 저장 함수는 누구나 부를 수 있고 내부 함수는 못 부름', (await rows(`select has_function_privilege('anon','public.member_save_slot_layout(text,text,date,text,text,text,text,text,jsonb)','execute') a, has_function_privilege('anon','public._raid_slot_assignment(date,text,text,text,text,text)','execute') b, has_table_privilege('anon','public.raid_slot_layouts','insert') c`))[0], { a: true, b: false, c: false })
+
+// 직접 배치가 있을 때의 대기 → 정원 알림 (지난 시간대에는 가지 않으므로 월요일 23시가 지났으면 건너뜀)
+const isPastMonday = (await rows(`select (select public._current_week_start()) + interval '5 days 23 hours' <= now() as v`))[0].v
+if (isPastMonday) {
+  console.log('SKIP 직접 배치 대기 알림: 월요일 23시 이후라 건너뜀')
+} else {
+  const monNames = Array.from({ length: 21 }, (_, i) => `월배치${String(i + 1).padStart(2, '0')}`)
+  for (const [i, nick] of monNames.entries()) {
+    await db.exec(`select pg_sleep(0.002)`)
+    await save(nick, selection(['월', '23:00']), { lead: i === 0 ? 'O' : 'X' })
+  }
+  const monSent = async () => (await rows(`select count(*)::int c from net.sent`))[0].c
+  await saveLayout('월배치01', '월', '23:00', { 월배치05: 'W' })
+  check('대기로 옮긴 사람 대신 21번째가 정원', (await assignment('월', '23:00'))['월배치21'], 2)
+  let before = await monSent()
+  await rows(`select public.member_delete_schedule('월배치05','pw','무스펠','보통','트라이')`)
+  check('대기로 정해진 사람이 빠지면 알림 없음', await monSent(), before)
+  await save('월배치22', selection(['월', '23:00']))
+  await saveLayout('월배치01', '월', '23:00', { 월배치02: '2A' })
+  before = await monSent()
+  await rows(`select public.member_delete_schedule('월배치02','pw','무스펠','보통','트라이')`)
+  check('직접 배치된 사람이 빠지면 대기 1번이 올라오고 알림', [await monSent(), (await rows(`select body from net.sent order by id desc limit 1`))[0].body.embeds[0].description.endsWith('월배치22')], [before + 1, true])
+  await save('월배치23', selection(['월', '23:00']))
+  before = await monSent()
+  await rows(`select public.member_delete_schedule('월배치23','pw','무스펠','보통','트라이')`)
+  check('대기자가 빠지면 알림 없음 (직접 배치 있음)', await monSent(), before)
+}
+
 await db.exec(`
   create or replace function public._verify_member_password(p_nickname text, p_password text, p_allow_initial boolean)
   returns text language sql as $$ select 'invalid'::text $$;
 `)
+check('비밀번호가 틀리면 배치 저장도 거절', (await saveLayout('배치01', '목', '21:00', {})).error, 'invalid')
 check('비밀번호가 틀리면 클리어도 거절', (await erClear('원정1', 'add', 1)).error, 'invalid')
 check('비밀번호가 틀리면 거절', await adjust('조정캐', 1), { error: 'invalid' })
 check('거절되면 값 그대로', (await rows(`select adjustment from public.raid_entry_adjustments where nickname='조정캐'`))[0].adjustment, 1)

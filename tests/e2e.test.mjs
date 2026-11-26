@@ -726,6 +726,62 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
   await context.close()
 }
 
+// ---------- 직접 배치: 리딩 가능자가 끌어서(모바일은 눌러서) 공대 · A/B · 대기를 옮긴다 ----------
+{
+  // 토 21:00에 12명: 나(리딩 가능)가 가장 먼저. 1공대는 나 + 배치원2~10, 2공대는 배치원11 · 12
+  const crew = [
+    sched(NICK, 0, { 토: ['21:00'] }, { id: 'mine', leadReady: 'O', slotSignedAt: { '토|21:00': '2026-12-23T09:00:00+09:00' } }),
+    ...Array.from({ length: 11 }, (_, i) => sched(`배치원${i + 2}`, i + 1, { 토: ['21:00'] }, { id: `b${i}`, leadReady: 'X', slotSignedAt: { '토|21:00': `2026-12-23T10:${String(i).padStart(2, '0')}:00+09:00` } })),
+  ]
+  const others = Array.from({ length: 3 }, (_, i) => sched(`남의칸${i + 1}`, i, { 일: ['21:00'] }, { id: `o${i}`, leadReady: 'O' }))
+  const { page, context } = await open(LOCAL, { schedules: [...crew, ...others] })
+  await login(page)
+  await pcTab(page, '파티')
+  const slot = page.locator('[id="calendar-slot-토-21:00"]')
+  const blockNames = (index) => slot.locator('.party-block').nth(index).locator('.member-name-wrap > span:first-child').allInnerTexts().then((list) => list.sort())
+  const pill = (name) => slot.locator('.time-member-pill', { hasText: name })
+  check('직접 배치: 내가 리딩 가능으로 신청한 칸에만 배치 버튼', [await slot.locator('.slot-arrange-button').count(), await page.locator('[id="calendar-slot-일-21:00"] .slot-arrange-button').count()], [1, 0])
+  await slot.locator('.slot-arrange-button').click()
+  check('직접 배치: 바꾸는 중 표시와 대기 자리', [await slot.evaluate((el) => el.classList.contains('is-arranging')), await slot.locator('.party-waiting.is-drop-target').count()], [true, 1])
+
+  // 끌어서 다른 사람 위에 놓으면 서로 자리가 바뀐다.
+  await pill('배치원11').dragTo(pill('배치원2'))
+  await page.waitForFunction(() => [...document.querySelectorAll('[id="calendar-slot-토-21:00"] .party-block')][0]?.innerText.includes('배치원11'))
+  check('직접 배치: 끌어서 놓으면 서로 자리 바꿈', [(await blockNames(0)).includes('배치원11'), (await blockNames(1)).includes('배치원2')], [true, true])
+  // 꽉 찬 파티 열에 놓으면 안내만 한다.
+  await pill('배치원12').dragTo(slot.locator('.party-block').nth(0).locator('.party-column').nth(0).locator('.party-label'))
+  check('직접 배치: 꽉 찬 자리는 안내', (await toastText(page)).includes('꽉 찼어요'))
+  // 눌러서 고른 뒤 대기를 누르면 대기로 간다.
+  await pill('배치원12').click()
+  check('직접 배치: 누르면 고른 표시', await pill('배치원12').getAttribute('aria-pressed'), 'true')
+  await slot.locator('.party-waiting.is-drop-target').click()
+  await page.waitForFunction(() => document.querySelector('[id="calendar-slot-토-21:00"] .party-waiting')?.innerText.includes('배치원12'))
+  check('직접 배치: 고른 뒤 대기를 누르면 대기로', [(await blockNames(1)).includes('배치원12'), await slot.locator('.party-waiting').innerText().then((t) => t.includes('배치원12'))], [false, true])
+  await slot.locator('.slot-arrange-button', { hasText: '완료' }).click()
+  check('직접 배치: 완료하면 직접 배치 표시', [await slot.locator('.slot-manual-badge').innerText(), await slot.locator('.party-waiting').innerText()], ['직접 배치', '대기 1명: 배치원12'])
+  check('직접 배치: 대기로 옮긴 사람은 인원 표기에서 +로', await slot.locator('.slot-count').innerText(), '11/20 +1')
+  await slot.screenshot({ path: join(out, 'pc-arranged-slot.png') })
+
+  // 새로고침해도 유지되고, 이번 주 화면 · 준비 확인 인원도 같은 배치를 따른다.
+  await page.reload()
+  await login(page)
+  await pcTab(page, '파티')
+  check('직접 배치: 새로고침해도 유지', [(await blockNames(0)).includes('배치원11'), (await blockNames(1)).sort(), await slot.locator('.party-waiting').innerText()], [true, ['배치원2'], '대기 1명: 배치원12'])
+  await pcTab(page, '이번 주')
+  const row = page.locator('[id="day-raid-row-토-무스펠 / 보통 / 트라이-21:00"]')
+  await row.locator('.day-raid-time-toggle').click()
+  check('직접 배치: 이번 주 화면도 같은 배치', await row.locator('.day-raid-overflow-label').allInnerTexts(), ['1공대 (10/10)', '2공대 (1/10)', '대기 (신청 순)'])
+
+  // 자동 배치로 돌리면 신청순
+  await pcTab(page, '파티')
+  await slot.locator('.slot-arrange-button').click()
+  await slot.locator('.slot-arrange-button', { hasText: '자동 배치로' }).click()
+  await slot.locator('.slot-arrange-button', { hasText: '완료' }).click()
+  await page.waitForFunction(() => !document.querySelector('[id="calendar-slot-토-21:00"] .party-waiting'))
+  check('직접 배치: 자동 배치로 돌리면 신청순', [(await blockNames(1)).sort(), await slot.locator('.slot-manual-badge').count()], [['배치원11', '배치원12'], 0])
+  await context.close()
+}
+
 // ---------- 초월(에라쿠스 유적)은 5인 1파티 ----------
 {
   // 토 21:00에 12명: 앞의 5명이 1파티, 그다음 5명이 2파티, 2명은 대기

@@ -36,6 +36,8 @@ const resultMessages = {
   too_many_members: '정원보다 많이 골랐어요. 실제로 가는 사람만 골라 주세요.',
   other_party: '다른 파티에 든 사람은 이 파티의 준비 확인을 누를 수 없어요. 내 파티 줄에서 눌러 주세요.',
   in_other_party: '다른 파티로 이미 출발한 사람이 있어요. 그 사람을 빼고 골라 주세요.',
+  not_leader: '이 시간대에 리딩 가능(O)으로 신청한 사람만 배치를 바꿀 수 있어요.',
+  party_full: '그 자리는 꽉 찼어요. 바꿀 사람 위에 놓으면 서로 자리가 바뀌어요.',
   clear_changed: '그 사이 다른 사람이 클리어 횟수를 바꿨어요. 지금 횟수를 확인하고 다시 눌러 주세요.',
   no_entries_left: '출발한 사람 중 횟수가 남은 사람이 없어요. 출발 인원을 확인해 주세요.',
   clear_count_only: '클리어를 여러 번 기록한 시간대예요. 되돌리기로 1회씩 빼 주세요.',
@@ -334,5 +336,22 @@ export function setRaidRally(nickname, password, run, action, members = null) {
     p_action: action,
     ...(members ? { p_members: members } : {}),
     ...partyParam(run),
+  })
+}
+
+// 직접 배치 저장 (supabase_raid_runs.sql). 그 시간대에 리딩 가능(O)으로 신청한 사람만 바꿀 수 있다.
+// layout: { 닉네임: '1A' | '1B' | '2A' | '2B' | 'W' }. 비우면 신청순 자동 배치로 돌아간다.
+// 반환값: { layout: {...} } 또는 { error }
+export function saveSlotLayout(nickname, password, slot, layout) {
+  return callRpc('member_save_slot_layout', {
+    p_nickname: nickname,
+    p_password: password,
+    p_week_start: slot.weekStart,
+    p_day: slot.day,
+    p_time: slot.time,
+    p_raid_name: slot.raidName,
+    p_difficulty: slot.difficulty,
+    p_mode: slot.mode,
+    p_layout: layout,
   })
 }

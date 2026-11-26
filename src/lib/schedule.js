@@ -65,29 +65,204 @@ export function getPartyGroupLabel(raidLabel, party) {
   return `${party}${isSinglePartyRaid(raidLabel) ? '파티' : '공대'}`
 }
 
-// 신청 순서로 정렬된 인원을 파티로 나눈다. 앞의 fullSize명이 1파티, 그다음 fullSize명이 2파티, 나머지는 대기다.
-// groups: [{ party: 1, members }, { party: 2, members }] (2파티는 정원을 넘었을 때만 있다)
-export function splitSlotParties(people, fullSize = RAID_FULL_SIZE) {
-  const groups = Array.from({ length: MAX_PARTIES }, (_, index) => ({
-    party: index + 1,
-    members: people.slice(index * fullSize, (index + 1) * fullSize),
-  })).filter((group) => group.party === 1 || group.members.length > 0)
+// 직접 배치(raid_slot_layouts.layout)의 자리 값: "1A" · "1B" · "2A" · "2B"(공대 · 파티 안의 자리), "W"(대기). 초월은 A만 쓴다.
+export const LAYOUT_WAITING = 'W'
 
-  return { groups, waiting: people.slice(fullSize * MAX_PARTIES) }
-}
+// 자리 값을 { party: 1 | 2 | 0(대기), side: 'A' | 'B' | null }로. 알 수 없는 값이면 null. (DB는 첫 글자로 공대를 본다)
+function parseLayoutPin(value) {
+  const text = typeof value === 'string' ? value : ''
+  const party = text[0] === '1' ? 1 : text[0] === '2' ? 2 : text[0] === LAYOUT_WAITING ? 0 : null
 
-// 그 사람이 든 파티 번호. 대기면 0, 신청하지 않았으면 null.
-export function getSlotPartyNumber(people, nickname, fullSize = RAID_FULL_SIZE) {
-  const index = people.findIndex((person) => person.nickname === nickname)
-
-  if (index < 0) {
+  if (party === null) {
     return null
   }
 
-  return index < fullSize * MAX_PARTIES ? Math.floor(index / fullSize) + 1 : 0
+  return { party, side: party && (text[1] === 'A' || text[1] === 'B') ? text[1] : null }
 }
 
-// 그 파티의 인원 (party: 1 | 2)
+// 신청 순서로 정렬된 인원을 공대(파티)로 나눈다. DB의 _raid_slot_assignment와 같은 기준이어야 한다.
+//   1. 직접 배치(layout)로 공대가 정해진 사람은 그 공대에 둔다. (공대마다 신청순으로 fullSize명까지) W로 정해진 사람은 대기다.
+//   2. 나머지는 신청순으로 1공대 빈자리, 2공대 빈자리를 채우고, 그래도 남으면 대기다.
+// 직접 배치가 없으면 앞의 fullSize명이 1공대, 그다음 fullSize명이 2공대, 나머지는 대기다.
+// groups: [{ party, members, partyA, partyB }] (2공대는 사람이 있을 때만), waiting: 대기 (신청순)
+// partyOf: 닉네임 → 1 | 2 | 0(대기), pinnedWaiting: W로 정해진 닉네임, isManual: 직접 배치가 하나라도 적용됐는지
+export function arrangeSlot(people, fullSize = RAID_FULL_SIZE, layout = null) {
+  const pins = layout && typeof layout === 'object' ? layout : {}
+  const members = { 1: [], 2: [] }
+  const sidePins = new Map()
+  const waitingSet = new Set()
+  const pinnedWaiting = new Set()
+  const unpinned = []
+  let isManual = false
+
+  people.forEach((person) => {
+    const pin = parseLayoutPin(pins[person.nickname])
+
+    if (pin?.party === 0) {
+      waitingSet.add(person)
+      pinnedWaiting.add(person.nickname)
+      isManual = true
+      return
+    }
+
+    if (pin && members[pin.party].length < fullSize) {
+      members[pin.party].push(person)
+      isManual = true
+
+      if (pin.side) {
+        sidePins.set(person, pin.side)
+      }
+
+      return
+    }
+
+    unpinned.push(person)
+  })
+
+  unpinned.forEach((person) => {
+    if (members[1].length < fullSize) {
+      members[1].push(person)
+    } else if (members[2].length < fullSize) {
+      members[2].push(person)
+    } else {
+      waitingSet.add(person)
+    }
+  })
+
+  const order = new Map(people.map((person, index) => [person, index]))
+  const bySignup = (a, b) => order.get(a) - order.get(b)
+  const groups = [1, 2]
+    .map((party) => {
+      const groupMembers = [...members[party]].sort(bySignup)
+      return { party, members: groupMembers, ...buildBalancedParties(groupMembers, fullSize, sidePins) }
+    })
+    .filter((group) => group.party === 1 || group.members.length > 0)
+  const waiting = people.filter((person) => waitingSet.has(person))
+  const partyOf = new Map([
+    ...groups.flatMap((group) => group.members.map((person) => [person.nickname, group.party])),
+    ...waiting.map((person) => [person.nickname, 0]),
+  ])
+
+  return { groups, waiting, partyOf, pinnedWaiting, isManual }
+}
+
+// 배치 기준 인원 표시: 공대(파티) 수만큼의 정원 중 몇 명이 들었는지, 대기는 +n. 직접 배치가 없으면 formatHeadcount와 같다.
+export function formatArrangementHeadcount(arrangement, fullSize = RAID_FULL_SIZE) {
+  const rosterCount = arrangement.groups.reduce((total, group) => total + group.members.length, 0)
+  const waitingCount = arrangement.waiting.length
+  return `${rosterCount}/${fullSize * arrangement.groups.length}${waitingCount > 0 ? ` +${waitingCount}` : ''}`
+}
+
+// 그 공대의 인원 (party: 1 | 2)
+export function getArrangedMembers(arrangement, party = 1) {
+  return arrangement.groups.find((group) => group.party === party)?.members ?? []
+}
+
+// 한 사람을 옮긴 새 직접 배치. 지금 보이는 공대 · A/B 배치를 그대로 고정한 뒤 그 사람만 옮긴다.
+// (대기자는 W로 정해진 사람만 고정하고, 나머지 대기자는 그대로 신청순으로 빈자리를 기다린다)
+// target: { party: 1 | 2, side: 'A' | 'B' } 또는 { party: 0 }(대기) 또는 { swapWith: 닉네임 }(서로 자리 바꾸기)
+// 반환값: { layout } 또는 { error: 'party_full' | 'same' }
+export function buildMovedLayout(arrangement, fullSize, nickname, target) {
+  const isSingle = fullSize <= PARTY_SIZE
+  const layout = {}
+
+  arrangement.groups.forEach(({ party, partyA, partyB }) => {
+    partyA.forEach((person) => { layout[person.nickname] = `${party}A` })
+    partyB.forEach((person) => { layout[person.nickname] = `${party}B` })
+  })
+  arrangement.pinnedWaiting.forEach((name) => { layout[name] = LAYOUT_WAITING })
+
+  const from = layout[nickname] ?? null
+
+  if (target.swapWith) {
+    const other = layout[target.swapWith] ?? null
+
+    if (target.swapWith === nickname || (from ?? LAYOUT_WAITING) === (other ?? LAYOUT_WAITING)) {
+      return { error: 'same' }
+    }
+
+    layout[nickname] = other ?? LAYOUT_WAITING
+    layout[target.swapWith] = from ?? LAYOUT_WAITING
+    return { layout }
+  }
+
+  const value = target.party === 0 ? LAYOUT_WAITING : `${target.party}${isSingle ? 'A' : target.side ?? 'A'}`
+
+  if (value === (from ?? LAYOUT_WAITING)) {
+    return { error: 'same' }
+  }
+
+  if (value !== LAYOUT_WAITING) {
+    const others = Object.entries(layout).filter(([name]) => name !== nickname).map(([, pin]) => pin)
+    const partyCount = others.filter((pin) => pin[0] === value[0]).length
+    const sideCount = others.filter((pin) => pin === value).length
+
+    if (partyCount >= fullSize || (!isSingle && sideCount >= PARTY_SIZE)) {
+      return { error: 'party_full' }
+    }
+  }
+
+  layout[nickname] = value
+  return { layout }
+}
+
+// 직접 배치 기록의 키 (주 · 요일 · 시간 · 레이드 조합)
+export function getSlotLayoutKey(slot) {
+  return [slot.weekStart, slot.day, slot.time, slot.raidName, slot.difficulty, slot.mode].join('|')
+}
+
+export function normalizeSlotLayout(entry) {
+  if (!entry) {
+    return null
+  }
+
+  const layout = entry.layout && typeof entry.layout === 'object' && !Array.isArray(entry.layout) ? entry.layout : {}
+
+  return {
+    weekStart: entry.week_start ?? entry.weekStart,
+    day: entry.day,
+    time: entry.time,
+    raidName: entry.raid_name ?? entry.raidName,
+    difficulty: entry.difficulty,
+    mode: entry.mode,
+    layout,
+    updatedBy: entry.updated_by ?? entry.updatedBy ?? null,
+    updatedAt: entry.updated_at ?? entry.updatedAt ?? null,
+  }
+}
+
+// 직접 배치 목록에서 한 건을 바꾸거나 추가한다.
+export function upsertSlotLayout(list, next) {
+  if (!next) {
+    return list
+  }
+
+  const key = getSlotLayoutKey(next)
+  return list.some((entry) => getSlotLayoutKey(entry) === key)
+    ? list.map((entry) => (getSlotLayoutKey(entry) === key ? next : entry))
+    : [...list, next]
+}
+
+const SLOT_LAYOUTS_STORAGE_KEY = 'raid-calendar-slot-layouts-v1'
+
+export function loadLocalSlotLayouts() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SLOT_LAYOUTS_STORAGE_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.map((entry) => normalizeSlotLayout(entry)).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveLocalSlotLayouts(list) {
+  try {
+    localStorage.setItem(SLOT_LAYOUTS_STORAGE_KEY, JSON.stringify(list))
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+// 그 파티의 인원을 신청순으로 자른다 (party: 1 | 2). 직접 배치 전의 예전 클리어 기록을 셀 때만 쓴다.
 export function getPartyMembers(people, fullSize, party = 1) {
   return people.slice((party - 1) * fullSize, party * fullSize)
 }
@@ -609,7 +784,8 @@ export function getPowerValue(power) {
 // 한 타임 인원을 A/B 파티로 나눈다. people은 신청 순서로 정렬되어 있어야 한다. 앞의 fullSize명이 정원이고 나머지는 대기다.
 // 가능한 나눔을 모두 비교해 리딩 가능자 수 → 치유성 수 → 전투력 합 순으로 가장 고른 것을 고른다. (최대 252가지)
 // 정원이 한 파티 이하(초월 5인)면 나누지 않고 모두 A에 두며 B는 비워 둔다.
-export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE) {
+// sidePins: 직접 배치로 자리가 정해진 사람 → 'A' | 'B'. 그 사람은 그 자리에 두고 나머지만 고르게 나눈다. (한 자리에 5명 넘게 정해졌으면 넘는 사람은 자유)
+export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE, sidePins = null) {
   const roster = people.slice(0, fullSize)
   const byRole = (a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power)
 
@@ -618,7 +794,22 @@ export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE) {
   }
 
   const count = roster.length
-  const sizeA = Math.ceil(count / 2)
+  // 자리가 정해진 사람 (roster 순서의 번호 → 'A' | 'B'). 한 자리에 PARTY_SIZE명까지만 지킨다.
+  const pinnedSide = new Map()
+  const pinnedCount = { A: 0, B: 0 }
+  roster.forEach((member, index) => {
+    const side = sidePins?.get(member)
+
+    if ((side === 'A' || side === 'B') && pinnedCount[side] < PARTY_SIZE) {
+      pinnedSide.set(index, side)
+      pinnedCount[side] += 1
+    }
+  })
+  // A 인원: 반씩 나누되, 정해진 자리를 지킬 수 있는 범위 안에서 고른다.
+  const lowerA = Math.max(pinnedCount.A, count - PARTY_SIZE)
+  const upperA = Math.min(PARTY_SIZE, count - pinnedCount.B)
+  const sizeA = Math.min(Math.max(Math.ceil(count / 2), lowerA), upperA)
+  const hasPins = pinnedSide.size > 0
   const sum = (getValue) => roster.reduce((total, member) => total + getValue(member), 0)
   const leaderValue = (member) => (member.leadReady === 'O' ? 1 : 0)
   const healerValue = (member) => (member.className === HEALER_CLASS ? 1 : 0)
@@ -626,11 +817,12 @@ export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE) {
   let bestMask = 0
   let bestCost = null
 
-  // 첫 사람은 항상 A에 둔다. (같은 나눔이 A/B만 뒤바뀌어 사람마다 다르게 보이지 않게)
-  for (let mask = 1; mask < (1 << count); mask += 2) {
+  // 자리가 정해진 사람이 없으면 첫 사람은 항상 A에 둔다. (같은 나눔이 A/B만 뒤바뀌어 사람마다 다르게 보이지 않게)
+  // 정해진 사람이 있으면 그 자리를 지키는 나눔만 본다.
+  for (let mask = hasPins ? 0 : 1; mask < (1 << count); mask += hasPins ? 1 : 2) {
     const partyA = roster.filter((_, index) => mask & (1 << index))
 
-    if (partyA.length !== sizeA) {
+    if (partyA.length !== sizeA || [...pinnedSide].some(([index, side]) => Boolean(mask & (1 << index)) !== (side === 'A'))) {
       continue
     }
 
