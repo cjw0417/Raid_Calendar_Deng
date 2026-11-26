@@ -355,6 +355,13 @@ export const REFRESH_MIN_INTERVAL_MS = 30 * 1000
 // 파티를 나눌 때 양쪽에 고르게 넣을 직업
 export const HEALER_CLASS = '치유성'
 
+// 파티 열 안에서 뒤쪽에 두는 직업: 호법성은 4번째, 치유성은 5번째 자리. (나머지 직업은 0)
+export const SUPPORT_CLASS = '호법성'
+
+export function getPartyPositionRank(member) {
+  return member.className === HEALER_CLASS ? 2 : member.className === SUPPORT_CLASS ? 1 : 0
+}
+
 // 자정을 넘겨 끝나는 레이드를 위해, 새벽 이 시간까지는 전날 카드를 접지 않고 지난주 화요일 레이드도 표시할 수 있게 둔다.
 export const LATE_NIGHT_GRACE_MS = 6 * 60 * 60 * 1000
 
@@ -782,12 +789,15 @@ export function getPowerValue(power) {
 }
 
 // 한 타임 인원을 A/B 파티로 나눈다. people은 신청 순서로 정렬되어 있어야 한다. 앞의 fullSize명이 정원이고 나머지는 대기다.
-// 가능한 나눔을 모두 비교해 리딩 가능자 수 → 치유성 수 → 전투력 합 순으로 가장 고른 것을 고른다. (최대 252가지)
+// 가능한 나눔을 모두 비교해 리딩 가능자 수 → 치유성 수 → 호법성 수 → 전투력 합 순으로 가장 고른 것을 고른다. (최대 252가지)
 // 정원이 한 파티 이하(초월 5인)면 나누지 않고 모두 A에 두며 B는 비워 둔다.
 // sidePins: 직접 배치로 자리가 정해진 사람 → 'A' | 'B'. 그 사람은 그 자리에 두고 나머지만 고르게 나눈다. (한 자리에 5명 넘게 정해졌으면 넘는 사람은 자유)
 export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE, sidePins = null) {
   const roster = people.slice(0, fullSize)
-  const byRole = (a, b) => (b.leadReady === 'O') - (a.leadReady === 'O') || getPowerValue(b.power) - getPowerValue(a.power)
+  // 파티 안 순서: 다른 직업(리딩 가능자 먼저, 그다음 전투력 순) → 호법성 → 치유성. 5명이면 호법성이 4번째, 치유성이 5번째다.
+  const byRole = (a, b) => getPartyPositionRank(a) - getPartyPositionRank(b)
+    || (b.leadReady === 'O') - (a.leadReady === 'O')
+    || getPowerValue(b.power) - getPowerValue(a.power)
 
   if (fullSize <= PARTY_SIZE) {
     return { partyA: [...roster].sort(byRole), partyB: [], waiting: people.slice(fullSize) }
@@ -813,7 +823,10 @@ export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE, sidePins
   const sum = (getValue) => roster.reduce((total, member) => total + getValue(member), 0)
   const leaderValue = (member) => (member.leadReady === 'O' ? 1 : 0)
   const healerValue = (member) => (member.className === HEALER_CLASS ? 1 : 0)
-  const totals = [sum(leaderValue), sum(healerValue), sum((member) => getPowerValue(member.power))]
+  const supportValue = (member) => (member.className === SUPPORT_CLASS ? 1 : 0)
+  // 고르게 나눌 기준 (앞일수록 먼저): 리딩 가능자 수 → 치유성 수 → 호법성 수 → 전투력 합
+  const values = [leaderValue, healerValue, supportValue, (member) => getPowerValue(member.power)]
+  const totals = values.map((getValue) => sum(getValue))
   let bestMask = 0
   let bestCost = null
 
@@ -826,15 +839,10 @@ export function buildBalancedParties(people, fullSize = RAID_FULL_SIZE, sidePins
       continue
     }
 
-    const partSums = [
-      partyA.reduce((total, member) => total + leaderValue(member), 0),
-      partyA.reduce((total, member) => total + healerValue(member), 0),
-      partyA.reduce((total, member) => total + getPowerValue(member.power), 0),
-    ]
-    const cost = partSums.map((value, index) => Math.abs(2 * value - totals[index]))
-    const isBetter = !bestCost
-      || cost[0] < bestCost[0]
-      || (cost[0] === bestCost[0] && (cost[1] < bestCost[1] || (cost[1] === bestCost[1] && cost[2] < bestCost[2])))
+    const cost = values.map((getValue, index) => Math.abs(2 * partyA.reduce((total, member) => total + getValue(member), 0) - totals[index]))
+    // 앞 기준부터 비교해 처음 차이 나는 기준으로 고른다.
+    const firstDiff = bestCost ? cost.findIndex((value, index) => value !== bestCost[index]) : -1
+    const isBetter = !bestCost || (firstDiff >= 0 && cost[firstDiff] < bestCost[firstDiff])
 
     if (isBetter) {
       bestMask = mask

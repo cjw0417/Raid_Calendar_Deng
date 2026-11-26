@@ -4863,7 +4863,7 @@ input::placeholder {
 
 /* PC 탭: 오른쪽 영역에서 고른 것만 보여 준다 */
 @media (min-width: 641px) {
-  .app-shell[data-pc-tab='day'] [data-pc]:not([data-pc='day']),
+  .app-shell[data-pc-tab='day'] [data-pc]:not([data-pc='day']):not([data-pc='calendar']),
   .app-shell[data-pc-tab='calendar'] [data-pc]:not([data-pc='calendar']),
   .app-shell[data-pc-tab='clear'] [data-pc]:not([data-pc='clear']),
   .app-shell[data-pc-tab='members'] [data-pc]:not([data-pc='members']) {
@@ -5978,5 +5978,187 @@ input::placeholder {
   .party-column.is-drop-target,
   .party-waiting.is-drop-target {
     min-height: 44px;
+  }
+}
+
+/* 이번 주 시간대 카드의 '배치'는 오른쪽 위에 둔다. */
+.day-raid-time-head .day-raid-arrange-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+/* PC: 파티 표(주간 레이드 파티)는 따로 탭을 두지 않고 이번 주 탭의 요일 카드 아래에 이어서 보여 준다.
+   '배치'나 추천 시간을 누르면 탭을 바꾸지 않고 아래 칸으로 내려간다. (모바일은 하단 탭 그대로) */
+@media (min-width: 641px) {
+  .app-shell[data-pc-tab='day'] .calendar-panel > [data-pc='calendar'] {
+    order: 1;
+  }
+
+  .app-shell[data-pc-tab='day'] .calendar-panel > .panel-header[data-pc='calendar'] {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-faint);
+  }
+
+  /* 파티 탭이 없어졌으니 아래 영역이 어디서 시작하는지 제목을 다시 보여 준다. */
+  .app-shell[data-pc-tab='day'] .calendar-panel > .panel-header[data-pc='calendar'] h2 {
+    display: block;
+  }
+}
+
+/* '배치' 들어가는 버튼은 눈에 띄게: 강조색 · 큰 글씨 · 아이콘 */
+.slot-arrange-button.is-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 11px;
+  border: 1px solid var(--accent);
+  background: var(--accent-glow);
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 800;
+  box-shadow: 0 0 0 1px rgba(136, 141, 231, 0.18);
+}
+
+.slot-arrange-button.is-entry:hover {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.slot-arrange-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+@media (max-width: 640px) {
+  .slot-arrange-button.is-entry {
+    min-height: 40px;
+    padding: 6px 14px;
+    font-size: 0.86rem;
+  }
+}
+
+/* PC의 요일 카드 · 파티 칸은 좁아서 꽉 찬 강조색 칩으로 작게 두고 아이콘은 뺀다. (색으로 눈에 띄게) */
+@media (min-width: 641px) {
+  .slot-arrange-button.is-entry {
+    padding: 2px 8px;
+    background: var(--accent);
+    font-size: 0.7rem;
+  }
+
+  .slot-arrange-button.is-entry:hover {
+    background: var(--accent-deep);
+  }
+
+  .slot-arrange-button.is-entry .slot-arrange-icon {
+    display: none;
+  }
+}
+
+/* 배치 바꾸기 다듬기: 안내 · 고른 사람 · 놓을 곳을 뚜렷하게 */
+.slot-arrange-hint {
+  margin: 2px 0 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--bg-inset);
+  line-height: 1.4;
+}
+
+.slot-arrange-hint.is-picked {
+  background: var(--accent-glow);
+  color: #ffffff;
+}
+
+.slot-arrange-bar {
+  justify-content: flex-end;
+  margin: 8px 0 0;
+}
+
+/* 대기 칸: 이름표와 안내문을 줄을 나눠 보여 준다 */
+.party-waiting.is-drop-target .party-label {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.party-waiting.is-drop-target {
+  display: block;
+  margin-top: 8px;
+}
+
+/* 사람을 골랐으면 놓을 수 있는 곳을 강조색으로 */
+.party-column.is-drop-target.is-ready,
+.party-waiting.is-drop-target.is-ready {
+  border-style: solid;
+  border-color: var(--accent);
+  background: rgba(136, 141, 231, 0.1);
+}
+
+.is-drop-target.is-ready .empty-raid-text {
+  color: var(--accent-line);
+  font-weight: 800;
+}
+
+/* 고른 사람은 꽉 찬 강조색 */
+.time-member-pill.is-picked {
+  outline: 2px solid #ffffff;
+  outline-offset: 0;
+  background: var(--accent);
+}
+
+.time-member-pill.is-picked .member-power-inline {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* 모바일 이번 주 카드 안의 배치 보드 */
+.day-raid-arrange-board {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-faint);
+}
+
+@media (max-width: 640px) {
+  /* 모바일: 완료 버튼 줄은 하단 탭 위에 붙어 따라온다 */
+  .slot-arrange-bar {
+    position: sticky;
+    bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+    z-index: 5;
+    padding: 8px 0 4px;
+    background: linear-gradient(to top, var(--bg-card) 70%, transparent);
+  }
+
+  .slot-arrange-bar .slot-arrange-button {
+    flex: 1;
+  }
+
+  /* 파티 탭 칸에서 배치를 바꾸는 중이면 시간 열을 비우고 칸을 가로로 꽉 채운다 (이름이 잘리지 않게) */
+  .calendar-grid[data-mobile-day] .slot-cell.is-arranging {
+    grid-column: 1 / -1;
+  }
+
+  .time-member-pill.is-arrangeable {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .slot-arrange-hint {
+    font-size: 0.8rem;
+  }
+}
+
+/* 모바일 이번 주 카드 안의 배치 보드도 파티 탭처럼 A · B를 나란히 둔다 (세로로 길어지지 않게) */
+@media (max-width: 640px) {
+  .day-raid-arrange-board .party-split:not(.is-single) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 모바일 이번 주 카드 안의 배치 보드: 긴 닉네임은 자르지 않고 줄을 바꿔 다 보여 준다 */
+@media (max-width: 640px) {
+  .day-raid-arrange-board .time-member-pill .member-name-wrap > span:first-child {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
