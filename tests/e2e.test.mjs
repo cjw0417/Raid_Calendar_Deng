@@ -1197,8 +1197,9 @@ for (const device of ['pc', 'mobile']) {
   await context.close()
 }
 
-// ---------- 에라쿠스: 클리어로 0/5가 되면 그 시간대와 남은 신청이 일정표에서 빠짐 (가짜 Supabase) ----------
-{
+// ---------- 에라쿠스: 클리어로 0/5가 되면 그 시간대와 남은 신청이 일정표에서 빠짐 (가짜 Supabase, PC · 모바일) ----------
+for (const device of ['pc', 'mobile']) {
+  const isPhone = device === 'mobile'
   const toRow = (e) => ({ id: e.id, nickname: e.nickname, raid_name: e.raidName, difficulty: e.difficulty, mode: e.mode, days: e.days, times: e.times, day_time_selection: e.dayTimeSelection, attendance: e.attendance, class_name: e.className, power: e.power, lead_ready: e.leadReady, updated_at: e.updatedAt })
   const mine = toRow(sched(NICK, 0, { 수: ['20:00'], 목: ['21:00'] }, { id: 'x0', raidName: '에라쿠스 유적', difficulty: '1단계' }))
   const other = toRow(sched('원정2', 1, { 수: ['20:00'] }, { id: 'x1', raidName: '에라쿠스 유적', difficulty: '1단계' }))
@@ -1219,17 +1220,26 @@ for (const device of ['pc', 'mobile']) {
     else if (url.includes('/rest/v1/raid_runs')) body = JSON.stringify([runRow])
     return route.fulfill({ status: 200, headers, contentType: 'application/json', body })
   })
-  const { page, context } = await open(REMOTE, { routes, members: [], extraStorage: { 'raid-calendar-login-v1': NICK, 'raid-calendar-saved-password-v1': PW } })
-  const addButton = page.locator('[aria-label="20:00 클리어 1회 추가"]').first()
+  const { page, context } = await open(REMOTE, {
+    routes,
+    members: [],
+    extraStorage: { 'raid-calendar-login-v1': NICK, 'raid-calendar-saved-password-v1': PW },
+    ...(isPhone ? { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } : {}),
+  })
+  const press = (locator) => (isPhone ? locator.tap() : locator.click())
+  const addButton = page.locator('[aria-label="20:00 클리어 1회 추가"]:visible').first()
   await addButton.waitFor()
-  await addButton.click()
-  check('0/5 정리: 확인 팝업에 신청이 빠진다고 안내', (await page.locator('.save-confirm-modal').innerText()).includes('이 시간대와 아직 시작하지 않은 에라쿠스 유적 신청은 일정표에서 자동으로 빠져요'))
-  await page.locator('.save-confirm-modal .primary-button').click()
-  await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].some((t) => t.innerText.includes('일정표에서 뺐어요')), null, { timeout: 4000 }).catch(() => {})
-  check('0/5 정리: 클리어 요청은 한 번', requests.map((request) => request.p_action), ['add'])
-  check('0/5 정리: 알림에 신청을 뺐다고 안내', (await toastText(page)).includes(`${NICK}님은 이번 주 횟수를 다 써서 에라쿠스 유적 신청을 일정표에서 뺐어요`))
-  check('0/5 정리: 내 에라쿠스 신청이 목록에서 빠짐', await page.locator('.saved-schedule-tag', { hasText: '에라쿠스' }).count(), 0)
-  check('0/5 정리: 신청이 빠져도 출발했으니 클리어 버튼은 그대로', await addButton.isDisabled(), false)
+  await page.screenshot({ path: join(out, `${device}-drop-before.png`) })
+  await press(addButton)
+  await page.screenshot({ path: join(out, `${device}-drop-confirm.png`) })
+  check(`${device} 0/5 정리: 확인 팝업에 신청이 빠진다고 안내`, (await page.locator('.save-confirm-modal').innerText()).includes('이 시간대와 아직 시작하지 않은 에라쿠스 유적 신청은 일정표에서 자동으로 빠져요'))
+  await press(page.locator('.save-confirm-modal .primary-button'))
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].some((t) => t.innerText.includes('일정표에서 뺐어요') || t.innerText.includes('신청 정리')), null, { timeout: 4000 }).catch(() => {})
+  check(`${device} 0/5 정리: 클리어 요청은 한 번`, requests.map((request) => request.p_action), ['add'])
+  await page.screenshot({ path: join(out, `${device}-drop-after.png`) })
+  check(`${device} 0/5 정리: 알림에 신청을 뺐다고 안내`, (await toastText(page)).includes(isPhone ? '다 쓴 사람 신청 정리' : `${NICK}님은 이번 주 횟수를 다 써서 에라쿠스 유적 신청을 일정표에서 뺐어요`))
+  check(`${device} 0/5 정리: 내 에라쿠스 신청이 목록에서 빠짐`, await page.locator('.saved-schedule-tag', { hasText: '에라쿠스' }).count(), 0)
+  check(`${device} 0/5 정리: 신청이 빠져도 출발했으니 클리어 버튼은 그대로`, [await addButton.count(), await addButton.isDisabled()], [1, false])
   await context.close()
 }
 
