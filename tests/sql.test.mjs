@@ -385,7 +385,7 @@ console.log('PASS 횟수 조정 SQL 실행 (2회)')
 check('횟수 조정 표도 실시간 대상', (await rows(`select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='raid_entry_adjustments'`)).length, 1)
 
 const adjust = async (nick, delta, raid = '에라쿠스 유적') => (await rows(`select public.member_adjust_raid_entries($1,'pw',$2,$3) r`, [nick, raid, delta]))[0].r
-check('쓴 횟수 +1', await adjust('조정캐', 1), { nickname: '조정캐', raidName: '에라쿠스 유적', weekStart, adjustment: 1 })
+check('쓴 횟수 +1', await adjust('조정캐', 1), { dropped: 0, nickname: '조정캐', raidName: '에라쿠스 유적', weekStart, adjustment: 1 })
 check('한 번 더 +1', (await adjust('조정캐', 1)).adjustment, 2)
 check('-1', (await adjust('조정캐', -1)).adjustment, 1)
 check('다른 캐릭터는 따로', (await adjust('다른캐', -1)).adjustment, -1)
@@ -462,6 +462,10 @@ await erClear('원정5', 'add', 6)
 check('마지막 사람까지 0/5', await left('원정5'), 0)
 check('모두 0회면 더 셀 수 없음', (await erClear('원정5', 'add', 7)).error, 'no_entries_left')
 check('예전 화면에서 여러 번 센 클리어를 한꺼번에 못 지움', (await erStatus('원정5', null)).error, 'clear_count_only')
+check('0/5가 되면 클리어한 시간대 신청도 빠짐', (await rows(`select nickname from public.raid_schedules where raid_name=$1 and difficulty=$2 and nickname = any($3) order by nickname`, [ER[2], ER[3], crew])).map((r) => r.nickname), ['원정6'])
+check('신청이 빠져도 출발한 사람은 클리어를 누를 수 있음', (await erClear('원정1', 'add', 7)).error, 'no_entries_left')
+// 아래 확인을 위해 다시 신청한다. (1분 안에 다시 넣으면 원래 신청 순서로 돌아간다)
+for (const nick of ['원정1', '원정3', '원정4', '원정5']) await save(nick, selection([ER[0], ER[1]]), { raid: ER[2], difficulty: ER[3] })
 await erRally('원정1', 'cancel')
 check('준비 확인을 취소하면 차감도 되돌아감', await lefts('원정1', '원정2', '원정5'), [3, 5, 5])
 
@@ -516,6 +520,52 @@ const muspelClear = await rows(`select public.member_set_raid_run_status('무스
 check('다른 레이드: 준비한 사람을 클리어 명단에', muspelClear[0].r.run.clear_log.map((e) => e.members), [['무스1']])
 check('다른 레이드: 클리어 알림은 그대로 1건', [await sentTotal(), (await lastEmbed()).title], [sentBase + 1, '🏆 클리어! | 무스펠 · 보통 · 트라이'])
 check('클리어 내부 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_clear_add(uuid,text)','execute') a, has_function_privilege('anon','public._raid_entries_left(date,text,text)','execute') b, has_function_privilege('anon','public.member_raid_clear_count(text,text,date,text,text,text,text,text,text,integer,integer)','execute') c, has_function_privilege('anon','public._raid_party_roster(date,text,text,text,text,text,integer)','execute') d`))[0], { a: false, b: false, c: true, d: false })
+
+// ---------- 0/5가 되면 아직 시작하지 않은 에라쿠스 신청을 일정표에서 뺀다 ----------
+// 지난 시간대(수 12:00)와 미래 시간대(화 22:00 · 23:00)가 둘 다 있어야 하므로 수요일 12시 전이나 화요일 21시 이후에는 건너뛴다.
+const canCheckDrop = (await rows(`select (select public._current_week_start()) + interval '12 hours' <= now() and (select public._current_week_start()) + interval '6 days 21 hours' > now() as v`))[0].v
+check('신청 정리 함수는 외부에서 못 부름', (await rows(`select has_function_privilege('anon','public._raid_drop_exhausted_slots(date,text,text,text,text,text,text)','execute') a`))[0].a, false)
+if (!canCheckDrop) {
+  console.log('SKIP 0/5 신청 정리: 수요일 12시 전이거나 화요일 21시 이후라 건너뜀')
+} else {
+  const ER3 = { raid: '에라쿠스 유적', difficulty: '3단계' }
+  const DROP_RUN = ['화', '22:00', '에라쿠스 유적', '3단계', '트라이']
+  const schedule = async (nick, raid, difficulty) => (await rows(
+    `select day_time_selection s, days, times from public.raid_schedules where nickname=$1 and raid_name=$2 and difficulty=$3`,
+    [nick, raid, difficulty],
+  ))[0] ?? null
+  const dropRally = async (nick, action) => (await rows(`select public.member_raid_rally($1,'pw',$2::date,$3,$4,$5,$6,$7,$8) r`, [nick, weekStart, ...DROP_RUN, action]))[0].r
+  const dropClear = async (nick, expected, action = 'add') => (await rows(`select public.member_raid_clear_count($1,'pw',$2::date,$3,$4,$5,$6,$7,$9,$8) r`, [nick, weekStart, ...DROP_RUN, expected, action]))[0].r
+
+  await save('소진1', selection(['수', '12:00'], ['화', '22:00'], ['화', '23:00']), ER3)
+  await save('소진1', selection(['화', '21:00']), { raid: '에라쿠스 유적', difficulty: '1단계' })
+  await save('소진1', selection(['화', '23:00']))
+  await save('소진2', selection(['화', '22:00'], ['화', '23:00']), ER3)
+
+  for (let i = 0; i < 3; i += 1) await adjust('소진1', 1)
+  check('횟수가 남아 있으면 신청을 빼지 않음', [(await adjust('소진1', 1)).dropped, await left('소진1'), (await schedule('소진1', '에라쿠스 유적', '3단계')).s], [0, 1, { 수: ['12:00'], 화: ['22:00', '23:00'] }])
+
+  await dropRally('소진1', 'call')
+  await dropRally('소진2', 'check')
+  await dropRally('소진1', 'start')
+  const dropCleared = await dropClear('소진1', 0)
+  check('0/5가 된 사람을 알려 줌', [dropCleared.dropped, await lefts('소진1', '소진2')], [['소진1'], [0, 4]])
+  check('지금 클리어한 시간대와 아직 시작하지 않은 시간대를 빼고 지난 시간대만 남김', await schedule('소진1', '에라쿠스 유적', '3단계'), { s: { 수: ['12:00'] }, days: ['수'], times: ['12:00'] })
+  check('다른 단계 신청도 빼고, 남은 시간이 없으면 신청을 지움', await schedule('소진1', '에라쿠스 유적', '1단계'), null)
+  check('다른 레이드 신청은 그대로', (await schedule('소진1', '무스펠', '보통')).s, { 화: ['23:00'] })
+  check('횟수가 남은 사람 신청은 그대로', (await schedule('소진2', '에라쿠스 유적', '3단계')).s, { 화: ['22:00', '23:00'] })
+  check('클리어 명단에는 그대로 남음', (await rows(`select clear_log from public.raid_runs where day=$1 and time=$2 and raid_name=$3 and difficulty=$4`, DROP_RUN.slice(0, 4)))[0].clear_log[0].members, ['소진1', '소진2'])
+
+  const dropUndone = await dropClear('소진1', 1, 'undo')
+  check('신청이 빠져도 출발한 사람은 되돌리기 가능', [dropUndone.error ?? null, dropUndone.run.clear_log.length, await left('소진1')], [null, 0, 1])
+  check('신청이 빠지고 출발도 안 한 사람은 계속 불가', (await dropClear('외부인', 0)).error, 'not_participant')
+  const reCleared = await dropClear('소진1', 0)
+  check('되돌린 뒤 다시 클리어하면 신청이 빠진 사람도 다시 차감', [reCleared.run.clear_log[0].members, reCleared.run.clear_dropped, await lefts('소진1', '소진2')], [['소진1', '소진2'], ['소진1'], [0, 4]])
+
+  for (let i = 0; i < 3; i += 1) await adjust('소진2', 1)
+  check('직접 줄여 0회가 되면 아직 시작하지 않은 신청을 모두 뺌', [(await adjust('소진2', 1)).dropped, await left('소진2'), await schedule('소진2', '에라쿠스 유적', '3단계')], [2, 0, null])
+  await dropRally('소진1', 'cancel')
+}
 
 // ---------- 직접 배치: 리딩 가능자가 공대 · A/B · 대기를 옮긴다 ----------
 const saveLayout = async (nick, day, time, layout, raid = '무스펠', difficulty = '보통') => (await rows(

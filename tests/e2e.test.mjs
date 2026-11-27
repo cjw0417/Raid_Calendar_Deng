@@ -680,7 +680,11 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 {
   // 클리어 O 3번(1단계 2번 · 2단계 1번) + 클리어 X 1번(세지 않음) → 남은 2/5
   const erakus = (difficulty, sel, id) => sched(NICK, 0, sel, { id, raidName: '에라쿠스 유적', difficulty })
-  const run = (difficulty, day, time, cleared) => ({ weekStart: '2026-12-23', day, time, raidName: '에라쿠스 유적', difficulty, mode: '트라이', gatheredAt: THIS_WEEK, cleared })
+  // 클리어 명단(clearLog)을 남겨 둔다. 0/5가 되어 신청이 빠져도 차감한 횟수는 그대로여야 한다.
+  const run = (difficulty, day, time, cleared) => ({
+    weekStart: '2026-12-23', day, time, raidName: '에라쿠스 유적', difficulty, mode: '트라이', gatheredAt: THIS_WEEK, cleared,
+    clearLog: cleared === 'O' ? [{ at: THIS_WEEK, by: NICK, members: [NICK] }] : [],
+  })
   const runs = [
     run('1단계', '수', '19:00', 'O'),
     run('1단계', '목', '19:00', 'O'),
@@ -705,11 +709,22 @@ const toastText = (page) => page.locator('.toast').allInnerTexts().then((texts) 
 
   // 버튼은 남은 횟수 기준: −1은 남은 횟수를 줄이고, +1은 되돌린다.
   await page.locator('.entries-adjust button', { hasText: '−1' }).click()
+  // 0회가 되면 아직 시작하지 않은 신청(1단계 목 · 금 19:00, 2단계 목 21:00)이 빠지므로 한 번 확인한다. (지금: 수 20:30)
+  let dropConfirm = ''
+  page.once('dialog', (dialog) => {
+    dropConfirm = dialog.message()
+    dialog.accept()
+  })
   await page.locator('.entries-adjust button', { hasText: '−1' }).click()
+  check('횟수: 0이 되기 전에 신청이 빠진다고 확인', dropConfirm.includes('신청 3개가 일정표에서 자동으로 빠져요'))
   check('횟수: −1 두 번이면 0/5', [(await panelText()).includes('0/5'), (await panelText()).includes('직접 차감 2회')], [true, true])
   check('횟수: 0이면 −1 막힘', await page.locator('.entries-adjust button', { hasText: '−1' }).isDisabled(), true)
+  const savedErakus = await page.evaluate(() => JSON.parse(localStorage.getItem('raid-calendar-raid-schedules-v1') ?? '[]')
+    .filter((entry) => entry.raidName === '에라쿠스 유적')
+    .map((entry) => [entry.difficulty, entry.dayTimeSelection]))
+  check('횟수: 0/5면 이미 시작한 시간만 남기고 신청을 뺌', savedErakus, [['1단계', { 수: ['19:00'], 목: [], 금: [], 토: [], 일: [], 월: [], 화: [] }]])
   await page.locator('#schedule-target-field').screenshot({ path: join(out, 'pc-erakus-entries.png') })
-  check('횟수: 신청 목록에 소진 표시', await page.locator('.saved-schedule-tag.tag-exhausted').count(), 2)
+  check('횟수: 신청 목록에 소진 표시', await page.locator('.saved-schedule-tag.tag-exhausted').count(), 1)
   const cell = page.locator('[aria-label="토요일 21:00"]')
   await cell.evaluate((el) => el.scrollIntoView({ block: 'center' }))
   await cell.click({ force: true })
@@ -1179,6 +1194,42 @@ for (const device of ['pc', 'mobile']) {
   await refocus(1)
   await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].some((t) => t.innerText.includes('남은 횟수')), null, { timeout: 4000 }).catch(() => {})
   check('차감 안내: 남이 누르면 내 남은 횟수 안내', (await toastText(page)).includes(`에라쿠스 유적 클리어 2회! ${NICK} 남은 횟수 3/5`))
+  await context.close()
+}
+
+// ---------- 에라쿠스: 클리어로 0/5가 되면 그 시간대와 남은 신청이 일정표에서 빠짐 (가짜 Supabase) ----------
+{
+  const toRow = (e) => ({ id: e.id, nickname: e.nickname, raid_name: e.raidName, difficulty: e.difficulty, mode: e.mode, days: e.days, times: e.times, day_time_selection: e.dayTimeSelection, attendance: e.attendance, class_name: e.className, power: e.power, lead_ready: e.leadReady, updated_at: e.updatedAt })
+  const mine = toRow(sched(NICK, 0, { 수: ['20:00'], 목: ['21:00'] }, { id: 'x0', raidName: '에라쿠스 유적', difficulty: '1단계' }))
+  const other = toRow(sched('원정2', 1, { 수: ['20:00'] }, { id: 'x1', raidName: '에라쿠스 유적', difficulty: '1단계' }))
+  const runRow = { week_start: '2026-12-23', day: '수', time: '20:00', raid_name: '에라쿠스 유적', difficulty: '1단계', mode: '트라이', rally_called_by: NICK, rally_called_at: THIS_WEEK, rally_checkins: [NICK, '원정2'], gathered_at: THIS_WEEK, cleared: null, cleared_by: null, clear_log: [], clear_finished: [], clear_dropped: [] }
+  const cleared = { ...runRow, cleared: 'O', cleared_by: NICK, clear_log: [{ at: THIS_WEEK, by: NICK, members: [NICK, '원정2'] }], clear_finished: [NICK], clear_dropped: [NICK] }
+  const requests = []
+  const routes = (context) => context.route(`${FAKE_SUPABASE}/**`, async (route) => {
+    const url = route.request().url()
+    const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' }
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers })
+    let body = url.includes('nickname=eq') ? 'null' : '[]'
+    if (url.includes('/rpc/member_login')) body = '"ok"'
+    else if (url.includes('/rpc/member_raid_clear_count')) {
+      requests.push(route.request().postDataJSON())
+      body = JSON.stringify({ run: cleared, notified: true, dropped: [NICK] })
+    } else if (url.includes('/rest/v1/raid_entry_adjustments')) body = JSON.stringify([{ week_start: '2026-12-23', nickname: NICK, raid_name: '에라쿠스 유적', adjustment: 4 }])
+    else if (url.includes('/rest/v1/raid_schedules')) body = JSON.stringify([mine, other])
+    else if (url.includes('/rest/v1/raid_runs')) body = JSON.stringify([runRow])
+    return route.fulfill({ status: 200, headers, contentType: 'application/json', body })
+  })
+  const { page, context } = await open(REMOTE, { routes, members: [], extraStorage: { 'raid-calendar-login-v1': NICK, 'raid-calendar-saved-password-v1': PW } })
+  const addButton = page.locator('[aria-label="20:00 클리어 1회 추가"]').first()
+  await addButton.waitFor()
+  await addButton.click()
+  check('0/5 정리: 확인 팝업에 신청이 빠진다고 안내', (await page.locator('.save-confirm-modal').innerText()).includes('이 시간대와 아직 시작하지 않은 에라쿠스 유적 신청은 일정표에서 자동으로 빠져요'))
+  await page.locator('.save-confirm-modal .primary-button').click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].some((t) => t.innerText.includes('일정표에서 뺐어요')), null, { timeout: 4000 }).catch(() => {})
+  check('0/5 정리: 클리어 요청은 한 번', requests.map((request) => request.p_action), ['add'])
+  check('0/5 정리: 알림에 신청을 뺐다고 안내', (await toastText(page)).includes(`${NICK}님은 이번 주 횟수를 다 써서 에라쿠스 유적 신청을 일정표에서 뺐어요`))
+  check('0/5 정리: 내 에라쿠스 신청이 목록에서 빠짐', await page.locator('.saved-schedule-tag', { hasText: '에라쿠스' }).count(), 0)
+  check('0/5 정리: 신청이 빠져도 출발했으니 클리어 버튼은 그대로', await addButton.isDisabled(), false)
   await context.close()
 }
 

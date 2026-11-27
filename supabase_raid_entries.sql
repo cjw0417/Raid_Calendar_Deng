@@ -35,7 +35,7 @@ for select
 using (true);
 
 -- 2. 조정 함수: 이번 주 쓴 횟수를 1회 더하거나(p_delta = 1) 뺀다(p_delta = -1).
---    반환값: { weekStart, nickname, raidName, adjustment } 또는 { error }
+--    반환값: { weekStart, nickname, raidName, adjustment, dropped(일정표에서 뺀 시간대 수) } 또는 { error }
 create or replace function public.member_adjust_raid_entries(p_nickname text, p_password text, p_raid_name text, p_delta integer)
 returns jsonb
 language plpgsql
@@ -48,6 +48,7 @@ declare
   week_start_value date := (public._current_week_start() at time zone 'Asia/Seoul')::date;
   verify_result text;
   next_value integer;
+  dropped_count integer := 0;
 begin
   if p_delta is null or p_delta not in (-1, 1) or raid_name_value = '' then
     return jsonb_build_object('error', 'invalid_request');
@@ -67,11 +68,19 @@ begin
         updated_at = now()
   returning adjustment into next_value;
 
+  -- 직접 줄여서 0회가 되면 아직 시작하지 않은 신청 시간을 일정표에서 뺀다. (supabase_raid_runs.sql의 함수)
+  if p_delta = 1 and to_regprocedure('public._raid_drop_exhausted_slots(date,text,text,text,text,text,text)') is not null then
+    execute 'select public._raid_drop_exhausted_slots($1, $2, $3)'
+    into dropped_count
+    using week_start_value, raid_name_value, nickname_value;
+  end if;
+
   return jsonb_build_object(
     'weekStart', week_start_value,
     'nickname', nickname_value,
     'raidName', raid_name_value,
-    'adjustment', next_value
+    'adjustment', next_value,
+    'dropped', coalesce(dropped_count, 0)
   );
 end;
 $$;

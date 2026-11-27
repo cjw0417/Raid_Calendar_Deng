@@ -107,6 +107,9 @@ update public.raid_runs set rally_notify_count = 1 where rally_notified_at is no
 -- clear_finished는 마지막 횟수를 썼다고 이미 디스코드로 알린 사람
 alter table public.raid_runs add column if not exists clear_log jsonb not null default '[]';
 alter table public.raid_runs add column if not exists clear_finished text[] not null default '{}';
+-- clear_dropped는 이 시간대에서 클리어해 0회가 되어 신청이 일정표에서 자동으로 빠진 사람.
+-- 신청이 없어도 출발한 사람으로 보아, 클리어를 되돌렸다 다시 누르면 다시 차감한다.
+alter table public.raid_runs add column if not exists clear_dropped text[] not null default '{}';
 
 alter table public.raid_runs enable row level security;
 
@@ -692,6 +695,17 @@ as $$
   where p_run.week_start >= (public._current_week_start() at time zone 'Asia/Seoul')::date
     and v.nickname = any(p_run.rally_checkins)
   union all
+  -- 0회가 되어 신청이 자동으로 빠진 사람도 출발 명단에 있으면 출발한 사람이다. (신청한 사람 뒤에 둔다)
+  select c.name, 100000 + c.position
+  from unnest(p_run.rally_checkins) with ordinality as c(name, position)
+  where p_run.week_start >= (public._current_week_start() at time zone 'Asia/Seoul')::date
+    and c.name = any(p_run.clear_dropped)
+    and not exists (
+      select 1
+      from public._raid_slot_voters(p_run.week_start, p_run.day, p_run.time, p_run.raid_name, p_run.difficulty, p_run.mode) v
+      where v.nickname = c.name
+    )
+  union all
   select c.name, c.position
   from unnest(p_run.rally_checkins) with ordinality as c(name, position)
   where p_run.week_start < (public._current_week_start() at time zone 'Asia/Seoul')::date;
@@ -738,6 +752,100 @@ $$;
 
 revoke execute on function public._raid_entries_left(date, text, text) from public, anon, authenticated;
 
+-- 이번 주 횟수를 다 쓴(0회 남은) 캐릭터의 아직 시작하지 않은 신청 시간을 일정표에서 뺀다. 그 레이드의 모든 난이도 · 공략 방식이 대상이다.
+-- 이미 시작한 시간대는 남기되, 지금 클리어한 시간대(p_cleared_*)는 시작했어도 뺀다. 남은 시간이 없으면 신청 한 건을 지운다.
+-- 빠진 자리는 raid_schedules 트리거(_after_raid_slot_removed)가 대기 승격 알림까지 처리한다.
+-- 반환값: 뺀 시간대 수. 횟수가 남았거나 이번 주가 아니면 0.
+create or replace function public._raid_drop_exhausted_slots(
+  p_week_start date,
+  p_raid_name text,
+  p_nickname text,
+  p_cleared_difficulty text default null,
+  p_cleared_mode text default null,
+  p_cleared_day text default null,
+  p_cleared_time text default null
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  schedule_row public.raid_schedules;
+  kept jsonb;
+  row_removed integer;
+  removed_count integer := 0;
+begin
+  if public._raid_weekly_limit(p_raid_name) = 0
+     or p_week_start is distinct from (public._current_week_start() at time zone 'Asia/Seoul')::date
+     or coalesce(public._raid_entries_left(p_week_start, p_raid_name, p_nickname), 1) > 0 then
+    return 0;
+  end if;
+
+  for schedule_row in
+    select s.*
+    from public.raid_schedules s
+    where s.nickname = p_nickname
+      and s.raid_name = p_raid_name
+      and s.attendance = '참'
+      and s.updated_at >= public._current_week_start()
+    for update
+  loop
+    with slots as (
+      select
+        d.key as slot_day,
+        t.value as slot_time,
+        t.position,
+        ((p_week_start + (array_position(array['수', '목', '금', '토', '일', '월', '화'], d.key) - 1))
+          + case when t.value = '00:00' then 1 else 0 end + t.value::time) at time zone 'Asia/Seoul' as slot_start
+      from jsonb_each(case when jsonb_typeof(schedule_row.day_time_selection) = 'object' then schedule_row.day_time_selection else '{}'::jsonb end) d
+      cross join lateral jsonb_array_elements_text(case when jsonb_typeof(d.value) = 'array' then d.value else '[]'::jsonb end) with ordinality t(value, position)
+    ),
+    keep as (
+      select *
+      from slots
+      where (slot_start is null or slot_start <= now())
+        and not (schedule_row.difficulty is not distinct from p_cleared_difficulty and schedule_row.mode is not distinct from p_cleared_mode
+                 and slot_day is not distinct from p_cleared_day and slot_time is not distinct from p_cleared_time)
+    )
+    select
+      (select count(*) from slots) - (select count(*) from keep),
+      coalesce((
+        select jsonb_object_agg(k.slot_day, k.times)
+        from (select slot_day, jsonb_agg(slot_time order by position) as times from keep group by slot_day) k
+      ), '{}'::jsonb)
+    into row_removed, kept;
+
+    if row_removed = 0 then
+      continue;
+    end if;
+
+    if kept = '{}'::jsonb then
+      delete from public.raid_schedules where id = schedule_row.id;
+    else
+      update public.raid_schedules
+      set day_time_selection = kept,
+          days = array(
+            select k.key from jsonb_object_keys(kept) k(key)
+            order by array_position(array['수', '목', '금', '토', '일', '월', '화'], k.key)
+          ),
+          times = array(
+            select u.value
+            from (select distinct v.value from jsonb_each(kept) d cross join lateral jsonb_array_elements_text(d.value) v(value)) u
+            order by u.value = '00:00', u.value
+          )
+      where id = schedule_row.id;
+    end if;
+
+    removed_count := removed_count + row_removed;
+  end loop;
+
+  return removed_count;
+end;
+$$;
+
+revoke execute on function public._raid_drop_exhausted_slots(date, text, text, text, text, text, text) from public, anon, authenticated;
+
 -- 클리어 1회를 기록한다. 출발한 사람(_raid_departed) 중 횟수가 남은 사람이 정원까지 1회씩 차감된다.
 -- 디스코드는 남은 횟수가 1회였다가 0회가 된 사람이 있을 때만 알린다. 같은 시간대에서 같은 사람은 한 번만 알린다.
 create or replace function public._raid_clear_add(p_run_id uuid, p_nickname text)
@@ -753,6 +861,8 @@ declare
   finished text[];
   members_text text;
   notified boolean := false;
+  dropped text[] := '{}';
+  charged_name text;
 begin
   select * into run_row from public.raid_runs where id = p_run_id for update;
   limit_value := public._raid_weekly_limit(run_row.raid_name);
@@ -817,7 +927,25 @@ begin
     end if;
   end if;
 
-  return jsonb_build_object('run', to_jsonb(run_row), 'notified', notified);
+  -- 이번 클리어로 0회가 된 사람은 지금 클리어한 시간대와 아직 시작하지 않은 시간대 신청을 일정표에서 뺀다.
+  -- 알림을 보낸 뒤에 빼서 알림의 파티 표시가 클리어할 때 그대로다. 클리어 명단(clear_log)에는 이름이 남는다.
+  foreach charged_name in array charged loop
+    if public._raid_drop_exhausted_slots(
+      run_row.week_start, run_row.raid_name, charged_name,
+      run_row.difficulty, run_row.mode, run_row.day, run_row.time
+    ) > 0 then
+      dropped := dropped || charged_name;
+    end if;
+  end loop;
+
+  if cardinality(dropped) > 0 then
+    update public.raid_runs
+    set clear_dropped = array(select distinct unnest(clear_dropped || dropped))
+    where id = p_run_id
+    returning * into run_row;
+  end if;
+
+  return jsonb_build_object('run', to_jsonb(run_row), 'notified', notified, 'dropped', to_jsonb(dropped));
 end;
 $$;
 
@@ -866,21 +994,22 @@ begin
     return jsonb_build_object('error', 'bad_request');
   end if;
 
-  -- 그 시간대에 투표한 사람만 바꿀 수 있다.
-  if not exists (
-    select 1
-    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
-    where v.nickname = nickname_value
-  ) then
-    return jsonb_build_object('error', 'not_participant');
-  end if;
-
   select * into run_row
   from public.raid_runs
   where week_start = p_week_start and day = p_day and time = p_time
     and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
     and party = p_party
   for update;
+
+  -- 그 시간대에 투표한 사람과 이 파티로 출발한 사람만 바꿀 수 있다.
+  -- (0/5가 되어 신청이 일정표에서 빠진 사람도 출발 명단에 남아 있으면 되돌리기 · 클리어를 누를 수 있다)
+  if not exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = nickname_value
+  ) and not (nickname_value = any(coalesce(run_row.rally_checkins, '{}'))) then
+    return jsonb_build_object('error', 'not_participant');
+  end if;
 
   if run_row.id is null or run_row.rally_called_at is null then
     return jsonb_build_object('error', 'not_gathered');
@@ -989,21 +1118,22 @@ begin
     return jsonb_build_object('error', 'bad_request');
   end if;
 
-  -- 그 시간대에 투표한 사람만 바꿀 수 있다.
-  if not exists (
-    select 1
-    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
-    where v.nickname = nickname_value
-  ) then
-    return jsonb_build_object('error', 'not_participant');
-  end if;
-
   select * into run_row
   from public.raid_runs
   where week_start = p_week_start and day = p_day and time = p_time
     and raid_name = p_raid_name and difficulty = p_difficulty and mode = p_mode
     and party = p_party
   for update;
+
+  -- 그 시간대에 투표한 사람과 이 파티로 출발한 사람만 바꿀 수 있다.
+  -- (0/5가 되어 신청이 일정표에서 빠진 사람도 출발 명단에 남아 있으면 되돌리기 · 클리어를 누를 수 있다)
+  if not exists (
+    select 1
+    from public._raid_slot_voters(p_week_start, p_day, p_time, p_raid_name, p_difficulty, p_mode) v
+    where v.nickname = nickname_value
+  ) and not (nickname_value = any(coalesce(run_row.rally_checkins, '{}'))) then
+    return jsonb_build_object('error', 'not_participant');
+  end if;
 
   if run_row.id is null or run_row.rally_called_at is null then
     return jsonb_build_object('error', 'not_gathered');

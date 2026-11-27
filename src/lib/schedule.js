@@ -921,6 +921,43 @@ export function isSavedThisWeek(record, weekStartTime) {
   return Number.isNaN(savedTime) || savedTime >= weekStartTime
 }
 
+// 이번 주 횟수를 다 쓴 캐릭터의 아직 시작하지 않은 신청 시간을 뺀다. (DB의 _raid_drop_exhausted_slots와 같은 기준)
+// 그 레이드의 모든 난이도 · 공략 방식이 대상이고, 이미 시작한 시간대는 남기되 cleared({ difficulty, mode, day, time }, 지금 클리어한 시간대)는 뺀다.
+// 남은 시간이 없는 신청은 목록에서 지운다. 반환값: { entries, removed(뺀 시간대 수) }
+export function dropExhaustedSlots(entries, { raidName, nickname, weekStartTime, now = new Date(), cleared = null }) {
+  const weekDates = getWeekDates(weekStartTime)
+  let removed = 0
+  const next = []
+
+  entries.forEach((entry) => {
+    if (entry.nickname !== nickname || entry.raidName !== raidName || entry.attendance !== '참' || !isSavedThisWeek(entry, weekStartTime)) {
+      next.push(entry)
+      return
+    }
+
+    const isKept = (day, time) => (
+      getSlotStartDate(weekDates, day, time).getTime() <= now.getTime()
+      && !(cleared && entry.difficulty === cleared.difficulty && entry.mode === cleared.mode && day === cleared.day && time === cleared.time)
+    )
+    const selection = normalizeDayTimeSelection(entry.dayTimeSelection)
+    const kept = Object.fromEntries(weekdayNames.map((day) => [day, selection[day].filter((time) => isKept(day, time))]))
+    const entryRemoved = getDayTimePairs(selection).length - getDayTimePairs(kept).length
+
+    if (entryRemoved === 0) {
+      next.push(entry)
+      return
+    }
+
+    removed += entryRemoved
+
+    if (getSelectedDayList(kept).length > 0) {
+      next.push({ ...entry, dayTimeSelection: kept, days: getSelectedDayList(kept), times: getCombinedTimes(kept), updatedAt: now.toISOString() })
+    }
+  })
+
+  return { entries: removed > 0 ? next : entries, removed }
+}
+
 // 그 시간대에 처음 신청한 시각. 기록이 없는 예전 신청은 마지막 저장 시각으로 본다. (DB의 _raid_slot_roster와 같은 기준)
 export function getSlotSignedTime(record, day, time) {
   const signedTime = new Date(record.slotSignedAt?.[`${day}|${time}`] ?? record.updatedAt).getTime()
@@ -1097,6 +1134,8 @@ export function normalizeRaidRun(entry) {
     // 클리어할 때마다 남긴 명단 [{ at, by, members }]과, 마지막 횟수를 썼다고 디스코드로 알린 사람
     clearLog: entry.clear_log ?? entry.clearLog ?? [],
     clearFinished: entry.clear_finished ?? entry.clearFinished ?? [],
+    // 이 시간대에서 0회가 되어 신청이 자동으로 빠진 사람 (신청이 없어도 출발한 사람으로 본다)
+    clearDropped: entry.clear_dropped ?? entry.clearDropped ?? [],
     // 준비 확인 알림을 보낸 횟수 (시간대마다 최대 2번). 클리어 알림은 한 번만 보낸다.
     rallyNotifyCount: entry.rally_notify_count ?? entry.rallyNotifyCount ?? (entry.rally_notified_at ? 1 : 0),
     clearedNotified: Boolean(entry.cleared_notified_at ?? entry.clearedNotified),

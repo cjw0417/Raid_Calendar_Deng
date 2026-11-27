@@ -103,6 +103,7 @@ import {
   buildDefaultMember,
   normalizeMemberRecord,
   isSavedThisWeek,
+  dropExhaustedSlots,
   getSlotSignedTime,
   compareSlotPeople,
   stampSlotSignedAt,
@@ -1286,7 +1287,18 @@ function App() {
       return
     }
 
+    // 이번에 0회가 되면 아직 시작하지 않은 신청 시간이 일정표에서 빠지므로 한 번 확인한다.
+    const willExhaust = delta > 0 && currentEntryUsage.left === 1
+    const pendingDropCount = willExhaust
+      ? dropExhaustedSlots(raidSchedules, { raidName, nickname, weekStartTime }).removed
+      : 0
+
+    if (pendingDropCount > 0 && !window.confirm(`${nickname}의 남은 횟수가 0이 돼요.\n\n아직 시작하지 않은 ${raidName} 신청 ${pendingDropCount}개가 일정표에서 자동으로 빠져요. (다시 늘려도 신청은 돌아오지 않아요)\n\n줄일까요?`)) {
+      return
+    }
+
     let next
+    let dropped = willExhaust
 
     if (supabase) {
       setIsAdjustingEntries(true)
@@ -1308,12 +1320,37 @@ function App() {
       }
 
       next = normalizeEntryAdjustment(result)
+      // DB가 실제로 뺐을 때만 화면에서도 뺀다. (SQL을 다시 실행하기 전이면 dropped가 없다)
+      dropped = Number(result?.dropped) > 0
     } else {
       next = { weekStart: weekStartKey, nickname, raidName, adjustment: currentEntryUsage.adjustment + delta }
     }
 
     setEntryAdjustments((prev) => upsertEntryAdjustment(prev, next))
-    showToast(`${nickname} 남은 횟수를 1회 ${delta > 0 ? '줄였어요' : '늘렸어요'}.`, 'success', 'entry-adjust')
+
+    if (dropped) {
+      dropExhaustedSchedules(raidName, [nickname])
+    }
+
+    showToast(
+      `${nickname} 남은 횟수를 1회 ${delta > 0 ? '줄였어요' : '늘렸어요'}.${dropped && pendingDropCount > 0 ? ` 남은 ${raidName} 신청은 일정표에서 뺐어요.` : ''}`,
+      'success',
+      'entry-adjust',
+    )
+  }
+
+  // 이번 주 횟수를 다 쓴 캐릭터의 아직 시작하지 않은 신청 시간을 화면에서도 바로 뺀다.
+  // 서버 모드는 DB 함수(_raid_drop_exhausted_slots)가 이미 뺐고 실시간 반영으로 다시 맞춰진다. cleared: 함께 뺄 지금 클리어한 시간대
+  const dropExhaustedSchedules = (raidName, nicknames, cleared = null) => {
+    if (nicknames.length === 0) {
+      return
+    }
+
+    const now = new Date()
+    setRaidSchedules((prev) => nicknames.reduce(
+      (list, nickname) => dropExhaustedSlots(list, { raidName, nickname, weekStartTime, now, cleared }).entries,
+      prev,
+    ))
   }
 
   // 내가 저장한 스케줄 목록 (레이드 → 난이도 → 공략 방식 순).
@@ -2875,7 +2912,10 @@ function App() {
       && entry.difficulty === run.difficulty
       && entry.mode === run.mode
       && (entry.dayTimeSelection?.[run.day] ?? []).includes(run.time)
-    ))?.nickname ?? loggedInNickname.trim()
+    ))?.nickname
+    // 0/5가 되어 신청이 빠졌으면 그 시간대에 출발한 내 캐릭터로 누른다.
+    ?? myCharacters.find((name) => (raidRunByKey.get(getRaidRunKey(run))?.rallyCheckins ?? []).includes(name))
+    ?? loggedInNickname.trim()
   )
 
   // 클리어 표시를 저장한다. value: 'O' | 'X' | null(표시 지우기)
@@ -2939,13 +2979,18 @@ function App() {
   // 횟수 제한 레이드(에라쿠스 유적)에서 지금 클리어를 누르면 차감될 사람: 출발한 사람(준비 완료로 된 신청자) 중 횟수가 남은 사람을 정원까지.
   // DB의 _raid_clear_add와 같은 기준이어야 한다. 지난주 시간대는 신청자와 남은 횟수를 알 수 없어 준비 완료로 된 사람으로 본다.
   const getClearTargets = (run) => {
-    const checkins = raidRunByKey.get(getRaidRunKey(run))?.rallyCheckins ?? []
+    const record = raidRunByKey.get(getRaidRunKey(run))
+    const checkins = record?.rallyCheckins ?? []
 
     if (run.weekStart !== weekStartKey) {
       return checkins.map((nickname) => ({ nickname, left: null }))
     }
 
-    return [...new Set(getRunPeople(run).map((person) => person.nickname))]
+    // 0회가 되어 신청이 자동으로 빠진 사람(clearDropped)도 출발 명단에 있으면 신청한 사람 뒤에 넣는다.
+    return [...new Set([
+      ...getRunPeople(run).map((person) => person.nickname),
+      ...checkins.filter((nickname) => (record?.clearDropped ?? []).includes(nickname)),
+    ])]
       .filter((nickname) => checkins.includes(nickname))
       .map((nickname) => ({ nickname, left: getEntriesLeft(run.raidName, nickname) }))
       .filter(({ left }) => left > 0)
@@ -2965,6 +3010,8 @@ function App() {
     const targets = getClearTargets(run)
     let charged = targets.map((target) => target.nickname)
     let notified = false
+    // 이번 클리어로 0회가 되어 남은 신청을 일정표에서 뺀 사람
+    let dropped = action === 'add' ? targets.filter(({ left }) => left === 1).map(({ nickname: name }) => name) : []
 
     if (supabase) {
       setSavingRunKey(runKey)
@@ -2994,6 +3041,8 @@ function App() {
 
       charged = savedRun?.clearLog.at(-1)?.members ?? charged
       notified = Boolean(result?.notified)
+      // DB가 실제로 뺀 사람만. (SQL을 다시 실행하기 전이면 dropped가 없다)
+      dropped = Array.isArray(result?.dropped) ? result.dropped : []
     } else {
       // 로컬 모드: DB 함수와 같은 규칙으로 이 브라우저에만 저장한다. (디스코드 알림 없음)
       setRaidRuns((prev) => {
@@ -3014,6 +3063,16 @@ function App() {
       return
     }
 
+    dropExhaustedSchedules(run.raidName, dropped, { difficulty: run.difficulty, mode: run.mode, day: run.day, time: run.time })
+
+    // 로컬 모드: 신청이 빠진 사람을 이 시간대 기록에 남긴다. (서버 모드는 DB가 남긴 기록을 이미 받았다)
+    if (!supabase && dropped.length > 0) {
+      setRaidRuns((prev) => {
+        const current = prev.find((item) => getRaidRunKey(item) === runKey)
+        return current ? upsertRaidRun(prev, { ...current, clearDropped: [...new Set([...(current.clearDropped ?? []), ...dropped])] }) : prev
+      })
+    }
+
     const limit = getRaidWeeklyLimit(run.raidName)
     const chargedText = charged.map((name) => {
       const left = targets.find((target) => target.nickname === name)?.left
@@ -3023,8 +3082,8 @@ function App() {
     showToast(
       // 모바일은 남은 횟수가 바로 위에 보이므로, 알림이 그것을 가리지 않게 한 줄로 줄인다.
       isMobile
-        ? `클리어 ${expectedCount + 1}회 · 1회씩 차감${notified ? ' · 디스코드 알림' : ''}`
-        : `클리어 ${expectedCount + 1}회! 1회씩 차감했어요.\n남은 횟수: ${chargedText}${notified ? '\n이번 주 횟수를 모두 쓴 사람이 있어 디스코드로 알렸어요.' : ''}`,
+        ? `클리어 ${expectedCount + 1}회 · 1회씩 차감${notified ? ' · 디스코드 알림' : ''}${dropped.length > 0 ? ' · 다 쓴 사람 신청 정리' : ''}`
+        : `클리어 ${expectedCount + 1}회! 1회씩 차감했어요.\n남은 횟수: ${chargedText}${notified ? '\n이번 주 횟수를 모두 쓴 사람이 있어 디스코드로 알렸어요.' : ''}${dropped.length > 0 ? `\n${dropped.join(', ')}님은 이번 주 횟수를 다 써서 ${run.raidName} 신청을 일정표에서 뺐어요.` : ''}`,
       'success',
       'clear-count',
       { label: '되돌리기', onClick: () => applyClearCount(run, 'undo', expectedCount + 1) },
@@ -4608,7 +4667,7 @@ function App() {
                 : ' 고른 사람이 클리어 명단에 들어가요.')}
               {pendingRunStatus.action === 'cancel' && '의 준비 확인을 취소합니다. 지금까지의 준비 완료와 클리어 표시도 함께 지워져요.'}
               {pendingRunStatus.action === 'cancel' && getRaidWeeklyLimit(pendingRunStatus.run.raidName) > 0 && ' 차감한 횟수도 되돌아가요.'}
-              {pendingRunStatus.action === 'clear-count' && `의 클리어를 1회 추가합니다. ${pendingRunStatus.finishing.join(', ')}님이 이번 주 횟수를 모두 쓰게 돼요.`}
+              {pendingRunStatus.action === 'clear-count' && `의 클리어를 1회 추가합니다. ${pendingRunStatus.finishing.join(', ')}님이 이번 주 횟수를 모두 쓰게 돼요. 이 시간대와 아직 시작하지 않은 ${pendingRunStatus.run.raidName} 신청은 일정표에서 자동으로 빠져요. (클리어 기록은 남고, 되돌려도 신청은 다시 들어가지 않아요)`}
               {pendingRunStatus.action === 'remind' && '의 준비 확인을 디스코드로 한 번 더 알립니다. 지금 신청한 인원과 아직 준비 안 한 인원이 함께 가요. (시간대마다 두 번까지)'}
               {pendingRunStatus.action === 'cleared' && '를 클리어(O)로 표시합니다.'}
               {supabase && pendingRunStatus.action === 'start' && ' 디스코드 알림이 연결되어 있으면 채널에 알림이 가요.'}
@@ -4934,7 +4993,7 @@ function App() {
               <p>4. 저장하면 주간 캘린더와 요일별 현황에 바로 반영돼요. 직업 · 전투력 · 리딩을 바꿨으면 저장할 때 이 캐릭터의 다른 신청에도 함께 반영돼요.</p>
               <p>5. 못 가는 시간은 시간표에서 빼고 저장해요. 시간을 모두 빼면 저장 버튼이 '신청 삭제'로 바뀌어요.</p>
               <p>6. 현황을 보다가 '나도 참여'를 누르면 그 시간대에 바로 신청돼요. 시간대마다 먼저 신청한 10명(초월 레이드는 5명)이 1공대(초월은 1파티), 그다음 10명(5명)이 2공대(2파티)이고, 그보다 늦으면 대기예요. 준비 확인과 클리어는 공대(파티)마다 따로 해요. 시간을 다시 저장해도 순서는 그대로예요.</p>
-              <p>7. 에라쿠스 유적은 출발한 뒤 클리어할 때마다 '+1 클리어'를 눌러요. 준비 완료를 누른 사람이 1회씩 차감되고, 누군가 5회를 다 쓰는 클리어만 디스코드로 알려요. 클리어한 사람은 '이번 주 클리어'에서 볼 수 있어요.</p>
+              <p>7. 에라쿠스 유적은 출발한 뒤 클리어할 때마다 '+1 클리어'를 눌러요. 준비 완료를 누른 사람이 1회씩 차감되고, 누군가 5회를 다 쓰는 클리어만 디스코드로 알려요. 5회를 다 쓴(0/5) 사람은 클리어한 시간대와 아직 시작하지 않은 에라쿠스 신청이 일정표에서 자동으로 빠져요. 클리어한 사람은 '이번 주 클리어'에서 볼 수 있어요.</p>
               <p>8. 수요일 리셋 뒤에는 '지난 신청 불러오기'로 지난 신청을 골라 다시 등록할 수 있어요. 다시 등록한 뒤 지운 신청도 다시 불러올 수 있어요.</p>
             </div>
           )}
@@ -5782,7 +5841,9 @@ function App() {
                                   const rosterNicknames = [...new Set(partyMembers.map((member) => member.nickname))]
                                   const rallyCheckins = runRecord?.rallyCheckins ?? []
                                   // 내 파티이거나, 내가 대기이거나, 이 파티로 출발 인원에 들어갔으면 이 파티 기록을 다룰 수 있다.
-                                  const canManage = isSlotVoter && (myParty === party || myParty === 0 || rallyCheckins.includes(mySlotNickname))
+                                  // 0/5가 되어 신청이 일정표에서 빠졌어도 이 파티로 출발했으면 클리어 · 되돌리기를 누를 수 있다. (DB도 출발 명단을 참여자로 본다)
+                                  const myDepartedNickname = isSlotVoter ? '' : myCharacters.find((name) => rallyCheckins.includes(name)) ?? ''
+                                  const canManage = (isSlotVoter && (myParty === party || myParty === 0 || rallyCheckins.includes(mySlotNickname))) || Boolean(myDepartedNickname)
 
                                   return {
                                     party,
@@ -5796,7 +5857,7 @@ function App() {
                                     isMine: myParty === party,
                                     canManage,
                                     canEdit: Boolean(loggedInNickname) && canManage && savingRunKey !== runKey,
-                                    disabledReason: editDisabledReason || (isSlotVoter && !canManage ? describeAuthResult('other_party') : ''),
+                                    disabledReason: myDepartedNickname && loggedInNickname ? '' : editDisabledReason || (isSlotVoter && !canManage ? describeAuthResult('other_party') : ''),
                                     isRallyCalled: Boolean(runRecord?.rallyCalledAt),
                                     isGathered: Boolean(runRecord?.gatheredAt),
                                     checkedCount: rosterNicknames.filter((name) => rallyCheckins.includes(name)).length,
@@ -5943,8 +6004,11 @@ function App() {
                                 }
 
                                 // 접힌 줄에는 지금 할 일이 있을 때만 버튼을 보여 준다. (내 시간의 준비 확인 · 출발 · 클리어)
+                                // 0/5가 되어 신청이 빠졌어도 출발한 내 캐릭터가 있으면 클리어 · 되돌리기를 바로 누를 수 있게 연다.
+                                const isMyDeparted = !isSlotVoter && partyStates.some((ps) => myCharacters.some((name) => ps.rallyCheckins.includes(name)))
                                 const isActionOpen = isExpanded
                                   || (isSlotVoter && (isAnyRallyCalled || isAnyCleared || (canCallRally && !isPastSlot(day, time))))
+                                  || (isMyDeparted && (isAnyRallyCalled || isAnyCleared))
                                 // 내 시간이 아닌 줄의 진행 상태는 짧은 글자로만 보여 준다. (2파티면 파티마다)
                                 const getProgressText = (ps) => (
                                   ps.runRecord?.cleared === 'O' ? '클리어'
